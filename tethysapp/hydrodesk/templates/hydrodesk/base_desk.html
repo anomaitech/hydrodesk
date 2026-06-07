@@ -33,6 +33,11 @@
     </a>
   </li>
   <li class="nav-item">
+    <a class="nav-link{% block nav_active_doctypes %}{% endblock %}" href="{% url 'hydrodesk:doctypes' %}">
+      <span class="frappe-sidebar-ico">&#9707;</span> DocTypes
+    </a>
+  </li>
+  <li class="nav-item">
     <a class="nav-link{% block nav_active_newtype %}{% endblock %}" href="{% url 'hydrodesk:new_type' %}">
       <span class="frappe-sidebar-ico">&#43;</span> New HydroType
     </a>

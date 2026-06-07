@@ -3039,6 +3039,90 @@ def delete_hydrotype(request, slug="monitoring_station"):
     })
 
 
+def _unique_slug(session, base):
+    """Return a slug not already used by a HydroType, appending _2, _3, … on a
+    collision. Used by Duplicate so the clone never clobbers an existing type."""
+    base = base or "type"
+    candidate = base
+    n = 2
+    while session.execute(
+            select(m.HydroType.slug).where(m.HydroType.slug == candidate)).first():
+        candidate = f"{base}_{n}"
+        n += 1
+    return candidate
+
+
+@controller(name="doctypes", url="doctypes", title="DocTypes")
+def doctypes_list(request):
+    """Management list of every HydroType (DocType): name, slug, geometry, field
+    count, record count, with per-row Open/Edit/Duplicate/Delete and select +
+    bulk-delete. The home page shows the same types as cards; this is the tabular
+    management surface."""
+    engine = App.get_persistent_store_database("hydro_db")
+    types = []
+    with Session(engine) as session:
+        rows = session.execute(select(
+            m.HydroType.slug, m.HydroType.display_name, m.HydroType.geometry_kind,
+            m.HydroType.field_schema, m.HydroType.version,
+        ).order_by(m.HydroType.display_name)).all()
+        for slug, dn, gk, fs, ver in rows:
+            n_fields = sum(1 for _k, p in _ordered_props(fs)
+                           if not (p or {}).get("x-layout"))
+            count = session.execute(
+                select(func.count()).select_from(m.HydroRecord)
+                .where(m.HydroRecord.hydrotype_slug == slug)).scalar() or 0
+            types.append({
+                "slug": slug, "display_name": dn, "geometry_kind": gk or "—",
+                "field_count": n_fields, "record_count": count, "version": ver or 1,
+            })
+    return render(request, "hydrodesk/doctypes.html", {
+        "types": types, "total": len(types),
+        "bulk_delete_url": reverse("hydrodesk:doctypes_bulk_delete"),
+    })
+
+
+@controller(name="doctypes_bulk_delete", url="doctypes/bulk-delete",
+            title="Delete DocTypes")
+def doctypes_bulk_delete(request):
+    """Bulk-delete the SELECTED HydroTypes AND all their records (POST only). The
+    list posts ticked rows as repeated ``slugs``; records of the deleted types go
+    too. Records of OTHER types are never touched."""
+    if request.method == "POST":
+        slugs = [s.strip() for s in request.POST.getlist("slugs") if s.strip()]
+        if slugs:
+            engine = App.get_persistent_store_database("hydro_db")
+            with Session(engine) as session:
+                session.execute(delete(m.HydroRecord)
+                                .where(m.HydroRecord.hydrotype_slug.in_(slugs)))
+                session.execute(delete(m.HydroType)
+                                .where(m.HydroType.slug.in_(slugs)))
+                session.commit()
+    return redirect(reverse("hydrodesk:doctypes"))
+
+
+@controller(name="duplicate_type", url="doctypes/{slug}/duplicate",
+            title="Duplicate DocType")
+def duplicate_hydrotype(request, slug="monitoring_station"):
+    """Clone a HydroType's full definition under a new name/slug ('<name> Copy'),
+    then open it in the edit builder. No records are copied (POST only)."""
+    if request.method != "POST":
+        return redirect(reverse("hydrodesk:doctypes"))
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        src = session.execute(
+            select(m.HydroType).where(m.HydroType.slug == slug)).scalar_one_or_none()
+        if src is None:
+            return redirect(reverse("hydrodesk:doctypes"))
+        new_name = f"{src.display_name} Copy"
+        new_slug = _unique_slug(session, _slugify_underscore(new_name))
+        session.add(m.HydroType(
+            slug=new_slug, display_name=new_name, version=1,
+            field_schema=src.field_schema, geometry_kind=src.geometry_kind,
+            timeseries_policy=src.timeseries_policy, workflow=src.workflow))
+        session.commit()
+    return redirect(reverse("hydrodesk:edit_type", kwargs={"slug": new_slug}))
+
+
 # ===========================================================================
 # CREDENTIALS — a small CRUD over the hydro_credential secrets store. The secret
 # is WRITE-ONLY in the UI: it is never echoed back (the list shows a mask, the

@@ -1,0 +1,146 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  DocType management list. controllers.doctypes_list -> types:[{slug,display_name,
+  geometry_kind,field_count,record_count,version}], total, bulk_delete_url.
+  Row checkboxes post `slugs` to the bulk-delete form; per-row Duplicate buttons
+  submit separate (non-nested) forms via the form= attribute.
+{% endcomment %}
+
+{% block title %}DocTypes - {{ block.super }}{% endblock %}
+{% block nav_active_doctypes %} active{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span>DocTypes
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">DocTypes</h1>
+      <span class="indicator-pill gray">{{ total }} type{{ total|pluralize }}</span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-primary btn-sm" href="{% url 'hydrodesk:new_type' %}">
+        <i class="bi bi-plus-lg"></i> New HydroType
+      </a>
+    </div>
+  </div>
+
+  {% if types %}
+  <form id="hd-bulk-form" method="post" action="{{ bulk_delete_url }}">
+    {% csrf_token %}
+    <div id="hd-bulk-bar" class="hd-bulk-bar" hidden>
+      <span><strong id="hd-bulk-n">0</strong> selected</span>
+      <button type="button" id="hd-bulk-delete" class="btn btn-danger btn-sm">
+        <i class="bi bi-trash"></i> Delete
+      </button>
+      <button type="button" id="hd-bulk-clear" class="btn btn-link btn-sm">Clear selection</button>
+    </div>
+
+    <div class="frappe-card" style="overflow:auto;">
+      <table class="hd-series-table hd-doctypes-table">
+        <thead>
+          <tr>
+            <th class="hd-tcell-check"><input type="checkbox" id="hd-select-all" aria-label="Select all"></th>
+            <th>Name</th><th>Slug</th><th>Geometry</th><th>Fields</th><th>Records</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in types %}
+          <tr>
+            <td class="hd-tcell-check"><input type="checkbox" class="hd-row-check" name="slugs" value="{{ t.slug }}" aria-label="Select {{ t.display_name }}"></td>
+            <td><a href="{% url 'hydrodesk:list' slug=t.slug %}"><strong>{{ t.display_name }}</strong></a></td>
+            <td><code>{{ t.slug }}</code></td>
+            <td>{{ t.geometry_kind }}</td>
+            <td>{{ t.field_count }}</td>
+            <td>{{ t.record_count }}</td>
+            <td class="hd-dt-actions">
+              <a class="btn btn-link btn-sm" href="{% url 'hydrodesk:list' slug=t.slug %}">Open</a>
+              <a class="btn btn-link btn-sm" href="{% url 'hydrodesk:edit_type' slug=t.slug %}">Edit</a>
+              <button type="submit" form="hd-dup-{{ forloop.counter0 }}" class="btn btn-link btn-sm">Duplicate</button>
+              <a class="btn btn-link btn-sm" style="color:var(--red-600,#e24c4c);" href="{% url 'hydrodesk:delete_type' slug=t.slug %}">Delete</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+
+  {# Per-row Duplicate forms kept OUTSIDE the bulk form (HTML forms can't nest);
+     the in-row buttons submit these via their form= attribute. #}
+  {% for t in types %}
+  <form id="hd-dup-{{ forloop.counter0 }}" method="post"
+        action="{% url 'hydrodesk:duplicate_type' slug=t.slug %}" hidden>{% csrf_token %}</form>
+  {% endfor %}
+
+  {% else %}
+  <div class="frappe-list">
+    <div class="frappe-list-empty">
+      <span class="ico"><i class="bi bi-inbox"></i></span>
+      No DocTypes yet. <a href="{% url 'hydrodesk:new_type' %}">Create your first one</a>.
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<style>
+  .hd-doctypes-table th, .hd-doctypes-table td { vertical-align:middle; }
+  .hd-doctypes-table .hd-tcell-check { width:34px; text-align:center; }
+  .hd-doctypes-table tbody td:first-child { color:inherit; }
+  .hd-dt-actions { white-space:nowrap; }
+  .hd-dt-actions .btn { padding:2px 6px; margin:0; }
+  .hd-bulk-bar {
+    display:flex; align-items:center; gap:12px; padding:8px 14px; margin-bottom:10px;
+    background:var(--fr-bg-color,#f4f5f6); border:1px solid var(--fr-border-color,#e2e8f0);
+    border-radius:var(--fr-radius,6px); font-size:var(--fr-text-sm,12px);
+  }
+  .hd-bulk-bar .btn { margin:0; }
+</style>
+
+<script>
+// Select rows -> bulk delete (types + their records, with confirm). Mirrors the
+// record list-view selection; posts repeated `slugs`.
+(function () {
+  var form = document.getElementById('hd-bulk-form');
+  if (!form) return;
+  var selectAll = document.getElementById('hd-select-all');
+  var bar = document.getElementById('hd-bulk-bar');
+  var nEl = document.getElementById('hd-bulk-n');
+  function rows() { return Array.prototype.slice.call(form.querySelectorAll('.hd-row-check')); }
+  function update() {
+    var all = rows(), sel = all.filter(function (c) { return c.checked; });
+    nEl.textContent = sel.length;
+    bar.hidden = sel.length === 0;
+    if (selectAll) {
+      selectAll.checked = all.length > 0 && sel.length === all.length;
+      selectAll.indeterminate = sel.length > 0 && sel.length < all.length;
+    }
+  }
+  if (selectAll) selectAll.addEventListener('change', function () {
+    rows().forEach(function (c) { c.checked = selectAll.checked; }); update();
+  });
+  form.addEventListener('change', function (e) {
+    if (e.target && e.target.classList.contains('hd-row-check')) update();
+  });
+  var clearBtn = document.getElementById('hd-bulk-clear');
+  if (clearBtn) clearBtn.addEventListener('click', function () {
+    rows().forEach(function (c) { c.checked = false; });
+    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+    update();
+  });
+  var delBtn = document.getElementById('hd-bulk-delete');
+  if (delBtn) delBtn.addEventListener('click', function () {
+    var n = rows().filter(function (c) { return c.checked; }).length;
+    if (!n) return;
+    if (window.confirm('Delete ' + n + ' type' + (n === 1 ? '' : 's')
+        + ' AND all their records? This cannot be undone.')) form.submit();
+  });
+  update();
+})();
+</script>
+{% endblock %}
