@@ -326,6 +326,20 @@ def _connector_outputs(cfg):
                 out.append(o)
         if out:
             return out
+    # NetCDF / THREDDS connectors: synthesize a series (the variable along its time
+    # dimension) + a latest value, keyed off the configured variable + x_dim.
+    if (cfg.get("kind") or "rest").lower() in ("netcdf", "thredds"):
+        var = (cfg.get("variable") or "").strip()
+        if not var:
+            return []
+        x_dim = (cfg.get("x_dim") or "time").strip()
+        unit = (cfg.get("unit") or "").strip()
+        return [
+            {"name": var, "kind": "series", "type": "series", "primary": True,
+             "var": var, "x_dim": x_dim, "unit": unit},
+            {"name": "latest", "kind": "value", "type": "number",
+             "var": var, "unit": unit},
+        ]
     result_kind = (cfg.get("result_kind") or "value").lower()
     if result_kind == "series":
         return [{
@@ -611,6 +625,237 @@ def _resolve_inputs(cfg, record_attrs, field_map=None):
     return attrs, missing_required
 
 
+# ===========================================================================
+# NetCDF / THREDDS (OPeNDAP) connectors. netCDF4 reads a local .nc file OR a remote
+# OPeNDAP/dodsC URL directly; siphon resolves a THREDDS catalog to an OPeNDAP URL.
+# A connector's variable + x_dim synthesize a series (the variable along its time
+# dimension) + a latest value, returned in the SAME value/series shape the doctype
+# render already consumes. All failures degrade to a soft-empty result (never raise).
+# ===========================================================================
+
+def _netcdf_to_list(arr):
+    """Convert a (possibly masked) numpy array to a plain Python list, mapping
+    masked entries and NaNs to None (so the renderer shows an em-dash)."""
+    import numpy as np
+    a = np.ma.filled(np.ma.asarray(arr).astype("float64"), np.nan)
+    out = []
+    for x in np.atleast_1d(a).ravel().tolist():
+        if x is None or (isinstance(x, float) and x != x):   # None / NaN
+            out.append(None)
+        else:
+            out.append(round(float(x), 4))                   # trim float noise
+    return out
+
+
+def _netcdf_coord_values(cvar):
+    """Coordinate-variable values as a list; CF time axes (units '… since …') are
+    decoded to ISO datetime strings via num2date."""
+    import netCDF4
+    import numpy as np
+    units = getattr(cvar, "units", None)
+    cal = getattr(cvar, "calendar", "standard")
+    vals = cvar[:]
+    if units and "since" in str(units).lower():
+        try:
+            dts = netCDF4.num2date(vals, str(units), cal)
+            return [str(d) for d in np.atleast_1d(dts).ravel().tolist()]
+        except Exception:
+            pass
+    return [str(v) for v in _netcdf_to_list(vals)]
+
+
+def _netcdf_series_xy(ds, v, x_dim):
+    """Return (xs, ys) for a variable ``v`` along ``x_dim``: ys is the variable
+    REDUCED over its other dimensions by a masked spatial MEAN (so the series has
+    data whenever any grid point does), with a size guard — for a very large
+    variable a single mid-grid point is sampled instead of downloading it all. xs
+    are the x_dim coordinate values (CF time decoded). Masked steps are dropped."""
+    import numpy as np
+    dims = list(v.dimensions)
+    nonx_axes = tuple(i for i, d in enumerate(dims) if d != x_dim)
+    if not dims or not nonx_axes:
+        ys = _netcdf_to_list(v[:])
+    elif v.size and v.size <= 5_000_000:
+        ys = _netcdf_to_list(np.ma.mean(np.ma.asarray(v[:]), axis=nonx_axes))
+    else:  # too big to download whole — sample a mid-grid point
+        idx = tuple(slice(None) if d == x_dim else (v.shape[k] // 2)
+                    for k, d in enumerate(dims))
+        ys = _netcdf_to_list(v[idx])
+    cvar = ds.variables.get(x_dim) if x_dim else None
+    xs = (_netcdf_coord_values(cvar) if cvar is not None
+          else [str(i) for i in range(len(ys))])
+    pairs = [(x, y) for x, y in zip(xs, ys) if y is not None]
+    return [x for x, _ in pairs], [y for _, y in pairs]
+
+
+def _netcdf_extract(ds, out_entry):
+    """Extract ONE output from an open netCDF4 Dataset. 'series' -> the variable
+    along its x_dim (other dims spatially averaged); 'value' -> the last point of
+    that same series (a consistent latest scalar)."""
+    out_entry = out_entry or {}
+    var_name = (out_entry.get("var") or out_entry.get("name") or "").strip()
+    v = ds.variables.get(var_name)
+    if v is None:
+        return None
+    dims = list(v.dimensions)
+    x_dim = (out_entry.get("x_dim") or "").strip() or (dims[0] if dims else "")
+    if x_dim not in dims:
+        x_dim = dims[0] if dims else ""
+    xs, ys = _netcdf_series_xy(ds, v, x_dim)
+    if (out_entry.get("kind") or "value").lower() == "series":
+        return {"kind": "series",
+                "columns": [{"name": x_dim or "index", "values": xs},
+                            {"name": var_name, "values": ys}],
+                "n": len(ys), "x": xs, "y": ys}
+    return {"kind": "value", "value": (ys[-1] if ys else None)}
+
+
+def _resolve_thredds_url(cfg, attrs):
+    """Resolve a THREDDS connector's OPeNDAP access URL via siphon: open the
+    catalog_url, find the dataset whose name contains ``dataset`` (or the first),
+    and return its OPeNDAP URL. '' on any failure."""
+    try:
+        from siphon.catalog import TDSCatalog
+    except Exception:
+        return ""
+    try:
+        cat_url = _render_template(cfg.get("catalog_url") or "", attrs)
+        if not cat_url:
+            return ""
+        cat = TDSCatalog(cat_url)
+        want = (cfg.get("dataset") or "").strip().lower()
+        chosen = None
+        names = list(cat.datasets)
+        if want:
+            for nm in names:
+                if want in nm.lower():
+                    chosen = cat.datasets[nm]
+                    break
+        if chosen is None and names:
+            chosen = cat.datasets[names[0]]
+        if chosen is None:
+            return ""
+        au = chosen.access_urls or {}
+        for key in ("OPENDAP", "OpenDAP", "OPeNDAP", "dap", "DODS"):
+            if au.get(key):
+                return au[key]
+        return next(iter(au.values()), "")
+    except Exception:
+        return ""
+
+
+def _netcdf_describe(cfg, attrs):
+    """For the Test panel: open the dataset and return a {variables, dimensions}
+    summary (variable -> its dims/shape/units) so the user can see what to put in
+    the Variable field. None on any failure (the panel shows the error status)."""
+    import socket
+    cfg = cfg or {}
+    if cfg.get("inputs"):
+        rattrs, _ = _resolve_inputs(cfg, attrs, None)
+    else:
+        rattrs = dict(attrs or {})
+    if (cfg.get("kind") or "netcdf").lower() == "thredds":
+        url = _resolve_thredds_url(cfg, rattrs)
+    else:
+        url = _render_template(cfg.get("dataset_url") or "", rattrs)
+    if not url:
+        return None
+    timeout = int(cfg.get("timeout") or 30)
+    old_to = socket.getdefaulttimeout()
+    try:
+        import netCDF4
+        socket.setdefaulttimeout(timeout)
+        ds = netCDF4.Dataset(url)
+        try:
+            dims = {k: len(v) for k, v in ds.dimensions.items()}
+            variables = {}
+            for vn, v in ds.variables.items():
+                variables[vn] = {
+                    "dimensions": list(v.dimensions),
+                    "shape": [int(s) for s in v.shape],
+                    "units": getattr(v, "units", ""),
+                    "long_name": getattr(v, "long_name", ""),
+                }
+            return {"resolved_url": url, "dimensions": dims, "variables": variables}
+        finally:
+            ds.close()
+    except Exception:
+        return None
+    finally:
+        socket.setdefaulttimeout(old_to)
+
+
+def _netcdf_soft_empty(out_kind, url, cached):
+    """A no-data result of the requested kind (no dataset access needed)."""
+    if (out_kind or "value") == "series":
+        return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+                "url": url, "cached": cached}
+    return {"kind": "value", "value": None, "url": url, "cached": cached}
+
+
+def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
+                  connector_name="connector"):
+    """Fetch one output from a NetCDF/THREDDS connector. Resolves the dataset URL
+    (THREDDS catalog via siphon, else the dataset_url with {field} substitution),
+    opens it via netCDF4 (socket timeout), and extracts the selected output. Caches
+    per (name, url, output) like the REST path; never raises."""
+    import socket
+    cfg = cfg or {}
+    kind = (cfg.get("kind") or "netcdf").lower()
+    # resolve inputs for {field} substitution (declared inputs[] or raw attrs)
+    if cfg.get("inputs"):
+        attrs, missing_required = _resolve_inputs(cfg, record_attrs, field_map)
+    else:
+        attrs, missing_required = dict(record_attrs or {}), []
+
+    # which output (synthesized series/value from the variable)
+    catalog = _connector_outputs(cfg)
+    if isinstance(output, dict):
+        out_entry = output
+    else:
+        out_entry = _find_output(catalog, output) if output else _primary_output(catalog)
+    out_kind = (out_entry.get("kind") if out_entry else "value")
+
+    if missing_required:
+        return _netcdf_soft_empty(out_kind, "", False)
+
+    if kind == "thredds":
+        url = _resolve_thredds_url(cfg, attrs)
+    else:
+        url = _render_template(cfg.get("dataset_url") or "", attrs)
+    if not url or out_entry is None:
+        return _netcdf_soft_empty(out_kind, url, False)
+
+    ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
+    timeout = int(cfg.get("timeout") or 30)
+    cache_key = (connector_name, url + "::" + (out_entry.get("name") or ""))
+    now = time.time()
+    hit = _API_CACHE.get(cache_key)
+    if hit and (now - hit[0]) < ttl:
+        res = dict(hit[1]); res["url"] = url; res["cached"] = True
+        return res
+
+    import netCDF4
+    old_to = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(timeout)
+        ds = netCDF4.Dataset(url)
+        try:
+            extracted = _netcdf_extract(ds, out_entry)
+        finally:
+            ds.close()
+    except Exception:
+        return _netcdf_soft_empty(out_kind, url, False)
+    finally:
+        socket.setdefaulttimeout(old_to)
+
+    if extracted is None:
+        return _netcdf_soft_empty(out_kind, url, False)
+    _API_CACHE[cache_key] = (now, extracted)
+    res = dict(extracted); res["url"] = url; res["cached"] = False
+    return res
+
+
 def fetch_api(connector_config, record_attrs, connector_name="connector",
               field_map=None, output=None):
     """The generic API fetch — the centerpiece extractor.
@@ -643,6 +888,11 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
     a soft empty result of the requested kind is returned (never raises)."""
     cfg = _connector_config(connector_config)
     name = connector_name or cfg.get("name") or "connector"
+
+    # NON-REST kinds dispatch to their own fetcher (same value/series result shape).
+    if (cfg.get("kind") or "rest").lower() in ("netcdf", "thredds"):
+        return _fetch_netcdf(cfg, record_attrs, output=output,
+                             field_map=field_map, connector_name=name)
 
     # OUTPUT SELECTION (the multi-output model). Resolve the requested output to a
     # concrete outputs[] entry up front: an explicit dict is used verbatim; a name
@@ -941,6 +1191,30 @@ CONNECTOR_PRESETS = {
             ],
             "ttl_seconds": 900,
             "timeout": 15,
+        },
+    },
+    "netcdf_opendap": {
+        "label": "NetCDF — OPeNDAP (example: monthly SST)",
+        "config": {
+            "kind": "netcdf",
+            "dataset_url": "http://test.opendap.org/dap/data/nc/coads_climatology.nc",
+            "variable": "SST",
+            "x_dim": "TIME",
+            "unit": "degC",
+            "ttl_seconds": 900,
+            "timeout": 40,
+        },
+    },
+    "thredds_catalog": {
+        "label": "THREDDS catalog (siphon → OPeNDAP)",
+        "config": {
+            "kind": "thredds",
+            "catalog_url": "https://thredds.example.org/thredds/catalog/path/catalog.xml",
+            "dataset": "",
+            "variable": "streamflow",
+            "x_dim": "time",
+            "ttl_seconds": 900,
+            "timeout": 40,
         },
     },
 }
@@ -3615,10 +3889,15 @@ def _connector_config_from_post(post):
     except ValueError:
         timeout = 15
 
+    kind = (post.get("kind") or "rest").strip().lower()
+    if kind not in ("rest", "netcdf", "thredds"):
+        kind = "rest"
+
     inputs = _parse_inputs_rows(post)
     outputs = _parse_outputs_rows(post)
 
     config = {
+        "kind": kind,
         "url_template": (post.get("url_template") or "").strip(),
         "method": method,
         "headers": headers,
@@ -3636,19 +3915,34 @@ def _connector_config_from_post(post):
         "ttl_seconds": ttl,
         "timeout": timeout,
     }
-    # Only attach inputs[] when the editor actually produced rows. An ABSENT key
-    # keeps a connector on the legacy implicit token-scan (full back-compat); an
-    # empty list would needlessly opt it into the resolver with zero tokens.
+    if kind in ("netcdf", "thredds"):
+        # NetCDF / THREDDS source fields. A series + a latest value are synthesized
+        # from the variable (+ x_dim) at fetch time; no outputs[] editor needed.
+        config["dataset_url"] = (post.get("dataset_url") or "").strip()
+        config["variable"] = (post.get("variable") or "").strip()
+        config["x_dim"] = (post.get("x_dim") or "time").strip()
+        config["unit"] = (post.get("nc_unit") or "").strip()
+        if kind == "thredds":
+            config["catalog_url"] = (post.get("catalog_url") or "").strip()
+            config["dataset"] = (post.get("dataset") or "").strip()
+        if not config["variable"]:
+            errors.append("A NetCDF/THREDDS connector needs a Variable name.")
+        if kind == "netcdf" and not config["dataset_url"]:
+            errors.append("A NetCDF connector needs a Dataset URL (.nc file or OPeNDAP/dodsC URL).")
+        if kind == "thredds" and not config.get("catalog_url"):
+            errors.append("A THREDDS connector needs a Catalog URL.")
+    else:
+        if not config["url_template"]:
+            errors.append("URL Template is required.")
+
+    # Only attach inputs[] when the editor actually produced rows (REST). An ABSENT
+    # key keeps a connector on the legacy implicit token-scan (full back-compat).
     if inputs:
         config["inputs"] = inputs
-    # Mirror the inputs[] ABSENT-vs-EMPTY pattern for outputs[]: attach only when
-    # the editor produced rows. An absent/empty outputs[] falls through to the
-    # synthesized single primary output (from result_kind/output_path/x_path/y_path)
-    # — full back-compat. The legacy path fields are KEPT above for that fallback.
-    if outputs:
+    # Attach outputs[] only when the editor produced rows; otherwise the primary
+    # output is synthesized (REST: from result_kind/paths; NetCDF: from variable).
+    if outputs and kind == "rest":
         config["outputs"] = outputs
-    if not config["url_template"]:
-        errors.append("URL Template is required.")
     return name, config, errors
 
 
@@ -3666,6 +3960,13 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "form_action": form_action,
         "form_errors": form_errors,
         "name": name,
+        "kind": (config or {}).get("kind", "rest"),
+        "dataset_url": (config or {}).get("dataset_url", ""),
+        "variable": (config or {}).get("variable", ""),
+        "x_dim": (config or {}).get("x_dim", "time"),
+        "nc_unit": (config or {}).get("unit", ""),
+        "catalog_url": (config or {}).get("catalog_url", ""),
+        "dataset": (config or {}).get("dataset", ""),
         "url_template": (config or {}).get("url_template", ""),
         "method": (config or {}).get("method", "GET"),
         "headers": json.dumps((config or {}).get("headers") or {}, indent=2),
@@ -3865,22 +4166,24 @@ def connector_test(request):
 
     result = fetch_api(config, attrs, connector_name=config.get("name") or "test")
 
-    # fetch_api already returns a secret-redacted URL and never the secret. For the
-    # tree-picker we fetch the RAW JSON separately (value/series kinds only expose
-    # the extracted leaf), so re-fetch raw using a json result_kind view.
+    # RAW tree for the Test panel. REST: re-fetch the whole JSON (the tree-picker
+    # needs it to pick paths). NetCDF/THREDDS: describe the dataset (its variables +
+    # dimensions) so the user can see what to put in the Variable field.
     raw = None
-    try:
-        cfg_json = dict(config)
-        cfg_json["result_kind"] = "json"
-        cfg_json["output_path"] = ""
-        # Drop outputs[] so the raw-JSON path triggers: fetch_api only returns the
-        # whole tree when the connector declares NO outputs[] (else it extracts the
-        # primary output). The Test tree needs the FULL response to pick from.
-        cfg_json.pop("outputs", None)
-        raw_result = fetch_api(cfg_json, attrs, connector_name=config.get("name") or "test")
-        raw = raw_result.get("json")
-    except Exception:
-        raw = None
+    if (config.get("kind") or "rest").lower() in ("netcdf", "thredds"):
+        raw = _netcdf_describe(config, attrs)
+    else:
+        try:
+            cfg_json = dict(config)
+            cfg_json["result_kind"] = "json"
+            cfg_json["output_path"] = ""
+            # Drop outputs[] so the raw-JSON path triggers (else it extracts the
+            # primary output). The Test tree needs the FULL response to pick from.
+            cfg_json.pop("outputs", None)
+            raw_result = fetch_api(cfg_json, attrs, connector_name=config.get("name") or "test")
+            raw = raw_result.get("json")
+        except Exception:
+            raw = None
 
     return JsonResponse({
         "ok": True,

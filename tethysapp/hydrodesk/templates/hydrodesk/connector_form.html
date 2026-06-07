@@ -81,35 +81,88 @@
       </div>
 
       <div class="frappe-form-group">
-        <label class="frappe-label" for="id_url_template">URL Template<span class="req">*</span></label>
-        <input class="form-control" type="text" id="id_url_template" name="url_template"
-               value="{{ url_template }}"
-               placeholder="https://api.example.com/v1/sites/{site_id}/latest">
-        <div class="frappe-help">
-          Use <code>{field}</code> placeholders &mdash; filled from the record's
-          attributes at fetch time (a missing field becomes empty). Values are URL-encoded.
-        </div>
+        <label class="frappe-label" for="id_kind">Kind</label>
+        <select class="form-select" id="id_kind" name="kind">
+          <option value="rest"    {% if kind == 'rest' %}selected{% endif %}>REST / JSON API</option>
+          <option value="netcdf"  {% if kind == 'netcdf' %}selected{% endif %}>NetCDF / OPeNDAP</option>
+          <option value="thredds" {% if kind == 'thredds' %}selected{% endif %}>THREDDS catalog</option>
+        </select>
+        <div class="frappe-help">REST = a URL returning JSON. NetCDF/THREDDS = a gridded dataset (a variable becomes a time series + latest value).</div>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_method">Method</label>
-          <select class="form-select" id="id_method" name="method">
-            <option value="GET"  {% if method == 'GET' %}selected{% endif %}>GET</option>
-            <option value="POST" {% if method == 'POST' %}selected{% endif %}>POST</option>
-          </select>
+      {# ---- NetCDF / THREDDS source ---- #}
+      <div class="hd-kind-netcdf">
+        <div class="hd-thredds-only frappe-form-group">
+          <label class="frappe-label" for="id_catalog_url">Catalog URL<span class="req">*</span></label>
+          <input class="form-control" type="text" id="id_catalog_url" name="catalog_url"
+                 value="{{ catalog_url }}" placeholder="https://thredds.example.org/.../catalog.xml">
         </div>
+        <div class="hd-thredds-only frappe-form-group">
+          <label class="frappe-label" for="id_dataset">Dataset (name contains)</label>
+          <input class="form-control" type="text" id="id_dataset" name="dataset"
+                 value="{{ dataset }}" placeholder="blank = first dataset in the catalog">
+        </div>
+        <div class="hd-netcdf-only frappe-form-group">
+          <label class="frappe-label" for="id_dataset_url">Dataset URL<span class="req">*</span></label>
+          <input class="form-control" type="text" id="id_dataset_url" name="dataset_url"
+                 value="{{ dataset_url }}"
+                 placeholder="http://.../file.nc  &mdash; a .nc file or OPeNDAP/dodsC URL ({field} ok)">
+          <div class="frappe-help">A local <code>.nc</code> path or a remote OPeNDAP/dodsC URL. <code>{field}</code> placeholders are filled from the record.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_variable">Variable<span class="req">*</span></label>
+            <input class="form-control" type="text" id="id_variable" name="variable"
+                   value="{{ variable }}" placeholder="e.g. streamflow">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_x_dim">Time dim</label>
+            <input class="form-control" type="text" id="id_x_dim" name="x_dim"
+                   value="{{ x_dim|default:'time' }}" placeholder="time">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_nc_unit">Unit</label>
+            <input class="form-control" type="text" id="id_nc_unit" name="nc_unit"
+                   value="{{ nc_unit }}" placeholder="optional">
+          </div>
+        </div>
+        <div class="frappe-help">Click <strong>Test</strong> below to list the dataset's variables. The variable is averaged over its non-time dimensions to make one series + a latest value.</div>
+      </div>
+
+      {# ---- REST URL + method ---- #}
+      <div class="hd-kind-rest">
         <div class="frappe-form-group">
-          <label class="frappe-label" for="id_result_kind">Result Kind</label>
-          <select class="form-select" id="id_result_kind" name="result_kind">
-            <option value="value"  {% if result_kind == 'value' %}selected{% endif %}>Value (single latest)</option>
-            <option value="series" {% if result_kind == 'series' %}selected{% endif %}>Series (x/y arrays)</option>
-            <option value="json"   {% if result_kind == 'json' %}selected{% endif %}>JSON (raw / scoped)</option>
-          </select>
+          <label class="frappe-label" for="id_url_template">URL Template<span class="req">*</span></label>
+          <input class="form-control" type="text" id="id_url_template" name="url_template"
+                 value="{{ url_template }}"
+                 placeholder="https://api.example.com/v1/sites/{site_id}/latest">
+          <div class="frappe-help">
+            Use <code>{field}</code> placeholders &mdash; filled from the record's
+            attributes at fetch time (a missing field becomes empty). Values are URL-encoded.
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_method">Method</label>
+            <select class="form-select" id="id_method" name="method">
+              <option value="GET"  {% if method == 'GET' %}selected{% endif %}>GET</option>
+              <option value="POST" {% if method == 'POST' %}selected{% endif %}>POST</option>
+            </select>
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_result_kind">Result Kind</label>
+            <select class="form-select" id="id_result_kind" name="result_kind">
+              <option value="value"  {% if result_kind == 'value' %}selected{% endif %}>Value (single latest)</option>
+              <option value="series" {% if result_kind == 'series' %}selected{% endif %}>Series (x/y arrays)</option>
+              <option value="json"   {% if result_kind == 'json' %}selected{% endif %}>JSON (raw / scoped)</option>
+            </select>
+          </div>
         </div>
       </div>
     </div>
 
+    <div class="hd-kind-rest">
     <div class="frappe-form-section">
       <div class="frappe-section-head">Headers &amp; Query <span class="frappe-muted frappe-text-sm">(JSON, values may use {field})</span></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -362,8 +415,10 @@
       </div>
     </div>
 
+    </div>{# /hd-kind-rest #}
+
     <div class="frappe-form-section">
-      <div class="frappe-section-head">Caching <span class="frappe-muted frappe-text-sm">(outputs are defined above; a series collapses an array to time &amp; value)</span></div>
+      <div class="frappe-section-head">Caching <span class="frappe-muted frappe-text-sm">(REST: outputs above; NetCDF: series synthesized from the variable)</span></div>
       {# Legacy single-value fallback path; outputs are now defined in the editor above (kept hidden for old connectors). #}
       <input type="hidden" id="id_output_path" name="output_path" value="{{ output_path }}">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -448,6 +503,21 @@
     });
     return v;
   }
+
+  // ---- Kind toggle: REST vs NetCDF/THREDDS sections. ----
+  (function () {
+    var kindSel = document.getElementById('id_kind');
+    function applyKind() {
+      var k = kindSel ? kindSel.value : 'rest';
+      var isNc = (k === 'netcdf' || k === 'thredds');
+      document.querySelectorAll('.hd-kind-rest').forEach(function (e) { e.style.display = isNc ? 'none' : ''; });
+      document.querySelectorAll('.hd-kind-netcdf').forEach(function (e) { e.style.display = isNc ? '' : 'none'; });
+      document.querySelectorAll('.hd-thredds-only').forEach(function (e) { e.style.display = (k === 'thredds') ? '' : 'none'; });
+      document.querySelectorAll('.hd-netcdf-only').forEach(function (e) { e.style.display = (k === 'netcdf') ? '' : 'none'; });
+    }
+    if (kindSel) kindSel.addEventListener('change', applyKind);
+    applyKind();
+  })();
 
   // ---- Inputs editor: add/remove rows + (re)build from a list. ----
   var inputsBox = document.getElementById('hd-inputs');
@@ -661,6 +731,15 @@
       try { cfg = JSON.parse(btn.getAttribute('data-config')); } catch (e) { return; }
       rebuildInputs(cfg.inputs || []);
       rebuildOutputs(cfg.outputs || []);
+      setVal('id_kind', cfg.kind || 'rest');
+      setVal('id_dataset_url', cfg.dataset_url);
+      setVal('id_variable', cfg.variable);
+      setVal('id_x_dim', cfg.x_dim);
+      setVal('id_nc_unit', cfg.unit);
+      setVal('id_catalog_url', cfg.catalog_url);
+      setVal('id_dataset', cfg.dataset);
+      var kindSel = document.getElementById('id_kind');
+      if (kindSel) kindSel.dispatchEvent(new Event('change'));   // toggle sections
       setVal('id_url_template', cfg.url_template);
       setVal('id_method', cfg.method);
       setVal('id_result_kind', cfg.result_kind);
@@ -686,9 +765,17 @@
     if (!raw) return fallback;
     try { return JSON.parse(raw); } catch (e) { return fallback; }
   }
+  function val(id) { var el = document.getElementById(id); return el ? el.value : ''; }
   function currentConfig() {
     return {
       name: document.getElementById('id_name').value,
+      kind: val('id_kind') || 'rest',
+      dataset_url: val('id_dataset_url'),
+      variable: val('id_variable'),
+      x_dim: val('id_x_dim') || 'time',
+      unit: val('id_nc_unit'),
+      catalog_url: val('id_catalog_url'),
+      dataset: val('id_dataset'),
       url_template: document.getElementById('id_url_template').value,
       method: document.getElementById('id_method').value,
       inputs: currentInputs(),
