@@ -1,0 +1,25 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% block title %}No access - {{ block.super }}{% endblock %}
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">No access</h1>
+      <span class="indicator-pill red">403</span>
+    </div>
+  </div>
+  <div class="frappe-form-card" style="max-width:560px;">
+    <div class="frappe-form-section">
+      <p style="margin:0;">
+        <i class="bi bi-lock"></i>
+        You don't have permission to <strong>{{ action }}</strong>
+        <strong>{{ display_name }}</strong> records. Ask an administrator to add you
+        to a role that allows it.
+      </p>
+    </div>
+    <div class="frappe-form-actions">
+      <a class="btn btn-default" href="{{ home_url }}">Back to Home</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

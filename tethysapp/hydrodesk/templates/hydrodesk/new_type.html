@@ -200,6 +200,29 @@
       </button>
     </div>
 
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Permissions <span class="frappe-muted frappe-text-sm">(by role)</span></div>
+      {% if perm_groups %}
+        <div class="frappe-help" style="margin-bottom:8px;">
+          Tick which roles may <strong>view</strong> or <strong>edit</strong>
+          (create / edit / delete) records of this type. Leave a column empty to
+          allow <em>everyone</em>. Admins (superuser/staff) always have access.
+        </div>
+        <div style="display:grid;grid-template-columns:2fr 0.6fr 0.6fr;gap:8px;font-size:11px;font-weight:600;color:var(--fr-text-muted,#8d99a6);text-transform:uppercase;margin-bottom:4px;">
+          <div>Role</div><div>View</div><div>Edit</div>
+        </div>
+        {% for g in perm_groups %}
+        <div style="display:grid;grid-template-columns:2fr 0.6fr 0.6fr;gap:8px;align-items:center;padding:3px 0;border-top:1px solid var(--fr-border-color,#ebeef0);">
+          <div>{{ g.name }}</div>
+          <div><input type="checkbox" name="perm_read" value="{{ g.name }}"{% if g.read %} checked{% endif %}></div>
+          <div><input type="checkbox" name="perm_write" value="{{ g.name }}"{% if g.write %} checked{% endif %}></div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="frappe-help">No roles (groups) exist in this portal yet, so records are open to all signed-in users. Create groups in the Tethys admin to restrict access.</div>
+      {% endif %}
+    </div>
+
     <div class="frappe-form-actions">
       {% if mode == "edit" %}
         <a class="btn btn-link" style="color:var(--red-600,#e24c4c);margin-right:auto;"

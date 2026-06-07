@@ -1367,6 +1367,9 @@ def hydrotype_list(request, slug="monitoring_station"):
             display_name = type_row[0] or slug
             field_schema = type_row[1] or {}
 
+        if not _user_can(request, field_schema, "read"):
+            return _denied(request, "view", display_name)
+
         columns = _derive_columns(field_schema)
 
         # 2) Load every record of this type; build a flat row per record.
@@ -1446,6 +1449,38 @@ def _load_hydrotype(session, slug):
     if row is None:
         return None
     return (row[0] or slug, row[1] or {}, row[2])
+
+
+def _user_can(request, field_schema, action):
+    """True if the request's user may perform ``action`` ('read' | 'write') on
+    records of a type. Superusers/staff always may; an EMPTY allow-list for an
+    action means everyone (any logged-in user); otherwise the user must belong to
+    one of the allowed groups (roles). Permissions live in
+    ``field_schema['x-permissions'] = {'read': [...groups], 'write': [...groups]}``.
+    Write covers create/edit/delete."""
+    user = getattr(request, "user", None)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if user.is_superuser or user.is_staff:
+        return True
+    allowed = ((field_schema or {}).get("x-permissions") or {}).get(action) or []
+    if not allowed:
+        return True
+    try:
+        groups = set(user.groups.values_list("name", flat=True))
+    except Exception:
+        groups = set()
+    return bool(groups & set(allowed))
+
+
+def _denied(request, action, display_name):
+    """Render the 'no permission' page (HTTP 403) for a record action on a type."""
+    from django.http import HttpResponseForbidden
+    html = render(request, "hydrodesk/denied.html", {
+        "action": action, "display_name": display_name,
+        "home_url": reverse("hydrodesk:home"),
+    }).content
+    return HttpResponseForbidden(html)
 
 
 def _label_for(target_field_schema, attrs):
@@ -1910,6 +1945,8 @@ def hydrotype_new(request, slug="monitoring_station"):
         display_name, field_schema, geometry_kind = meta
         type_found = True
 
+    if not _user_can(request, field_schema, "write"):
+        return _denied(request, "create", display_name)
     geometry_kind = _resolve_geometry_kind(field_schema, geometry_kind)
     parent = _parent_ctx(request)
 
@@ -1985,6 +2022,8 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
     else:
         display_name, field_schema, geometry_kind = meta
         type_found = True
+    if not _user_can(request, field_schema, "write"):
+        return _denied(request, "edit", display_name)
     geometry_kind = _resolve_geometry_kind(field_schema, geometry_kind)
     detail_url = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
     list_url = reverse("hydrodesk:list", kwargs={"slug": slug})
@@ -2054,6 +2093,9 @@ def hydrotype_delete(request, slug="monitoring_station", record_id=None):
     if request.method == "POST":
         engine = App.get_persistent_store_database("hydro_db")
         with Session(engine) as session:
+            meta = _load_hydrotype(session, slug)
+            if meta is not None and not _user_can(request, meta[1], "write"):
+                return _denied(request, "delete", meta[0])
             rec = session.execute(
                 select(m.HydroRecord)
                 .where(m.HydroRecord.hydrotype_slug == slug)
@@ -2607,6 +2649,9 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         if meta is not None:
             display_name, field_schema, _ = meta
 
+        if not _user_can(request, field_schema, "read"):
+            return _denied(request, "view", display_name)
+
         row = session.execute(
             select(
                 m.HydroRecord.attributes,
@@ -2996,8 +3041,22 @@ def _parse_builder_rows(post):
     return rows, submitted_count
 
 
+def _builder_perm_groups(perms):
+    """Every portal role (Django Group) with its current read/write selection, for
+    the builder's Permissions section. Empty list if there are no groups."""
+    try:
+        from django.contrib.auth.models import Group
+        names = list(Group.objects.values_list("name", flat=True).order_by("name"))
+    except Exception:
+        names = []
+    perms = perms or {}
+    read_set = set(perms.get("read") or [])
+    write_set = set(perms.get("write") or [])
+    return [{"name": g, "read": g in read_set, "write": g in write_set} for g in names]
+
+
 def _builder_context(form_errors, type_name, geometry, rows, row_count,
-                     mode="new", slug=None, title_field=""):
+                     mode="new", slug=None, title_field="", perms=None):
     """Build the template context. row_indexes drives the fixed rows; rows holds
     re-fill values keyed by index (template loops row_indexes and reads rows[i]).
     ``mode`` ('new'|'edit') + ``slug`` drive the form action, title, and submit
@@ -3024,6 +3083,7 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         "page_title": ("Edit HydroType" if is_edit else "New HydroType"),
         "submit_label": ("Save changes" if is_edit else "Create type"),
         "title_field": title_field or "",
+        "perm_groups": _builder_perm_groups(perms),
         "row_indexes": list(range(row_count)),
         # Pad rows so every rendered index has a dict to read on re-fill.
         "rows": rows + [{"label": "", "type": "text", "options": "",
@@ -3270,6 +3330,18 @@ def _assemble_type_spec(post, force_slug=None):
         title_field = _slugify_underscore(post.get("title_field") or "")
         if title_field in properties and not (properties[title_field] or {}).get("x-layout"):
             field_schema["x-title-field"] = title_field
+        # Role permissions: read/write group allow-lists. Stored only when non-empty
+        # (an absent action = open to every logged-in user; superuser/staff bypass).
+        getlist = getattr(post, "getlist", None)
+        read_g = [g.strip() for g in (getlist("perm_read") if getlist else []) if g.strip()]
+        write_g = [g.strip() for g in (getlist("perm_write") if getlist else []) if g.strip()]
+        if read_g or write_g:
+            perms = {}
+            if read_g:
+                perms["read"] = read_g
+            if write_g:
+                perms["write"] = write_g
+            field_schema["x-permissions"] = perms
         spec = {
             "slug": slug,
             "display_name": type_name,
@@ -3312,7 +3384,9 @@ def new_hydrotype(request):
 
     context = _builder_context(form_errors, type_name, geometry, rows, row_count,
                                mode="new",
-                               title_field=request.POST.get("title_field", ""))
+                               title_field=request.POST.get("title_field", ""),
+                               perms={"read": request.POST.getlist("perm_read"),
+                                      "write": request.POST.getlist("perm_write")})
     return render(request, "hydrodesk/new_type.html", context)
 
 
@@ -3351,7 +3425,9 @@ def edit_hydrotype(request, slug="monitoring_station"):
                 return redirect(reverse("hydrodesk:list", kwargs={"slug": slug}))
         context = _builder_context(form_errors, type_name, geometry, rows, row_count,
                                    mode="edit", slug=slug,
-                                   title_field=request.POST.get("title_field", ""))
+                                   title_field=request.POST.get("title_field", ""),
+                                   perms={"read": request.POST.getlist("perm_read"),
+                                          "write": request.POST.getlist("perm_write")})
         return render(request, "hydrodesk/new_type.html", context)
 
     # GET: reverse the stored schema back into editable builder rows.
@@ -3360,7 +3436,8 @@ def edit_hydrotype(request, slug="monitoring_station"):
     geometry = geometry_kind or "none"
     context = _builder_context([], display_name, geometry, rows, row_count,
                                mode="edit", slug=slug,
-                               title_field=(field_schema or {}).get("x-title-field", ""))
+                               title_field=(field_schema or {}).get("x-title-field", ""),
+                               perms=(field_schema or {}).get("x-permissions"))
     return render(request, "hydrodesk/new_type.html", context)
 
 
