@@ -1,0 +1,281 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Generic Frappe-Desk auto FORM VIEW for creating a HydroRecord of ANY
+  HydroType. Context (controllers.hydrotype_new): slug, display_name,
+  type_found, widgets:[{name,label,widget,required,help,value,options,step,
+  checked,is_geom}], form_errors, list_url. POSTs to the 'new' URL; {% csrf_token %}
+  stays INSIDE the <form>. Rendered as a Frappe form card with sections + small
+  muted labels above filled controls. Zero CDN.
+{% endcomment %}
+{% load static %}
+
+{% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span><a href="{{ list_url }}">{{ display_name }}</a>
+    <span class="sep">/</span>{{ mode|capfirst }}
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">{{ page_title }}</h1>
+      <span class="indicator-pill {{ indicator_class }}">{{ indicator_label }}</span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{{ cancel_url }}">
+        <i class="bi bi-arrow-left"></i> {% if mode == "edit" %}Cancel{% else %}Back to list{% endif %}
+      </a>
+    </div>
+  </div>
+
+  <div class="frappe-breadcrumb" style="margin:-10px 0 16px;">Hydrotype: <code>{{ slug }}</code></div>
+
+  {% if not type_found %}
+    <div class="alert alert-warning" role="alert">
+      No HydroType named <code>{{ slug }}</code> was found in the store. You can
+      still record a point geometry below.
+    </div>
+  {% endif %}
+
+  {% if form_errors %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Please fix the following:</strong>
+      <ul class="mb-0 mt-1">
+        {% for err in form_errors %}<li>{{ err }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ form_action }}" class="frappe-form-card" novalidate>
+    {% csrf_token %}
+    {% if parent_id %}
+      {# Linked child: carry the parent context so the new record links back to it. #}
+      <input type="hidden" name="parent_slug" value="{{ parent_slug }}">
+      <input type="hidden" name="parent_id" value="{{ parent_id }}">
+      <input type="hidden" name="parent_field" value="{{ parent_field }}">
+    {% endif %}
+
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Details</div>
+
+      {% for w in widgets %}
+        {% if w.widget == "section" %}
+          {# Section Break: close the current section and open a new titled one. #}
+          </div><div class="frappe-form-section">
+          {% if w.label %}<div class="frappe-section-head">{{ w.label }}</div>{% endif %}
+        {% else %}
+        {% if w.is_geom %}{% ifchanged %}
+          </div><div class="frappe-form-section">
+          <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">(point geometry)</span></div>
+        {% endifchanged %}{% endif %}
+
+        <div class="frappe-form-group">
+          {% if w.widget == "checkbox" %}
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="id_{{ w.name }}"
+                     name="{{ w.name }}" value="true"{% if w.checked %} checked{% endif %}>
+              <label class="form-check-label" for="id_{{ w.name }}">{{ w.label }}</label>
+            </div>
+          {% else %}
+            <label class="frappe-label" for="id_{{ w.name }}">
+              {{ w.label }}{% if w.required %}<span class="req">*</span>{% endif %}
+            </label>
+
+            {% if w.widget == "select" %}
+              <select class="form-select" id="id_{{ w.name }}" name="{{ w.name }}"
+                      {% if w.required %}required{% endif %}>
+                <option value=""{% if not w.value %} selected{% endif %}>&mdash; choose &mdash;</option>
+                {% for opt in w.options %}
+                  <option value="{{ opt }}"{% if opt|stringformat:"s" == w.value|stringformat:"s" %} selected{% endif %}>{{ opt }}</option>
+                {% endfor %}
+              </select>
+            {% elif w.widget == "link-select" %}
+              {# Foreign key: options are (uuid, label) pairs; value = record uuid. #}
+              <select class="form-select" id="id_{{ w.name }}" name="{{ w.name }}"
+                      {% if w.required %}required{% endif %}>
+                <option value=""{% if not w.value %} selected{% endif %}>&mdash; choose &mdash;</option>
+                {% for opt in w.options %}
+                  <option value="{{ opt.0 }}"{% if opt.0|stringformat:"s" == w.value|stringformat:"s" %} selected{% endif %}>{{ opt.1 }}</option>
+                {% endfor %}
+              </select>
+            {% elif w.widget == "textarea" %}
+              <textarea class="form-control" id="id_{{ w.name }}" name="{{ w.name }}"
+                        rows="4"{% if w.required %} required{% endif %}>{{ w.value }}</textarea>
+            {% elif w.widget == "number" %}
+              <input class="form-control" type="number" step="{{ w.step }}"
+                     id="id_{{ w.name }}" name="{{ w.name }}"
+                     value="{{ w.value }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "date" %}
+              <input class="form-control" type="date"
+                     id="id_{{ w.name }}" name="{{ w.name }}"
+                     value="{{ w.value }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "email" %}
+              <input class="form-control" type="email"
+                     id="id_{{ w.name }}" name="{{ w.name }}"
+                     value="{{ w.value }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "url" %}
+              <input class="form-control" type="url"
+                     id="id_{{ w.name }}" name="{{ w.name }}"
+                     value="{{ w.value }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "api" %}
+              {# API field: READ-ONLY. It stores no input — the live value is
+                 fetched from the connector when the record is VIEWED (detail). #}
+              <div class="frappe-muted frappe-text-sm"
+                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+                <i class="bi bi-cloud-arrow-down"></i>
+                Live value &mdash; fetched from connector
+                <code>{{ w.connector }}</code> when viewed. This field stores no input.
+                {% if w.map %}
+                  <div style="margin-top:4px;">
+                    Inputs fed by:
+                    {% for inp, mp in w.map.items %}
+                      <code>{{ inp }}</code>&larr;<code>{% if mp.field %}{{ mp.field }}{% else %}{{ mp.value }}{% endif %}</code>{% if not forloop.last %}, {% endif %}
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              </div>
+            {% elif w.widget == "linked-table" %}
+              {# Linked table: rows are real records of another type, added/managed
+                 from the saved record's detail page (the parent id must exist). #}
+              <div class="frappe-muted frappe-text-sm"
+                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+                <i class="bi bi-link-45deg"></i>
+                Linked <code>{{ w.child_type }}</code> records &mdash; save this
+                record first, then add &amp; manage them from its page.
+              </div>
+            {% elif w.widget == "table" %}
+              {# Child grid: an editable table. Columns + existing rows are handed to
+                 the JS as JSON; the whole grid serializes into ONE hidden input
+                 (name == field) that _coerce_attributes parses back into rows. #}
+              <div class="hd-tablefield" data-field="{{ w.name }}"
+                   data-columns="{{ w.columns_json }}" data-rows="{{ w.rows_json }}">
+                <table class="hd-series-table hd-tablefield-grid"><thead></thead><tbody></tbody></table>
+                <button type="button" class="btn btn-link btn-sm hd-tablefield-add" style="padding-left:0;">
+                  <i class="bi bi-plus-lg"></i> Add row
+                </button>
+                <input type="hidden" name="{{ w.name }}" class="hd-tablefield-json" value="{{ w.rows_json }}">
+              </div>
+            {% else %}
+              <input class="form-control" type="text"
+                     id="id_{{ w.name }}" name="{{ w.name }}"
+                     value="{{ w.value }}"{% if w.required %} required{% endif %}>
+            {% endif %}
+          {% endif %}
+
+          {% if w.help %}<div class="frappe-help">{{ w.help }}</div>{% endif %}
+        </div>
+        {% endif %}{# /section-vs-field #}
+      {% endfor %}
+    </div>
+
+    <div class="frappe-form-actions">
+      <a class="btn btn-default" href="{{ cancel_url }}">Cancel</a>
+      <button type="submit" class="btn btn-primary">
+        <i class="bi bi-check-lg"></i> Save
+      </button>
+    </div>
+  </form>
+
+</div>
+
+<script>
+// Editable child-grid (Table field). Renders the header + rows from the JSON the
+// server embedded, lets the user add/remove rows, and keeps a single hidden input
+// (name == field) in sync with the grid as ONE JSON array the server parses back.
+(function () {
+  function cellInput(col, value) {
+    var kind = col.input || 'text';
+    if (kind === 'checkbox') {
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = (value === true || value === 'true' || value === 'on');
+      return cb;
+    }
+    if (kind === 'select') {
+      var sel = document.createElement('select');
+      var blank = document.createElement('option'); blank.value = ''; blank.textContent = '—';
+      sel.appendChild(blank);
+      (col.options || []).forEach(function (o) {
+        var op = document.createElement('option'); op.value = o; op.textContent = o;
+        if (String(o) === String(value)) op.selected = true;
+        sel.appendChild(op);
+      });
+      return sel;
+    }
+    var inp = document.createElement('input');
+    inp.type = (kind === 'number') ? 'number' : (kind === 'date' ? 'date' : 'text');
+    if (kind === 'number') inp.step = 'any';
+    inp.value = (value == null) ? '' : value;
+    return inp;
+  }
+
+  function initTable(box) {
+    var cols, rows;
+    try { cols = JSON.parse(box.getAttribute('data-columns') || '[]'); } catch (e) { cols = []; }
+    try { rows = JSON.parse(box.getAttribute('data-rows') || '[]'); } catch (e) { rows = []; }
+    if (!Array.isArray(cols) || !cols.length) return;     // misconfigured table -> leave inert
+    var table = box.querySelector('.hd-tablefield-grid');
+    var thead = table.querySelector('thead');
+    var tbody = table.querySelector('tbody');
+    var hidden = box.querySelector('.hd-tablefield-json');
+    var addBtn = box.querySelector('.hd-tablefield-add');
+
+    // header
+    var htr = document.createElement('tr');
+    cols.forEach(function (c) {
+      var th = document.createElement('th'); th.textContent = c.label || c.key; htr.appendChild(th);
+    });
+    var thx = document.createElement('th'); thx.className = 'hd-tcell-del'; htr.appendChild(thx);
+    thead.appendChild(htr);
+
+    function sync() {
+      var out = [];
+      tbody.querySelectorAll('tr').forEach(function (tr) {
+        var obj = {}, any = false;
+        cols.forEach(function (c) {
+          var el = tr.querySelector('[data-col="' + c.key + '"]');
+          if (!el) return;
+          var v = (el.type === 'checkbox') ? el.checked : el.value;
+          obj[c.key] = v;
+          if (v !== '' && v !== false && v != null) any = true;
+        });
+        if (any) out.push(obj);
+      });
+      hidden.value = JSON.stringify(out);
+    }
+
+    function addRow(data) {
+      data = data || {};
+      var tr = document.createElement('tr');
+      cols.forEach(function (c) {
+        var td = document.createElement('td');
+        if (c.input === 'checkbox') td.className = 'hd-tcell-check';
+        var el = cellInput(c, data[c.key]);
+        el.setAttribute('data-col', c.key);
+        el.addEventListener('input', sync);
+        el.addEventListener('change', sync);
+        td.appendChild(el); tr.appendChild(td);
+      });
+      var tdDel = document.createElement('td'); tdDel.className = 'hd-tcell-del';
+      var del = document.createElement('button');
+      del.type = 'button'; del.className = 'hd-tablefield-del'; del.innerHTML = '&times;';
+      del.title = 'Remove row';
+      del.addEventListener('click', function () { tr.remove(); sync(); });
+      tdDel.appendChild(del); tr.appendChild(tdDel);
+      tbody.appendChild(tr);
+    }
+
+    (rows.length ? rows : [{}]).forEach(addRow);   // start with one blank row if empty
+    if (addBtn) addBtn.addEventListener('click', function () { addRow({}); sync(); });
+    var form = box.closest('form');
+    if (form) form.addEventListener('submit', sync);   // final safety sync
+    sync();
+  }
+
+  document.querySelectorAll('.hd-tablefield').forEach(initTable);
+})();
+</script>
+{% endblock %}

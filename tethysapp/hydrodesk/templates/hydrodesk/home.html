@@ -1,0 +1,73 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Frappe-Desk WORKSPACE home. Each HydroType (DocType) renders as a Frappe
+  shortcut-card; a prominent dashed "+ New HydroType" tile leads the grid.
+  Context (controllers.desk_home): types:[{slug, display_name, geometry_kind,
+  count}], total.
+{% endcomment %}
+{% load static %}
+
+{% block title %}Home - {{ block.super }}{% endblock %}
+
+{# mark Home active in the shared sidebar #}
+{% block nav_active_home %} active{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+
+  <div class="frappe-breadcrumb">HydroDesk</div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <div>
+        <h1 class="frappe-title">HydroDesk</h1>
+        <div class="frappe-sub-heading">{{ total }} record type{{ total|pluralize }} &middot;
+          a Frappe-style metadata engine for hydrology</div>
+      </div>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-primary" href="{% url 'hydrodesk:new_type' %}">
+        <i class="bi bi-plus-lg"></i> New HydroType
+      </a>
+    </div>
+  </div>
+
+  <div class="frappe-widget-group">
+    <div class="frappe-widget-group-title">HydroTypes</div>
+    <div class="frappe-shortcut-grid">
+
+      <a class="frappe-shortcut-card create" href="{% url 'hydrodesk:new_type' %}">
+        <span class="plus">&#43;</span>
+        <span>New HydroType</span>
+      </a>
+
+      {% for t in types %}
+      <a class="frappe-shortcut-card" href="{% url 'hydrodesk:list' slug=t.slug %}">
+        <div class="frappe-shortcut-top">
+          <span class="frappe-shortcut-label">{{ t.display_name }}</span>
+          <span class="indicator-pill blue">{{ t.count }}</span>
+        </div>
+        <div class="frappe-shortcut-meta frappe-shortcut-slug">
+          <code>{{ t.slug }}</code>
+          {% if t.geometry_kind %}<span class="frappe-geo-tag">{{ t.geometry_kind }}</span>{% endif %}
+        </div>
+        <div class="frappe-shortcut-actions">
+          <span class="btn btn-default btn-sm">Open list</span>
+          <span class="btn btn-link btn-sm" onclick="event.preventDefault();event.stopPropagation();window.location='{% url 'hydrodesk:new' slug=t.slug %}';">+ Record</span>
+          <span class="btn btn-link btn-sm" title="Edit this type's fields" onclick="event.preventDefault();event.stopPropagation();window.location='{% url 'hydrodesk:edit_type' slug=t.slug %}';"><i class="bi bi-pencil"></i> Edit type</span>
+        </div>
+      </a>
+      {% empty %}
+      <div class="frappe-shortcut-card" style="cursor:default;grid-column:1 / -1;">
+        <div class="frappe-muted">
+          No record types yet.
+          <a href="{% url 'hydrodesk:new_type' %}">Create your first HydroType</a>.
+        </div>
+      </div>
+      {% endfor %}
+
+    </div>
+  </div>
+
+</div>
+{% endblock %}

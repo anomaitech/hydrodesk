@@ -1,0 +1,70 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Delete-HydroType confirmation. controllers.delete_hydrotype renders this on GET
+  (showing the record count + dependent types); the POST form deletes the type and
+  all its records, then redirects Home. Context: slug, display_name, record_count,
+  dependents:[{slug,display_name,field,kind}], form_action, cancel_url, home_url.
+{% endcomment %}
+
+{% block title %}Delete {{ display_name }} - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+
+  <div class="frappe-breadcrumb">
+    <a href="{{ home_url }}">HydroDesk</a>
+    <span class="sep">/</span>Delete {{ display_name }}
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Delete {{ display_name }}?</h1>
+      <span class="indicator-pill red">Destructive</span>
+    </div>
+  </div>
+
+  <div class="frappe-form-card" style="max-width:720px;">
+    <div class="frappe-form-section">
+      <div class="alert alert-danger" role="alert" style="margin-bottom:16px;">
+        <strong>This permanently deletes the type and cannot be undone.</strong>
+      </div>
+
+      <p>You are about to delete the HydroType
+        <strong>{{ display_name }}</strong> (<code>{{ slug }}</code>), which will also
+        delete
+        {% if record_count %}
+          its <strong>{{ record_count }}</strong> record{{ record_count|pluralize }}.
+        {% else %}
+          all of its records (it currently has none).
+        {% endif %}
+      </p>
+
+      {% if dependents %}
+      <div class="alert alert-warning" role="alert" style="margin-top:8px;">
+        <strong>Heads up:</strong> {{ dependents|length }} other
+        type{{ dependents|length|pluralize }} reference{{ dependents|length|pluralize:"s," }}
+        this one. Those references will dangle (they degrade gracefully, showing
+        &ldquo;not found&rdquo;):
+        <ul class="mb-0 mt-1">
+          {% for d in dependents %}
+            <li><strong>{{ d.display_name }}</strong> &middot; {{ d.kind }} field
+              <code>{{ d.field }}</code></li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="frappe-form-actions">
+      <a class="btn btn-default" href="{{ cancel_url }}">Cancel</a>
+      <form method="post" action="{{ form_action }}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">
+          <i class="bi bi-trash"></i> Delete permanently
+        </button>
+      </form>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

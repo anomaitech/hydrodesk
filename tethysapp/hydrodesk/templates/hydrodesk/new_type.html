@@ -1,0 +1,1101 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  DocType Builder — "+ New HydroType". Define a reusable record type's fields in
+  a Frappe-style form. On submit, controllers.new_hydrotype assembles a
+  JSON-Schema field_schema + spec and INSERTs ONE hydrotype row via
+  registry.import_hydrotype, then redirects to the new type's List view. No DDL.
+
+  Context (controllers.new_hydrotype): form_errors, type_name, geometry,
+  row_indexes, rows:[{label,type,options,required}].
+  Inputs are named field_label_<i>/field_type_<i>/field_required_<i>/
+  field_options_<i> (loop uses forloop.counter0). {% csrf_token %} stays INSIDE
+  the <form>. Plain server-rendered, JS-optional.
+{% endcomment %}
+{% load static %}
+
+{% block title %}New HydroType - {{ block.super }}{% endblock %}
+
+{# mark "+ New HydroType" active in the shared sidebar #}
+{% block nav_active_newtype %} active{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span>New HydroType
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">{{ page_title|default:"New HydroType" }}</h1>
+      {% if mode == "edit" %}
+        <span class="indicator-pill blue">Editing</span>
+      {% else %}
+        <span class="indicator-pill orange">Draft</span>
+      {% endif %}
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:home' %}">
+        <i class="bi bi-arrow-left"></i> Back to Home
+      </a>
+    </div>
+  </div>
+
+  <p class="frappe-muted frappe-text-sm" style="margin:-10px 0 18px;">
+    Define a reusable record type. Fields become a JSON-Schema stored on one row &mdash;
+    no database migration. The new type gets its own List, Form, and Detail views instantly.
+  </p>
+
+  {% if form_errors %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Please fix the following:</strong>
+      <ul class="mb-0 mt-1">
+        {% for err in form_errors %}<li>{{ err }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ form_action }}" class="frappe-form-card" novalidate>
+    {% csrf_token %}
+
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Type</div>
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_type_name">Type Name<span class="req">*</span></label>
+        <input class="form-control" type="text" id="id_type_name" name="type_name"
+               value="{{ type_name|default:'' }}" placeholder="e.g. River Gauge" required>
+        {% if mode == "edit" %}
+          <div class="frappe-help">Slug <code>{{ edit_slug }}</code> is fixed (existing records reference it). Renaming a <em>field label</em> changes that field's key.</div>
+        {% else %}
+          <div class="frappe-help">Slug is derived automatically (e.g. <code>river_gauge</code>).</div>
+        {% endif %}
+      </div>
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_geometry">Geometry</label>
+        <select class="form-select" id="id_geometry" name="geometry">
+          <option value="none"    {% if geometry == 'none' %}selected{% endif %}>None</option>
+          <option value="point"   {% if geometry == 'point' %}selected{% endif %}>Point</option>
+          <option value="line"    {% if geometry == 'line' %}selected{% endif %}>Line</option>
+          <option value="polygon" {% if geometry == 'polygon' %}selected{% endif %}>Polygon</option>
+        </select>
+        <div class="frappe-help">Point types offer Longitude/Latitude inputs on the record form.</div>
+      </div>
+    </div>
+
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Fields</div>
+
+      <div class="frappe-rows-head">
+        <div>Label</div>
+        <div>Type</div>
+        <div>Required</div>
+        <div>Configuration</div>
+      </div>
+
+      <div id="hd-rows">
+        {% for r in rows %}
+        <div class="frappe-row-wrap" data-row-idx="{{ forloop.counter0 }}">
+          <div class="frappe-row">
+            <input class="form-control form-control-sm" type="text"
+                   name="field_label_{{ forloop.counter0 }}"
+                   value="{{ r.label|default:'' }}" placeholder="Field label">
+            <select class="form-select form-select-sm" name="field_type_{{ forloop.counter0 }}">
+              <option value="text"     {% if r.type == 'text' %}selected{% endif %}>Text</option>
+              <option value="number"   {% if r.type == 'number' %}selected{% endif %}>Number</option>
+              <option value="select"   {% if r.type == 'select' %}selected{% endif %}>Select</option>
+              <option value="checkbox" {% if r.type == 'checkbox' %}selected{% endif %}>Checkbox</option>
+              <option value="date"     {% if r.type == 'date' %}selected{% endif %}>Date</option>
+              <option value="textarea" {% if r.type == 'textarea' %}selected{% endif %}>Long Text</option>
+              <option value="email"    {% if r.type == 'email' %}selected{% endif %}>Email</option>
+              <option value="url"      {% if r.type == 'url' %}selected{% endif %}>URL</option>
+              <option value="link"     {% if r.type == 'link' %}selected{% endif %}>Link</option>
+              <option value="api"      {% if r.type == 'api' %}selected{% endif %}>API</option>
+              <option value="table"    {% if r.type == 'table' %}selected{% endif %}>Table</option>
+              <option value="tags"     {% if r.type == 'tags' %}selected{% endif %}>Tags</option>
+              <option value="section"  {% if r.type == 'section' %}selected{% endif %}>&mdash; Section Break &mdash;</option>
+            </select>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox"
+                     name="field_required_{{ forloop.counter0 }}" value="true"
+                     {% if r.required %}checked{% endif %}>
+            </div>
+            <div class="hd-config-cell">
+              <input class="hd-options" type="hidden"
+                     name="field_options_{{ forloop.counter0 }}"
+                     value="{{ r.options|default:'' }}">
+              <button type="button" class="btn btn-default btn-sm hd-configure"
+                      title="Configure this field">
+                <i class="bi bi-gear"></i> Configure
+              </button>
+              <span class="hd-config-summary frappe-text-sm"></span>
+            </div>
+          </div>
+          <div class="hd-map-panel" style="display:none;">
+            {% if r.field_map %}
+            <script type="application/json" class="hd-map-seed">{{ r.field_map_json|default:'{}'|safe }}</script>
+            {% endif %}
+            {% if r.api_outputs %}
+            <script type="application/json" class="hd-out-seed">{{ r.api_outputs_json|default:'[]'|safe }}</script>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <template id="hd-row-tpl">
+        <div class="frappe-row-wrap" data-row-idx="IDX">
+          <div class="frappe-row">
+            <input class="form-control form-control-sm" type="text" name="field_label_IDX" placeholder="Field label">
+            <select class="form-select form-select-sm" name="field_type_IDX">
+              <option value="text">Text</option>
+              <option value="number">Number</option>
+              <option value="select">Select</option>
+              <option value="checkbox">Checkbox</option>
+              <option value="date">Date</option>
+              <option value="textarea">Long Text</option>
+              <option value="email">Email</option>
+              <option value="url">URL</option>
+              <option value="link">Link</option>
+              <option value="api">API</option>
+              <option value="table">Table</option>
+              <option value="tags">Tags</option>
+              <option value="section">&mdash; Section Break &mdash;</option>
+            </select>
+            <div class="form-check"><input class="form-check-input" type="checkbox" name="field_required_IDX" value="true"></div>
+            <div class="hd-config-cell">
+              <input class="hd-options" type="hidden" name="field_options_IDX">
+              <button type="button" class="btn btn-default btn-sm hd-configure"
+                      title="Configure this field">
+                <i class="bi bi-gear"></i> Configure
+              </button>
+              <span class="hd-config-summary frappe-text-sm"></span>
+            </div>
+          </div>
+          <div class="hd-map-panel" style="display:none;"></div>
+        </div>
+      </template>
+      <button type="button" id="hd-add-row" class="btn btn-link btn-sm" style="display:none;margin-top:8px;padding-left:0;">
+        <i class="bi bi-plus-lg"></i> Add field
+      </button>
+    </div>
+
+    <div class="frappe-form-actions">
+      {% if mode == "edit" %}
+        <a class="btn btn-link" style="color:var(--red-600,#e24c4c);margin-right:auto;"
+           href="{% url 'hydrodesk:delete_type' slug=edit_slug %}">
+          <i class="bi bi-trash"></i> Delete type
+        </a>
+      {% endif %}
+      <a class="btn btn-default" href="{% url 'hydrodesk:home' %}">Cancel</a>
+      <button type="submit" class="btn btn-primary">
+        <i class="bi bi-check-lg"></i> {{ submit_label|default:"Create type" }}
+      </button>
+    </div>
+  </form>
+
+  <div id="hd-cfg-backdrop" class="hd-cfg-backdrop" hidden></div>
+  <div id="hd-cfg-modal" class="hd-cfg-modal" role="dialog" aria-modal="true"
+       aria-labelledby="hd-cfg-title" hidden>
+    <div class="hd-cfg-dialog frappe-card">
+      <div class="hd-cfg-head">
+        <div>
+          <div class="hd-cfg-eyebrow frappe-text-sm">Configure field</div>
+          <h2 id="hd-cfg-title" class="hd-cfg-title">Field</h2>
+        </div>
+        <button type="button" class="hd-cfg-close" id="hd-cfg-x" aria-label="Close">&times;</button>
+      </div>
+      <div class="hd-cfg-body" id="hd-cfg-body">
+        <!-- swapped per type -->
+      </div>
+      <div class="hd-cfg-foot">
+        <button type="button" class="btn btn-default" id="hd-cfg-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="hd-cfg-apply">
+          <i class="bi bi-check-lg"></i> Apply
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<style>
+  /* ---- Configure cell (the 4th builder column) ---- */
+  #inner-app-content .hd-config-cell {
+    display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap;
+  }
+  #inner-app-content .hd-config-cell .hd-configure { flex:0 0 auto; }
+  #inner-app-content .hd-config-summary {
+    color:var(--fr-text-muted); white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; min-width:0;
+  }
+  #inner-app-content .hd-config-summary code {
+    background:var(--gray-100); color:var(--gray-700);
+    padding:1px 6px; border-radius:var(--fr-radius-sm); font-size:var(--fr-text-xs);
+  }
+  #inner-app-content .hd-config-summary.muted { color:var(--gray-400); font-style:italic; }
+
+  /* per-row compact mapping summary under the API row */
+  #inner-app-content .hd-map-panel { margin:2px 0 8px 0; }
+
+  /* ---- Modal shell ---- */
+  .hd-cfg-backdrop {
+    position:fixed; inset:0; background:rgba(31,39,46,0.45); z-index:1050;
+  }
+  .hd-cfg-modal {
+    position:fixed; inset:0; z-index:1060;
+    display:flex; align-items:flex-start; justify-content:center;
+    padding:64px 16px 16px; overflow:auto;
+  }
+  .hd-cfg-modal[hidden], .hd-cfg-backdrop[hidden] { display:none; }
+  .hd-cfg-dialog {
+    width:100%; max-width:520px; background:var(--fr-fg-color);
+    border-radius:var(--fr-radius-lg); box-shadow:0 10px 40px rgba(0,0,0,0.25);
+    overflow:hidden; display:flex; flex-direction:column;
+  }
+  .hd-cfg-head {
+    display:flex; align-items:flex-start; justify-content:space-between;
+    gap:12px; padding:16px 20px 12px; border-bottom:1px solid var(--fr-border-color);
+  }
+  .hd-cfg-eyebrow {
+    color:var(--fr-text-muted); text-transform:uppercase;
+    letter-spacing:.04em; font-weight:600;
+  }
+  .hd-cfg-title {
+    margin:2px 0 0; font-size:var(--fr-text-lg); font-weight:600;
+    color:var(--fr-heading-color);
+  }
+  .hd-cfg-close {
+    background:transparent; border:none; font-size:22px; line-height:1;
+    color:var(--gray-500); cursor:pointer; padding:0 4px;
+  }
+  .hd-cfg-close:hover { color:var(--fr-text-color); }
+  .hd-cfg-body { padding:16px 20px; max-height:60vh; overflow:auto; }
+  .hd-cfg-foot {
+    display:flex; gap:8px; justify-content:flex-end; align-items:center;
+    padding:12px 20px; background:var(--gray-50);
+    border-top:1px solid var(--fr-border-color);
+  }
+
+  /* ---- Modal body sub-UIs ---- */
+  .hd-empty-state {
+    text-align:center; padding:24px 8px; color:var(--fr-text-muted);
+    font-size:var(--fr-text-md);
+  }
+  .hd-empty-state .ico { display:block; font-size:1.6rem; margin-bottom:8px; color:var(--gray-400); }
+
+  .hd-opt-list { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+  .hd-opt-row { display:flex; align-items:center; gap:8px; }
+  .hd-opt-row .form-control { flex:1 1 auto; }
+  .hd-opt-del {
+    flex:0 0 auto; background:transparent; border:none; cursor:pointer;
+    color:var(--gray-500); font-size:16px; padding:0 4px; line-height:1;
+  }
+  .hd-opt-del:hover { color:var(--red-600); }
+
+  /* Table child-column editor: label | type | options | remove */
+  .hd-tcol-head, .hd-tcol-row {
+    display:grid; grid-template-columns:1.4fr 0.9fr 1.2fr 24px;
+    gap:8px; align-items:center;
+  }
+  .hd-tcol-head {
+    font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
+    color:var(--fr-text-muted,#8d99a6); margin-bottom:4px;
+  }
+  .hd-tcol-list { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+
+  .hd-map-list { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+  .hd-map-item { display:flex; align-items:center; gap:10px; }
+  .hd-map-item .lbl {
+    flex:0 0 160px; max-width:160px; color:var(--fr-text-muted);
+    font-size:var(--fr-text-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .hd-map-item .form-select { flex:1 1 auto; }
+  .hd-cfg-note {
+    margin-top:10px; font-size:var(--fr-text-sm); color:var(--gray-500);
+  }
+  .hd-cfg-note a { color:var(--fr-primary); }
+  .hd-cfg-warn { color:var(--red-600); }
+</style>
+
+<script>
+  // Pure-vanilla, optional. If this never runs, the fixed rows still POST fine
+  // (each row keeps a plain visible Options text box until JS hides it).
+  (function () {
+    var btn = document.getElementById('hd-add-row');
+    var tpl = document.getElementById('hd-row-tpl');
+    var box = document.getElementById('hd-rows');
+    if (!btn || !tpl || !box) return;
+    btn.style.display = '';  // reveal the button only when JS is alive
+
+    // --- endpoint bases (template-injected). ---
+    // Connector inputs: '__NAME__' swapped for the chosen connector name.
+    var INPUTS_URL      = '{{ connector_inputs_url }}';
+    var TYPES_URL       = '{{ types_json_url }}';
+    var CONNECTORS_URL  = '{{ connectors_json_url }}';
+    var CONNECTORS_PAGE = '{{ connectors_url }}';
+    var NEW_TYPE_PAGE   = '{{ new_type_url }}';
+
+    // Types/connectors lists are fetched lazily once and cached for the session.
+    var typesCache = null, connectorsCache = null;
+    function loadTypes() {
+      if (typesCache) return Promise.resolve(typesCache);
+      return fetch(TYPES_URL).then(function (r) { return r.json(); })
+        .then(function (d) { typesCache = (d && d.types) || []; return typesCache; })
+        .catch(function () { typesCache = []; return typesCache; });
+    }
+    function loadConnectors() {
+      if (connectorsCache) return Promise.resolve(connectorsCache);
+      return fetch(CONNECTORS_URL).then(function (r) { return r.json(); })
+        .then(function (d) { connectorsCache = (d && d.connectors) || []; return connectorsCache; })
+        .catch(function () { connectorsCache = []; return connectorsCache; });
+    }
+
+    // Slugify (matches the server's _slugify_underscore for label -> field key).
+    function slugify(s) {
+      return (s || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_|_$/g, '');
+    }
+    // The OTHER builder rows' (slug, label) — for the API x-api-map field picker.
+    // Excludes the row itself and any API rows (an API field can't feed another).
+    // Read LIVE from the DOM at open time (not a cached snapshot).
+    function currentFieldChoices(exceptIdx) {
+      var out = [];
+      box.querySelectorAll('.frappe-row-wrap').forEach(function (wrap) {
+        var idx = wrap.getAttribute('data-row-idx');
+        if (idx === String(exceptIdx)) return;
+        var lbl = wrap.querySelector('[name^="field_label_"]');
+        var typ = wrap.querySelector('[name^="field_type_"]');
+        if (!lbl || !lbl.value.trim()) return;
+        if (typ && typ.value === 'api') return;
+        out.push({ slug: slugify(lbl.value), label: lbl.value.trim() });
+      });
+      return out;
+    }
+
+    // Per-row helpers -------------------------------------------------------
+    function rowParts(wrap) {
+      return {
+        idx: wrap.getAttribute('data-row-idx'),
+        label: wrap.querySelector('[name^="field_label_"]'),
+        type: wrap.querySelector('[name^="field_type_"]'),
+        opt: wrap.querySelector('.hd-options'),     // hidden carrier field_options_<i>
+        cfg: wrap.querySelector('.hd-configure'),
+        summary: wrap.querySelector('.hd-config-summary'),
+        panel: wrap.querySelector('.hd-map-panel'),
+      };
+    }
+    // Read the row's seeded x-api-map: prefer live field_map_<i>_* selects in the
+    // panel, else the .hd-map-seed JSON the server dropped after a validation error.
+    function rowMapSeed(wrap) {
+      var p = rowParts(wrap), seed = {};
+      var seedNode = p.panel && p.panel.querySelector('.hd-map-seed');
+      if (seedNode) { try { Object.assign(seed, JSON.parse(seedNode.textContent || '{}')); } catch (e) {} }
+      p.panel && p.panel.querySelectorAll('select[name^="field_map_"]').forEach(function (s) {
+        var nm = s.name.replace('field_map_' + p.idx + '_', '');
+        if (s.value) seed[nm] = s.value;
+      });
+      return seed;
+    }
+    // Replace ALL hidden field_map_<i>_* inputs in the row's panel with a fresh set.
+    function writeRowMap(wrap, mapping) {
+      var p = rowParts(wrap);
+      if (!p.panel) return;
+      p.panel.querySelectorAll('input[name^="field_map_"]').forEach(function (n) { n.remove(); });
+      Object.keys(mapping).forEach(function (inputName) {
+        var v = mapping[inputName];
+        if (v == null || v === '') return;
+        var hid = document.createElement('input');
+        hid.type = 'hidden';
+        hid.name = 'field_map_' + p.idx + '_' + inputName;
+        hid.value = v;
+        p.panel.appendChild(hid);
+      });
+    }
+    // Read the row's ticked OUTPUTS subset (x-api-outputs): prefer the live
+    // field_outputs_<i> hidden input, else the .hd-out-seed JSON the server dropped
+    // after a validation error. Returns a list of {output, label, field_type}.
+    function rowOutputsSeed(wrap) {
+      var p = rowParts(wrap);
+      if (!p.panel) return [];
+      var live = p.panel.querySelector('input[name="field_outputs_' + p.idx + '"]');
+      if (live && live.value) {
+        try { var arr = JSON.parse(live.value); if (Array.isArray(arr)) return arr; } catch (e) {}
+      }
+      var seedNode = p.panel.querySelector('.hd-out-seed');
+      if (seedNode) {
+        try { var s = JSON.parse(seedNode.textContent || '[]'); if (Array.isArray(s)) return s; } catch (e) {}
+      }
+      return [];
+    }
+    // Replace the single hidden field_outputs_<i> JSON blob for the row (a series
+    // output is ONE entry; never two). ``outputs`` is [{output,label,field_type}].
+    function writeRowOutputs(wrap, outputs) {
+      var p = rowParts(wrap);
+      if (!p.panel) return;
+      p.panel.querySelectorAll('input[name="field_outputs_' + p.idx + '"]').forEach(function (n) { n.remove(); });
+      var hid = document.createElement('input');
+      hid.type = 'hidden';
+      hid.name = 'field_outputs_' + p.idx;
+      hid.value = JSON.stringify(outputs || []);
+      p.panel.appendChild(hid);
+    }
+
+    // Compact per-row read-only summary chip + the mapping-panel note.
+    function refreshSummary(wrap) {
+      var p = rowParts(wrap);
+      if (!p.summary) return;
+      var typ = p.type ? p.type.value : 'text';
+      var val = (p.opt && p.opt.value || '').trim();
+      var html = '', muted = false;
+      if (typ === 'select') {
+        var n = val.split(',').map(function (s) { return s.trim(); }).filter(Boolean).length;
+        if (n) html = n + (n === 1 ? ' option' : ' options');
+        else { html = 'no options yet'; muted = true; }
+      } else if (typ === 'link') {
+        if (val) html = '&rarr; <code>' + escapeHtml(val) + '</code>';
+        else { html = 'no target'; muted = true; }
+      } else if (typ === 'api') {
+        if (val) {
+          var mapped = (p.panel ? p.panel.querySelectorAll('input[name^="field_map_"]').length : 0);
+          var nOut = rowOutputsSeed(wrap).length;
+          html = 'connector: <code>' + escapeHtml(val) + '</code>'
+               + (mapped ? ' &middot; ' + mapped + ' mapped' : '')
+               + (nOut ? ' &middot; ' + nOut + (nOut === 1 ? ' output' : ' outputs') : '');
+        } else { html = 'no connector'; muted = true; }
+      } else if (typ === 'table') {
+        var tparsed = null;
+        try { tparsed = JSON.parse(val || 'null'); } catch (e) { tparsed = null; }
+        if (tparsed && !Array.isArray(tparsed) && tparsed.child_type) {
+          html = '&rarr; records of <code>' + escapeHtml(tparsed.child_type) + '</code>';
+        } else {
+          var tcols = Array.isArray(tparsed) ? tparsed : [];
+          var nc = tcols.filter(function (c) { return c && (c.label || '').trim(); }).length;
+          if (nc) html = nc + (nc === 1 ? ' column' : ' columns') + ': '
+            + tcols.map(function (c) { return '<code>' + escapeHtml(c.label) + '</code>'; }).join(' ');
+          else { html = 'no columns yet'; muted = true; }
+        }
+      } else {
+        html = ''; // nothing to configure
+      }
+      p.summary.innerHTML = html;
+      p.summary.classList.toggle('muted', muted);
+    }
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    // Enable/disable the Configure button per type. text/number/checkbox/date/
+    // textarea/email/url/tags have nothing structural to configure -> disabled.
+    function typeNeedsConfig(t) {
+      return t === 'select' || t === 'link' || t === 'api' || t === 'table';
+    }
+    function refreshRow(wrap) {
+      var p = rowParts(wrap);
+      if (p.opt) p.opt.style.display = 'none';        // hide the raw Options box (JS alive)
+      if (p.cfg) {
+        p.cfg.style.display = '';
+        var t = p.type ? p.type.value : 'text';
+        p.cfg.disabled = !typeNeedsConfig(t);
+        p.cfg.title = typeNeedsConfig(t)
+          ? 'Configure this field'
+          : 'No extra configuration for this type';
+      }
+      // Keep the API mapping panel populated (hidden inputs only) so the summary
+      // count + a re-render survive; clear stale map + outputs when leaving API.
+      if (p.type && p.type.value !== 'api' && p.panel) {
+        p.panel.querySelectorAll('input[name^="field_map_"]').forEach(function (n) { n.remove(); });
+        p.panel.querySelectorAll('input[name^="field_outputs_"]').forEach(function (n) { n.remove(); });
+      }
+      refreshSummary(wrap);
+    }
+
+    function wireRow(wrap) {
+      var p = rowParts(wrap);
+      if (p.type) p.type.addEventListener('change', function () { refreshRow(wrap); });
+      if (p.cfg) p.cfg.addEventListener('click', function () { openModal(wrap); });
+      // Materialize any seeded x-api-map (from .hd-map-seed) AND x-api-outputs (from
+      // .hd-out-seed) into hidden inputs so they POST even if the user never reopens
+      // the modal after a validation error.
+      if (p.type && p.type.value === 'api' && p.panel) {
+        var seed = rowMapSeed(wrap);
+        if (Object.keys(seed).length && !p.panel.querySelector('input[name^="field_map_"]')) {
+          writeRowMap(wrap, seed);
+        }
+        var outSeed = rowOutputsSeed(wrap);
+        if (outSeed.length && !p.panel.querySelector('input[name="field_outputs_' + p.idx + '"]')) {
+          writeRowOutputs(wrap, outSeed);
+        }
+      }
+      refreshRow(wrap);
+    }
+
+    // =====================================================================
+    // SHARED MODAL
+    // =====================================================================
+    var backdrop = document.getElementById('hd-cfg-backdrop');
+    var modal    = document.getElementById('hd-cfg-modal');
+    var modalBody  = document.getElementById('hd-cfg-body');
+    var modalTitle = document.getElementById('hd-cfg-title');
+    var applyBtn = document.getElementById('hd-cfg-apply');
+    var activeWrap = null;     // the row being configured
+    var applyFn = null;        // type-specific write-back closure
+
+    function showModal() { backdrop.hidden = false; modal.hidden = false; }
+    function closeModal() {
+      backdrop.hidden = true; modal.hidden = true;
+      activeWrap = null; applyFn = null; modalBody.innerHTML = '';
+    }
+    document.getElementById('hd-cfg-x').addEventListener('click', closeModal);
+    document.getElementById('hd-cfg-cancel').addEventListener('click', closeModal);
+    backdrop.addEventListener('click', closeModal);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !modal.hidden) closeModal();
+    });
+    applyBtn.addEventListener('click', function () {
+      if (applyFn) applyFn();
+      if (activeWrap) { refreshRow(activeWrap); }
+      closeModal();
+    });
+
+    function openModal(wrap) {
+      var p = rowParts(wrap);
+      var t = p.type ? p.type.value : 'text';
+      activeWrap = wrap; applyFn = null;
+      modalTitle.textContent = (p.label && p.label.value.trim()) || 'Field';
+      modalBody.innerHTML = '';
+      applyBtn.style.display = '';
+      if (t === 'select')      buildSelectUI(wrap);
+      else if (t === 'link')   buildLinkUI(wrap);
+      else if (t === 'api')    buildApiUI(wrap);
+      else if (t === 'table')  buildTableUI(wrap);
+      else                     buildEmptyUI(t);
+      showModal();
+    }
+
+    // ---- SELECT: an options LIST editor -> comma list into field_options_<i> ----
+    function buildSelectUI(wrap) {
+      var p = rowParts(wrap);
+      var existing = (p.opt && p.opt.value || '').split(',')
+        .map(function (s) { return s.trim(); }).filter(Boolean);
+      if (!existing.length) existing = [''];
+
+      var note = document.createElement('div');
+      note.className = 'frappe-help';
+      note.textContent = 'These values become the dropdown choices for this field.';
+      var list = document.createElement('div');
+      list.className = 'hd-opt-list';
+
+      function addOptRow(value) {
+        var row = document.createElement('div');
+        row.className = 'hd-opt-row';
+        var inp = document.createElement('input');
+        inp.className = 'form-control form-control-sm hd-opt-val';
+        inp.type = 'text';
+        inp.placeholder = 'Option value';
+        inp.value = value || '';
+        var del = document.createElement('button');
+        del.type = 'button'; del.className = 'hd-opt-del'; del.innerHTML = '&times;';
+        del.title = 'Remove';
+        del.addEventListener('click', function () {
+          row.remove();
+          if (!list.querySelector('.hd-opt-row')) addOptRow('');
+        });
+        row.appendChild(inp); row.appendChild(del);
+        list.appendChild(row);
+        return inp;
+      }
+      existing.forEach(addOptRow);
+
+      var add = document.createElement('button');
+      add.type = 'button'; add.className = 'btn btn-link btn-sm';
+      add.style.paddingLeft = '0';
+      add.innerHTML = '<i class="bi bi-plus-lg"></i> Add option';
+      add.addEventListener('click', function () { addOptRow('').focus(); });
+
+      modalBody.appendChild(note);
+      modalBody.appendChild(list);
+      modalBody.appendChild(add);
+
+      applyFn = function () {
+        var vals = [];
+        list.querySelectorAll('.hd-opt-val').forEach(function (i) {
+          var v = i.value.trim();
+          if (v) vals.push(v);
+        });
+        if (p.opt) p.opt.value = vals.join(', ');   // comma list (server splits on ',')
+      };
+    }
+
+    // ---- TABLE: a child-COLUMN editor -> JSON [{label,type,options}] into
+    //      field_options_<i>. Each column is a {label, type, options} (options only
+    //      used when the column type is 'select'). The server's _schema_for('table')
+    //      turns this into the array/items child schema; the record form renders an
+    //      editable grid from it. ----
+    var TABLE_COL_TYPES = [
+      ['text', 'Text'], ['number', 'Number'], ['date', 'Date'],
+      ['checkbox', 'Check'], ['select', 'Select'], ['email', 'Email'], ['url', 'URL']
+    ];
+    function buildTableUI(wrap) {
+      var p = rowParts(wrap);
+      // Parse current carrier: a JSON LIST -> columns mode; {child_type} -> link mode.
+      var cur = null;
+      try { cur = JSON.parse((p.opt && p.opt.value) || 'null'); } catch (e) { cur = null; }
+      var isLink = cur && !Array.isArray(cur) && cur.child_type;
+      var existing = Array.isArray(cur) ? cur : [];
+      if (!existing.length) existing = [{ label: '', type: 'text', options: '' }];
+      var linkedSlug = isLink ? cur.child_type : '';
+      var mode = isLink ? 'link' : 'columns';
+
+      // ----- mode toggle -----
+      var modeWrap = document.createElement('div');
+      modeWrap.style.cssText = 'display:flex;gap:16px;margin-bottom:12px;';
+      modeWrap.innerHTML =
+        '<label class="hd-tbl-mode-lbl"><input type="radio" name="hd-tbl-mode" value="columns"> '
+        + '<strong>Define columns</strong> <span class="frappe-muted">(rows on this record)</span></label>'
+        + '<label class="hd-tbl-mode-lbl"><input type="radio" name="hd-tbl-mode" value="link"> '
+        + '<strong>Records of a type</strong> <span class="frappe-muted">(linked one-to-many)</span></label>';
+      var colPanel = document.createElement('div');
+      var linkPanel = document.createElement('div');
+      modalBody.appendChild(modeWrap);
+      modalBody.appendChild(colPanel);
+      modalBody.appendChild(linkPanel);
+
+      // ----- LINK panel: pick a child HydroType -----
+      var linkSel = document.createElement('select');
+      linkSel.className = 'form-select hd-tbl-link-select';
+      var linkNote = document.createElement('div');
+      linkNote.className = 'hd-cfg-note';
+      var linkLbl = document.createElement('label');
+      linkLbl.className = 'frappe-label'; linkLbl.textContent = 'Child HydroType';
+      linkPanel.appendChild(linkLbl); linkPanel.appendChild(linkSel); linkPanel.appendChild(linkNote);
+      linkNote.innerHTML = 'Each row becomes a real record of this type, with its own '
+        + 'detail page &amp; list/map. Manage them on the saved record’s page.';
+      (function () {
+        var blank = document.createElement('option');
+        blank.value = ''; blank.textContent = '— choose a type —'; linkSel.appendChild(blank);
+        loadTypes().then(function (types) {
+          (types || []).forEach(function (t) {
+            var o = document.createElement('option');
+            o.value = t.slug; o.textContent = t.display_name + ' (' + t.slug + ')';
+            linkSel.appendChild(o);
+          });
+          if (linkedSlug) {
+            var has = Array.prototype.some.call(linkSel.options, function (o) { return o.value === linkedSlug; });
+            if (!has) { var ex = document.createElement('option'); ex.value = linkedSlug; ex.textContent = linkedSlug; linkSel.appendChild(ex); }
+            linkSel.value = linkedSlug;
+          }
+          if (!types || !types.length) {
+            linkNote.innerHTML = 'No other HydroTypes yet. <a href="' + escapeHtml(NEW_TYPE_PAGE)
+              + '">Create the child type</a> first.';
+          }
+        });
+      })();
+
+      // ----- COLUMNS panel (the inline child-grid editor) -----
+      var note = document.createElement('div');
+      note.className = 'frappe-help';
+      note.style.marginBottom = '8px';
+      note.textContent = 'Define the columns of this child table. Each row of the '
+        + 'field will have these columns. Rows are stored on the record itself.';
+      var head = document.createElement('div');
+      head.className = 'hd-tcol-head';
+      head.innerHTML = '<span>Column label</span><span>Type</span><span>Options</span><span></span>';
+      var list = document.createElement('div');
+      list.className = 'hd-tcol-list';
+
+      function addColRow(col) {
+        col = col || { label: '', type: 'text', options: '' };
+        var row = document.createElement('div');
+        row.className = 'hd-tcol-row';
+        var lab = document.createElement('input');
+        lab.className = 'form-control form-control-sm hd-tcol-label';
+        lab.type = 'text'; lab.placeholder = 'e.g. Stage'; lab.value = col.label || '';
+        var typ = document.createElement('select');
+        typ.className = 'form-select form-select-sm hd-tcol-type';
+        TABLE_COL_TYPES.forEach(function (t) {
+          var o = document.createElement('option');
+          o.value = t[0]; o.textContent = t[1];
+          if (t[0] === (col.type || 'text')) o.selected = true;
+          typ.appendChild(o);
+        });
+        var opts = document.createElement('input');
+        opts.className = 'form-control form-control-sm hd-tcol-options';
+        opts.type = 'text'; opts.placeholder = 'a, b, c (Select only)';
+        opts.value = col.options || '';
+        function syncOpts() { opts.style.visibility = (typ.value === 'select') ? '' : 'hidden'; }
+        typ.addEventListener('change', syncOpts); syncOpts();
+        var del = document.createElement('button');
+        del.type = 'button'; del.className = 'hd-opt-del'; del.innerHTML = '&times;';
+        del.title = 'Remove column';
+        del.addEventListener('click', function () {
+          row.remove();
+          if (!list.querySelector('.hd-tcol-row')) addColRow(null);
+        });
+        row.appendChild(lab); row.appendChild(typ); row.appendChild(opts); row.appendChild(del);
+        list.appendChild(row);
+        return lab;
+      }
+      existing.forEach(addColRow);
+
+      var add = document.createElement('button');
+      add.type = 'button'; add.className = 'btn btn-link btn-sm';
+      add.style.paddingLeft = '0';
+      add.innerHTML = '<i class="bi bi-plus-lg"></i> Add column';
+      add.addEventListener('click', function () { addColRow(null).focus(); });
+
+      colPanel.appendChild(note);
+      colPanel.appendChild(head);
+      colPanel.appendChild(list);
+      colPanel.appendChild(add);
+
+      // ----- mode switching -----
+      function setMode(m) {
+        mode = m;
+        colPanel.style.display = (m === 'link') ? 'none' : '';
+        linkPanel.style.display = (m === 'link') ? '' : 'none';
+        modeWrap.querySelectorAll('input').forEach(function (r) { r.checked = (r.value === m); });
+      }
+      modeWrap.querySelectorAll('input').forEach(function (r) {
+        r.addEventListener('change', function () { if (r.checked) setMode(r.value); });
+      });
+      setMode(mode);
+
+      applyFn = function () {
+        if (mode === 'link') {
+          var slug = (linkSel.value || '').trim();
+          if (p.opt) p.opt.value = slug ? JSON.stringify({ child_type: slug }) : '';
+          return;
+        }
+        var cols = [];
+        list.querySelectorAll('.hd-tcol-row').forEach(function (r) {
+          var label = (r.querySelector('.hd-tcol-label').value || '').trim();
+          if (!label) return;
+          var type = r.querySelector('.hd-tcol-type').value || 'text';
+          var options = (r.querySelector('.hd-tcol-options').value || '').trim();
+          cols.push({ label: label, type: type, options: (type === 'select') ? options : '' });
+        });
+        if (p.opt) p.opt.value = JSON.stringify(cols);
+      };
+    }
+
+    // ---- LINK: target HydroType <select> -> slug into field_options_<i> ----
+    function buildLinkUI(wrap) {
+      var p = rowParts(wrap);
+      var current = (p.opt && p.opt.value || '').trim();
+      modalBody.innerHTML = '<div class="frappe-help" style="margin-bottom:8px;">Loading types…</div>';
+      loadTypes().then(function (types) {
+        modalBody.innerHTML = '';
+        var lbl = document.createElement('label');
+        lbl.className = 'frappe-label'; lbl.textContent = 'Target HydroType';
+        var sel = document.createElement('select');
+        sel.className = 'form-select';
+        var blank = document.createElement('option');
+        blank.value = ''; blank.textContent = '— choose a type —';
+        sel.appendChild(blank);
+        types.forEach(function (t) {
+          var o = document.createElement('option');
+          o.value = t.slug; o.textContent = t.display_name + ' (' + t.slug + ')';
+          sel.appendChild(o);
+        });
+        // Keep the current slug selectable even if not in the list (e.g. typed).
+        if (current) {
+          var has = Array.prototype.some.call(sel.options, function (o) { return o.value === current; });
+          if (!has) { var ex = document.createElement('option'); ex.value = current; ex.textContent = current; sel.appendChild(ex); }
+          sel.value = current;
+        }
+        modalBody.appendChild(lbl); modalBody.appendChild(sel);
+
+        var note = document.createElement('div');
+        note.className = 'hd-cfg-note';
+        note.innerHTML = types.length
+          ? 'The record form will show a picker of the target type’s records.'
+          : 'No HydroTypes yet. <a href="' + escapeHtml(NEW_TYPE_PAGE) + '">Create one</a> first, or type a slug below.';
+        modalBody.appendChild(note);
+
+        // Allow-typing fallback (empty store / advanced).
+        var typeIn = document.createElement('input');
+        typeIn.className = 'form-control form-control-sm';
+        typeIn.style.marginTop = '8px';
+        typeIn.placeholder = 'or type a target slug…';
+        typeIn.value = (current && sel.value !== current) ? current : '';
+        modalBody.appendChild(typeIn);
+
+        applyFn = function () {
+          var v = typeIn.value.trim() || sel.value;
+          if (p.opt) p.opt.value = (v || '').trim();
+        };
+      });
+    }
+
+    // ---- API: connector <select> + per-input field mapping (x-api-map) ----
+    function buildApiUI(wrap) {
+      var p = rowParts(wrap);
+      var currentConn = (p.opt && p.opt.value || '').trim();
+      var seed = rowMapSeed(wrap);
+
+      modalBody.innerHTML = '<div class="frappe-help" style="margin-bottom:8px;">Loading connectors…</div>';
+      loadConnectors().then(function (conns) {
+        modalBody.innerHTML = '';
+        var lbl = document.createElement('label');
+        lbl.className = 'frappe-label'; lbl.textContent = 'Connector';
+        var sel = document.createElement('select');
+        sel.className = 'form-select';
+        var blank = document.createElement('option');
+        blank.value = ''; blank.textContent = '— choose a connector —';
+        sel.appendChild(blank);
+        conns.forEach(function (c) {
+          var o = document.createElement('option');
+          o.value = c.name;
+          o.textContent = c.name + (c.result_kind ? ' (' + c.result_kind + ')' : '');
+          sel.appendChild(o);
+        });
+        if (currentConn) {
+          var has = Array.prototype.some.call(sel.options, function (o) { return o.value === currentConn; });
+          if (!has) { var ex = document.createElement('option'); ex.value = currentConn; ex.textContent = currentConn; sel.appendChild(ex); }
+          sel.value = currentConn;
+        }
+        modalBody.appendChild(lbl); modalBody.appendChild(sel);
+
+        if (!conns.length) {
+          var empty = document.createElement('div');
+          empty.className = 'hd-cfg-note';
+          empty.innerHTML = 'No connectors yet. <a href="' + escapeHtml(CONNECTORS_PAGE) + '">Create one</a> first.';
+          modalBody.appendChild(empty);
+        }
+
+        var mapBox = document.createElement('div');
+        mapBox.className = 'hd-map-list';
+        modalBody.appendChild(mapBox);
+
+        // The OUTPUT CHECKLIST box (rendered AFTER the input mapping). One checkbox
+        // per connector output; a SERIES output is ONE checkbox (never two), with a
+        // Label input + a Field Type <select>. Defaults come from the output's type.
+        var outBox = document.createElement('div');
+        outBox.className = 'hd-out-list';
+        outBox.style.marginTop = '10px';
+        modalBody.appendChild(outBox);
+
+        var seedOutputs = rowOutputsSeed(wrap);     // [{output,label,field_type}]
+        function seededFor(name) {
+          for (var i = 0; i < seedOutputs.length; i++) {
+            if (seedOutputs[i] && seedOutputs[i].output === name) return seedOutputs[i];
+          }
+          return null;
+        }
+
+        // Build per-input field dropdowns for the chosen connector.
+        // mapSelects: inputName -> <select> (for the apply closure).
+        var mapSelects = {};
+        // outRows: outputName -> {cb, labelInput, ftSelect, kind} (apply closure).
+        var outRows = {};
+
+        // The render-mode choices a ticked output offers, by kind: a SERIES output
+        // can ONLY be a Table (its variables become the columns) — the Field Type is
+        // locked. A VALUE output is a scalar, so it offers the normal field types.
+        var VALUE_FT = ['Number', 'Text', 'Date'];
+
+        function renderOutputs(outputs) {
+          outBox.innerHTML = ''; outRows = {};
+          outputs = outputs || [];
+          if (!outputs.length) return;
+          var head = document.createElement('div');
+          head.className = 'frappe-help';
+          head.style.margin = '8px 0 4px';
+          head.textContent = 'Choose which outputs to show on the record (a series is one checkbox):';
+          outBox.appendChild(head);
+          outputs.forEach(function (o) {
+            var name = (o.name || '').trim();
+            if (!name) return;
+            var saved = seededFor(name);
+            var isSeries = (o.kind === 'series');
+            var colHint = null;
+            var item = document.createElement('div');
+            item.className = 'hd-out-item';
+            item.style.cssText = 'display:flex;align-items:center;gap:8px;margin:4px 0;flex-wrap:wrap;';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'form-check-input';
+            cb.checked = !!saved || (!seedOutputs.length && !!o.primary);
+            var lab = document.createElement('span');
+            lab.style.cssText = 'min-width:90px;font-weight:600;';
+            lab.textContent = name + (o.unit ? ' (' + o.unit + ')' : '');
+            lab.title = name + ' · ' + (o.kind || 'value');
+            var labelIn = document.createElement('input');
+            labelIn.type = 'text';
+            labelIn.className = 'form-control form-control-sm';
+            labelIn.style.cssText = 'width:140px;';
+            labelIn.placeholder = 'Label';
+            labelIn.value = (saved && saved.label) || name;
+            var ft = document.createElement('select');
+            ft.className = 'form-select form-select-sm';
+            ft.style.cssText = 'width:auto;';
+            if (isSeries) {
+              // Series -> one Table; the value stays 'Time-Series' (what the render
+              // keys off) but it READS as "Table" and the type is locked.
+              var so = document.createElement('option');
+              so.value = 'Time-Series'; so.textContent = 'Table';
+              ft.appendChild(so);
+              ft.value = 'Time-Series';
+              ft.disabled = true;            // a series can only be a table
+              // Show the columns this series will produce, when the connector
+              // reported them, so the choice is clear (e.g. "dateTime, value, …").
+              var cols = (o.columns || (o.variables || []).map(function (v) { return v.name; }));
+              if (cols && cols.length) {
+                lab.title = name + ' · series columns: ' + cols.join(', ');
+                colHint = document.createElement('span');
+                colHint.className = 'frappe-help';
+                colHint.style.cssText = 'flex-basis:100%;margin-left:26px;';
+                colHint.textContent = 'table columns: ' + cols.join(', ');
+              }
+            } else {
+              VALUE_FT.forEach(function (t) {
+                var op = document.createElement('option');
+                op.value = t; op.textContent = t;
+                ft.appendChild(op);
+              });
+              ft.value = (saved && saved.field_type) || o.default_field_type || 'Text';
+              if (ft.value === 'Time-Series') ft.value = 'Text';   // never for a value
+            }
+            outRows[name] = { cb: cb, labelInput: labelIn, ftSelect: ft, kind: o.kind };
+            item.appendChild(cb); item.appendChild(lab);
+            item.appendChild(labelIn); item.appendChild(ft);
+            if (colHint) item.appendChild(colHint);   // wraps to its own line below
+            outBox.appendChild(item);
+          });
+        }
+
+        function renderInputs(connName) {
+          mapBox.innerHTML = ''; mapSelects = {};
+          outBox.innerHTML = ''; outRows = {};
+          connName = (connName || '').trim();
+          if (!connName) return;
+          var loading = document.createElement('div');
+          loading.className = 'frappe-help'; loading.textContent = 'Loading connector inputs…';
+          mapBox.appendChild(loading);
+          fetch(INPUTS_URL.replace('__NAME__', encodeURIComponent(connName)))
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              mapBox.innerHTML = '';
+              if (!d || !d.ok) {
+                var warn = document.createElement('div');
+                warn.className = 'hd-cfg-note hd-cfg-warn';
+                warn.textContent = 'Connector "' + connName + '" not found.';
+                mapBox.appendChild(warn);
+                return;
+              }
+              var inputs = d.inputs || [];
+              if (!inputs.length) {
+                var none = document.createElement('div');
+                none.className = 'hd-cfg-note';
+                none.textContent = 'This connector needs no field mapping.';
+                mapBox.appendChild(none);
+              } else {
+                var head = document.createElement('div');
+                head.className = 'frappe-help';
+                head.style.margin = '4px 0 2px';
+                head.textContent = 'Map each connector input to one of this type’s fields:';
+                mapBox.appendChild(head);
+                var choices = currentFieldChoices(p.idx);   // LIVE other-row fields
+                inputs.forEach(function (inp) {
+                  var item = document.createElement('div');
+                  item.className = 'hd-map-item';
+                  var lab = document.createElement('span');
+                  lab.className = 'lbl';
+                  lab.textContent = (inp.label || inp.name) + (inp.required ? ' *' : '');
+                  lab.title = lab.textContent;
+                  var ms = document.createElement('select');
+                  ms.className = 'form-select form-select-sm';
+                  var b = document.createElement('option');
+                  b.value = ''; b.textContent = '— choose field —';
+                  ms.appendChild(b);
+                  choices.forEach(function (c) {
+                    var o = document.createElement('option');
+                    o.value = c.slug; o.textContent = c.label;
+                    ms.appendChild(o);
+                  });
+                  // Re-seed (slug or __const__:..). Keep an unknown saved value.
+                  var saved = seed && seed[inp.name];
+                  if (saved != null && saved !== '') {
+                    var hasOpt = Array.prototype.some.call(ms.options, function (o) { return o.value === saved; });
+                    if (!hasOpt) { var ex2 = document.createElement('option'); ex2.value = saved; ex2.textContent = saved; ms.appendChild(ex2); }
+                    ms.value = saved;
+                  }
+                  mapSelects[inp.name] = ms;
+                  item.appendChild(lab); item.appendChild(ms);
+                  mapBox.appendChild(item);
+                });
+              }
+              // The OUTPUT CHECKLIST always renders (independent of field inputs).
+              renderOutputs(d.outputs || []);
+            })
+            .catch(function () {
+              mapBox.innerHTML = '<div class="hd-cfg-note hd-cfg-warn">Could not load connector inputs.</div>';
+            });
+        }
+        sel.addEventListener('change', function () { renderInputs(sel.value); });
+        if (currentConn) renderInputs(currentConn);
+
+        applyFn = function () {
+          var conn = sel.value.trim();
+          if (p.opt) p.opt.value = conn;          // connector name verbatim (NOT slugified)
+          var mapping = {};
+          Object.keys(mapSelects).forEach(function (inputName) {
+            var v = mapSelects[inputName].value;
+            if (v) mapping[inputName] = v;
+          });
+          writeRowMap(wrap, mapping);             // field_map_<i>_<input> hidden inputs
+          // Collect the ticked OUTPUTS subset into the single field_outputs_<i>
+          // JSON blob. A series output is ONE entry (its field_type is Time-Series).
+          var ticked = [];
+          Object.keys(outRows).forEach(function (oname) {
+            var r = outRows[oname];
+            if (!r.cb.checked) return;
+            var ft = r.ftSelect.value;
+            if (r.kind === 'series') ft = 'Time-Series';
+            ticked.push({ output: oname,
+              label: (r.labelInput.value || oname).trim() || oname,
+              field_type: ft });
+          });
+          writeRowOutputs(wrap, ticked);          // field_outputs_<i> hidden input
+        };
+      });
+    }
+
+    // ---- everything else: clean empty state. ----
+    function buildEmptyUI(t) {
+      applyBtn.style.display = 'none';            // nothing to apply
+      var labels = {
+        text: 'Text', number: 'Number', checkbox: 'Checkbox', date: 'Date',
+        textarea: 'Long Text', email: 'Email', url: 'URL', tags: 'Tags'
+      };
+      var div = document.createElement('div');
+      div.className = 'hd-empty-state';
+      div.innerHTML = '<span class="ico"><i class="bi bi-info-circle"></i></span>'
+        + 'No extra configuration for a <strong>' + escapeHtml(labels[t] || t) + '</strong> field.';
+      modalBody.appendChild(div);
+      applyFn = null;
+    }
+
+    // =====================================================================
+    // BOOT: wire existing rows + the Add-field clone loop.
+    // =====================================================================
+    box.querySelectorAll('.frappe-row-wrap').forEach(wireRow);
+
+    var next = box.querySelectorAll('.frappe-row-wrap').length;  // continue numbering
+    btn.addEventListener('click', function () {
+      var html = tpl.innerHTML.replace(/IDX/g, next);
+      var holder = document.createElement('div');
+      holder.innerHTML = html.trim();
+      var wrap = holder.firstChild;
+      box.appendChild(wrap);
+      wireRow(wrap);
+      next++;
+    });
+  })();
+</script>
+{% endblock %}

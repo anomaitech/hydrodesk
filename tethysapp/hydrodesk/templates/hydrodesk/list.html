@@ -1,0 +1,166 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Generic Frappe-Desk LIST VIEW for ANY HydroType, driven by metadata.
+  Context (controllers.hydrotype_list):
+    slug, display_name, type_found, columns:[str], rows:[{id, cells:[str]}],
+    record_count.
+  Frappe list: page-head with primary "+ New {{display_name}}" + a count pill,
+  then a list card with a header row and rows that each lead with a checkbox and
+  a bold link (first cell) to the detail view. Server-rendered, zero CDN.
+{% endcomment %}
+{% load static %}
+
+{% block title %}{{ display_name }} List - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span>{{ display_name }}
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">{{ display_name }}</h1>
+      <span class="indicator-pill gray">{{ record_count }} record{{ record_count|pluralize }}</span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:edit_type' slug=slug %}">
+        <i class="bi bi-pencil"></i> Edit type
+      </a>
+      <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:map' %}">
+        <i class="bi bi-geo-alt"></i> Map View
+      </a>
+      <a class="btn btn-primary btn-sm" href="{% url 'hydrodesk:new' slug=slug %}">
+        <i class="bi bi-plus-lg"></i> New {{ display_name }}
+      </a>
+    </div>
+  </div>
+
+  <div class="frappe-breadcrumb" style="margin:-10px 0 16px;">Hydrotype: <code>{{ slug }}</code></div>
+
+  {% if not type_found %}
+    <div class="alert alert-warning" role="alert">
+      No HydroType named <code>{{ slug }}</code> was found in the store. Showing
+      any records under this slug with no derived columns.
+    </div>
+  {% endif %}
+
+  {% if rows %}
+  <form id="hd-bulk-form" method="post"
+        action="{% url 'hydrodesk:records_bulk_delete' slug=slug %}">
+    {% csrf_token %}
+
+    <div id="hd-bulk-bar" class="hd-bulk-bar" hidden>
+      <span><strong id="hd-bulk-n">0</strong> selected</span>
+      <button type="button" id="hd-bulk-delete" class="btn btn-danger btn-sm">
+        <i class="bi bi-trash"></i> Delete
+      </button>
+      <button type="button" id="hd-bulk-clear" class="btn btn-link btn-sm">Clear selection</button>
+    </div>
+
+    <div class="frappe-list">
+      <div class="frappe-list-head">
+        <span class="frappe-list-check"><input type="checkbox" id="hd-select-all" aria-label="Select all rows"></span>
+        <span class="frappe-list-subject head">{% if columns %}{{ columns.0 }}{% else %}Record{% endif %}</span>
+        {% for col in columns %}
+          {% if not forloop.first %}<span class="frappe-list-col head">{{ col }}</span>{% endif %}
+        {% endfor %}
+        <span class="frappe-list-activity">&nbsp;</span>
+      </div>
+
+      {% for row in rows %}
+      <div class="frappe-list-row">
+        <span class="frappe-list-check"><input type="checkbox" class="hd-row-check" name="ids" value="{{ row.id }}" aria-label="Select row"></span>
+        <span class="frappe-list-subject">
+          <a href="{% url 'hydrodesk:detail' slug=slug record_id=row.id %}">
+            {% if row.cells.0 %}{{ row.cells.0 }}{% else %}Record {{ forloop.counter }}{% endif %}
+          </a>
+        </span>
+        {% for cell in row.cells %}
+          {% if not forloop.first %}<span class="frappe-list-col">{{ cell }}</span>{% endif %}
+        {% endfor %}
+        <span class="frappe-list-activity">
+          <a class="btn btn-link btn-sm" href="{% url 'hydrodesk:detail' slug=slug record_id=row.id %}">Open <i class="bi bi-chevron-right"></i></a>
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+  </form>
+  {% else %}
+  <div class="frappe-list">
+    <div class="frappe-list-empty">
+      <span class="ico"><i class="bi bi-inbox"></i></span>
+      No records yet for <strong>{{ display_name }}</strong>.
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<style>
+  .hd-bulk-bar {
+    display:flex; align-items:center; gap:12px;
+    padding:8px 14px; margin-bottom:10px;
+    background:var(--fr-bg-color,#f4f5f6);
+    border:1px solid var(--fr-border-color,#e2e8f0);
+    border-radius:var(--fr-radius,6px);
+    font-size:var(--fr-text-sm,12px);
+  }
+  .hd-bulk-bar .btn { margin:0; }
+  .frappe-list-row.hd-row-selected { background:var(--fr-bg-color,#f4f5f6); }
+</style>
+
+<script>
+// List-view row selection -> bulk delete (with confirm). The ticked rows POST as
+// repeated `ids`; a header checkbox does select-all/deselect-all (+ indeterminate).
+(function () {
+  var form = document.getElementById('hd-bulk-form');
+  if (!form) return;
+  var selectAll = document.getElementById('hd-select-all');
+  var bar = document.getElementById('hd-bulk-bar');
+  var nEl = document.getElementById('hd-bulk-n');
+  function rowChecks() {
+    return Array.prototype.slice.call(form.querySelectorAll('.hd-row-check'));
+  }
+  function update() {
+    var all = rowChecks();
+    var sel = all.filter(function (c) { return c.checked; });
+    nEl.textContent = sel.length;
+    bar.hidden = sel.length === 0;
+    all.forEach(function (c) {
+      var row = c.closest('.frappe-list-row');
+      if (row) row.classList.toggle('hd-row-selected', c.checked);
+    });
+    if (selectAll) {
+      selectAll.checked = all.length > 0 && sel.length === all.length;
+      selectAll.indeterminate = sel.length > 0 && sel.length < all.length;
+    }
+  }
+  if (selectAll) selectAll.addEventListener('change', function () {
+    rowChecks().forEach(function (c) { c.checked = selectAll.checked; });
+    update();
+  });
+  form.addEventListener('change', function (e) {
+    if (e.target && e.target.classList.contains('hd-row-check')) update();
+  });
+  var clearBtn = document.getElementById('hd-bulk-clear');
+  if (clearBtn) clearBtn.addEventListener('click', function () {
+    rowChecks().forEach(function (c) { c.checked = false; });
+    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+    update();
+  });
+  var delBtn = document.getElementById('hd-bulk-delete');
+  if (delBtn) delBtn.addEventListener('click', function () {
+    var n = rowChecks().filter(function (c) { return c.checked; }).length;
+    if (!n) return;
+    if (window.confirm('Delete ' + n + ' record' + (n === 1 ? '' : 's')
+        + '? This cannot be undone.')) {
+      form.submit();
+    }
+  });
+  update();
+})();
+</script>
+{% endblock %}

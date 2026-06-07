@@ -1,0 +1,860 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Connector Builder — create/edit a HydroConnector. Build a URL template (with
+  {placeholders}), method, headers/query (JSON), auth (scheme + named Credential +
+  placement + param), result_kind, and extraction paths. PRESET buttons prefill
+  verified configs (NWIS IV/DV, NWM, generic). A 'Test' button POSTs sample field
+  values to the connector_test JSON endpoint (CSRF via X-CSRFToken) and renders the
+  returned JSON as a CLICKABLE TREE — clicking a node fills output_path / x_path /
+  y_path. Context (controllers._connector_form_context): mode, form_action,
+  form_errors, name, url_template, method, headers, query, auth_*, result_kind,
+  output_path, x_path, y_path, ttl_seconds, timeout, credentials:[name],
+  presets:[{key,label,config(json)}], test_url, page_title.
+{% endcomment %}
+{% load static %}
+
+{% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
+
+{# mark "Connectors" active in the shared sidebar #}
+{% block nav_active_connectors %} active{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page frappe-page--form" style="max-width:1040px;">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span><a href="{% url 'hydrodesk:connectors' %}">Connectors</a>
+    <span class="sep">/</span>{{ page_title }}
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">{{ page_title }}</h1>
+      <span class="indicator-pill {% if mode == 'edit' %}blue{% else %}orange{% endif %}">
+        {% if mode == 'edit' %}Editing{% else %}Draft{% endif %}
+      </span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:connectors' %}">
+        <i class="bi bi-arrow-left"></i> Back to Connectors
+      </a>
+    </div>
+  </div>
+
+  {% if form_errors %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Please fix the following:</strong>
+      <ul class="mb-0 mt-1">
+        {% for err in form_errors %}<li>{{ err }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {# ---- Presets ---- #}
+  <div class="frappe-card" style="padding:14px 18px;margin-bottom:20px;">
+    <div class="frappe-section-head" style="margin-bottom:10px;">Presets</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;">
+      {% for p in presets %}
+      <button type="button" class="btn btn-default btn-sm hd-preset"
+              data-config="{{ p.config }}">{{ p.label }}</button>
+      {% endfor %}
+    </div>
+    <div class="frappe-help" style="margin-top:8px;">
+      Presets prefill the URL, paths, auth, and the <strong>Inputs</strong> table
+      (source-typed). USGS NWIS IV/DV map <code>sites</code>&larr;<code>nwis_site_id</code>;
+      NWPS stage/flow maps <code>identifier</code>&larr;<code>nws_lid</code>;
+      WQP maps <code>siteid</code>&larr;<code>wqp_site_id</code>.
+    </div>
+  </div>
+
+  <form method="post" action="{{ form_action }}" class="frappe-form-card" id="hd-connector-form" novalidate>
+    {% csrf_token %}
+
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Connector</div>
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_name">Name<span class="req">*</span></label>
+        <input class="form-control" type="text" id="id_name" name="name"
+               value="{{ name }}" placeholder="e.g. usgs_iv" required>
+        <div class="frappe-help">The exact name an API field's Options column references.</div>
+      </div>
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_url_template">URL Template<span class="req">*</span></label>
+        <input class="form-control" type="text" id="id_url_template" name="url_template"
+               value="{{ url_template }}"
+               placeholder="https://api.example.com/v1/sites/{site_id}/latest">
+        <div class="frappe-help">
+          Use <code>{field}</code> placeholders &mdash; filled from the record's
+          attributes at fetch time (a missing field becomes empty). Values are URL-encoded.
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_method">Method</label>
+          <select class="form-select" id="id_method" name="method">
+            <option value="GET"  {% if method == 'GET' %}selected{% endif %}>GET</option>
+            <option value="POST" {% if method == 'POST' %}selected{% endif %}>POST</option>
+          </select>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_result_kind">Result Kind</label>
+          <select class="form-select" id="id_result_kind" name="result_kind">
+            <option value="value"  {% if result_kind == 'value' %}selected{% endif %}>Value (single latest)</option>
+            <option value="series" {% if result_kind == 'series' %}selected{% endif %}>Series (x/y arrays)</option>
+            <option value="json"   {% if result_kind == 'json' %}selected{% endif %}>JSON (raw / scoped)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Headers &amp; Query <span class="frappe-muted frappe-text-sm">(JSON, values may use {field})</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_headers">Headers</label>
+          <textarea class="form-control" id="id_headers" name="headers" rows="4"
+                    placeholder="{}">{{ headers }}</textarea>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_query">Query</label>
+          <textarea class="form-control" id="id_query" name="query" rows="4"
+                    placeholder="{}">{{ query }}</textarea>
+        </div>
+      </div>
+    </div>
+
+    {# ---- Inputs editor (the sourced-inputs model) ---- #}
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Inputs
+        <span class="frappe-muted frappe-text-sm">
+          (each becomes a <code>{token}</code> filled at fetch time)</span>
+      </div>
+      <div class="frappe-help" style="margin-bottom:8px;">
+        Resolution per input: runtime override &rarr; mapped record field &rarr;
+        constant &rarr; default &rarr; empty. A required input that resolves empty
+        yields a soft-empty result (no fetch). Leave the table EMPTY to keep the
+        legacy implicit <code>{token}</code> scan (full back-compat).
+      </div>
+
+      <div class="hd-inputs-head" style="display:grid;
+            grid-template-columns:1.2fr 1.2fr 0.9fr 1fr 1fr 1fr 1fr 0.6fr 0.9fr 0.4fr;
+            gap:6px;font-size:11px;color:var(--fr-text-muted,#8d99a6);
+            font-weight:600;margin-bottom:4px;">
+        <div>Name (token)</div><div>Label</div><div>Type</div><div>Source</div>
+        <div>Field</div><div>Value</div><div>Default</div><div>Req</div>
+        <div>In</div><div></div>
+      </div>
+
+      <div id="hd-inputs">
+        {% for inp in inputs %}
+        <div class="hd-input-row" style="display:grid;
+              grid-template-columns:1.2fr 1.2fr 0.9fr 1fr 1fr 1fr 1fr 0.6fr 0.9fr 0.4fr;
+              gap:6px;margin-bottom:6px;align-items:center;">
+          <input class="form-control form-control-sm" type="text"
+                 name="input_name_{{ forloop.counter0 }}" value="{{ inp.name }}" placeholder="sites">
+          <input class="form-control form-control-sm" type="text"
+                 name="input_label_{{ forloop.counter0 }}" value="{{ inp.label }}" placeholder="Site Number">
+          <select class="form-select form-select-sm" name="input_type_{{ forloop.counter0 }}">
+            {% for t in input_types %}
+              <option value="{{ t }}" {% if inp.type == t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+          </select>
+          <select class="form-select form-select-sm" name="input_source_{{ forloop.counter0 }}">
+            {% for s in input_sources %}
+              <option value="{{ s }}" {% if inp.source == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <input class="form-control form-control-sm" type="text"
+                 name="input_field_{{ forloop.counter0 }}" value="{{ inp.field }}" placeholder="nwis_site_id">
+          <input class="form-control form-control-sm" type="text"
+                 name="input_value_{{ forloop.counter0 }}" value="{{ inp.value }}" placeholder="json">
+          <input class="form-control form-control-sm" type="text"
+                 name="input_default_{{ forloop.counter0 }}" value="{{ inp.default }}" placeholder="00060">
+          <div class="form-check" style="margin:0;">
+            <input class="form-check-input" type="checkbox"
+                   name="input_required_{{ forloop.counter0 }}" value="true"
+                   {% if inp.required %}checked{% endif %}>
+          </div>
+          <select class="form-select form-select-sm" name="input_in_{{ forloop.counter0 }}">
+            {% for p in input_placements %}
+              <option value="{{ p }}" {% if inp.in == p %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="btn btn-link btn-sm hd-input-del"
+                  style="padding:0;color:var(--red-500,#e24c4c);" title="Remove">&times;</button>
+        </div>
+        {% endfor %}
+      </div>
+
+      <template id="hd-input-tpl">
+        <div class="hd-input-row" style="display:grid;
+              grid-template-columns:1.2fr 1.2fr 0.9fr 1fr 1fr 1fr 1fr 0.6fr 0.9fr 0.4fr;
+              gap:6px;margin-bottom:6px;align-items:center;">
+          <input class="form-control form-control-sm" type="text" name="input_name_IDX" placeholder="sites">
+          <input class="form-control form-control-sm" type="text" name="input_label_IDX" placeholder="Site Number">
+          <select class="form-select form-select-sm" name="input_type_IDX">
+            <option value="string">string</option><option value="number">number</option>
+            <option value="date">date</option><option value="enum">enum</option>
+          </select>
+          <select class="form-select form-select-sm" name="input_source_IDX">
+            <option value="field">field</option><option value="constant">constant</option>
+            <option value="runtime">runtime</option><option value="default">default</option>
+          </select>
+          <input class="form-control form-control-sm" type="text" name="input_field_IDX" placeholder="nwis_site_id">
+          <input class="form-control form-control-sm" type="text" name="input_value_IDX" placeholder="json">
+          <input class="form-control form-control-sm" type="text" name="input_default_IDX" placeholder="00060">
+          <div class="form-check" style="margin:0;">
+            <input class="form-check-input" type="checkbox" name="input_required_IDX" value="true">
+          </div>
+          <select class="form-select form-select-sm" name="input_in_IDX">
+            <option value="url">url</option><option value="query">query</option>
+            <option value="header">header</option><option value="path">path</option>
+          </select>
+          <button type="button" class="btn btn-link btn-sm hd-input-del"
+                  style="padding:0;color:var(--red-500,#e24c4c);" title="Remove">&times;</button>
+        </div>
+      </template>
+      <button type="button" id="hd-add-input" class="btn btn-link btn-sm"
+              style="margin-top:4px;padding-left:0;">
+        <i class="bi bi-plus-lg"></i> Add input
+      </button>
+    </div>
+
+    {# ---- Outputs editor (the multi-output catalog) ---- #}
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Outputs
+        <span class="frappe-muted frappe-text-sm">
+          (each ticked on a DocType field becomes a value or an inline chart)</span>
+      </div>
+      <div class="frappe-help" style="margin-bottom:8px;">
+        A <strong>value</strong> output is a single scalar leaf (path with a fixed
+        index, e.g. <code>…value.-1.value</code> = latest). A <strong>series</strong>
+        output is an ARRAY collapsed to TWO variables &mdash; time and value &mdash;
+        via the <code>*</code> wildcard; an array of 20+ points is ONE series
+        output, never 20+ values. Run <strong>Test</strong> below and
+        <strong>click a node</strong> to add an output: a scalar leaf &rarr; a value,
+        an array <code>[n]</code> &rarr; a series (then click its time &amp; value
+        sub-keys). Mark exactly one <strong>primary</strong>.
+      </div>
+
+      <div class="hd-outputs-head" style="display:grid;
+            grid-template-columns:1.1fr 0.8fr 2.4fr 0.9fr 0.8fr 0.5fr 0.4fr;
+            gap:6px;font-size:11px;color:var(--fr-text-muted,#8d99a6);
+            font-weight:600;margin-bottom:4px;">
+        <div>Name</div><div>Kind</div><div>Source</div>
+        <div>Type</div><div>Unit</div><div>Primary</div><div></div>
+      </div>
+
+      <div id="hd-outputs">
+        {% for out in outputs %}
+        <div class="hd-output-row" style="display:grid;
+              grid-template-columns:1.1fr 0.8fr 2.4fr 0.9fr 0.8fr 0.5fr 0.4fr;
+              gap:6px;margin-bottom:6px;align-items:center;">
+          <input class="form-control form-control-sm" type="text"
+                 name="output_name_{{ forloop.counter0 }}" value="{{ out.name }}" placeholder="discharge">
+          <select class="form-select form-select-sm hd-out-kind" name="output_kind_{{ forloop.counter0 }}">
+            {% for k in output_kinds %}
+              <option value="{{ k }}" {% if out.kind == k %}selected{% endif %}>{{ k }}</option>
+            {% endfor %}
+          </select>
+          <div class="hd-out-source">
+            <input class="form-control form-control-sm hd-out-path" type="text"
+                   name="output_path_{{ forloop.counter0 }}" value="{{ out.path }}"
+                   placeholder="value.timeSeries.0.values.0.value.-1.value"
+                   {% if out.kind == 'series' %}style="display:none;"{% endif %}>
+            <input type="hidden" class="hd-out-arraypath"
+                   name="output_arraypath_{{ forloop.counter0 }}" value="{{ out.array_path }}">
+            <input type="hidden" class="hd-out-vars"
+                   name="output_vars_{{ forloop.counter0 }}" value="{{ out.vars_json }}">
+            <span class="hd-out-series-chip frappe-text-sm"
+                  style="color:var(--fr-text-muted,#8d99a6);{% if out.kind != 'series' %}display:none;{% endif %}"></span>
+          </div>
+          <select class="form-select form-select-sm hd-out-type" name="output_type_{{ forloop.counter0 }}">
+            {% for t in output_types %}
+              <option value="{{ t }}" {% if out.type == t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+          </select>
+          <input class="form-control form-control-sm" type="text"
+                 name="output_unit_{{ forloop.counter0 }}" value="{{ out.unit }}" placeholder="ft3/s">
+          <div class="form-check" style="margin:0;text-align:center;">
+            <input class="form-check-input hd-out-primary" type="radio"
+                   name="output_primary" value="{{ forloop.counter0 }}"
+                   {% if out.primary %}checked{% endif %}>
+          </div>
+          <button type="button" class="btn btn-link btn-sm hd-output-del"
+                  style="padding:0;color:var(--red-500,#e24c4c);" title="Remove">&times;</button>
+        </div>
+        {% endfor %}
+      </div>
+
+      <template id="hd-output-tpl">
+        <div class="hd-output-row" style="display:grid;
+              grid-template-columns:1.1fr 0.8fr 2.4fr 0.9fr 0.8fr 0.5fr 0.4fr;
+              gap:6px;margin-bottom:6px;align-items:center;">
+          <input class="form-control form-control-sm" type="text" name="output_name_IDX" placeholder="discharge">
+          <select class="form-select form-select-sm hd-out-kind" name="output_kind_IDX">
+            <option value="value">value</option><option value="series">series</option>
+          </select>
+          <div class="hd-out-source">
+            <input class="form-control form-control-sm hd-out-path" type="text" name="output_path_IDX"
+                   placeholder="value.timeSeries.0.values.0.value.-1.value">
+            <input type="hidden" class="hd-out-arraypath" name="output_arraypath_IDX">
+            <input type="hidden" class="hd-out-vars" name="output_vars_IDX">
+            <span class="hd-out-series-chip frappe-text-sm"
+                  style="color:var(--fr-text-muted,#8d99a6);display:none;"></span>
+          </div>
+          <select class="form-select form-select-sm hd-out-type" name="output_type_IDX">
+            <option value="string">string</option><option value="number">number</option>
+            <option value="date">date</option><option value="series">series</option>
+          </select>
+          <input class="form-control form-control-sm" type="text" name="output_unit_IDX" placeholder="ft3/s">
+          <div class="form-check" style="margin:0;text-align:center;">
+            <input class="form-check-input hd-out-primary" type="radio" name="output_primary" value="IDX">
+          </div>
+          <button type="button" class="btn btn-link btn-sm hd-output-del"
+                  style="padding:0;color:var(--red-500,#e24c4c);" title="Remove">&times;</button>
+        </div>
+      </template>
+      <button type="button" id="hd-add-output" class="btn btn-link btn-sm"
+              style="margin-top:4px;padding-left:0;">
+        <i class="bi bi-plus-lg"></i> Add output
+      </button>
+    </div>
+
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Authentication</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_auth_scheme">Scheme</label>
+          <select class="form-select" id="id_auth_scheme" name="auth_scheme">
+            <option value="none"    {% if auth_scheme == 'none' %}selected{% endif %}>None</option>
+            <option value="api_key" {% if auth_scheme == 'api_key' %}selected{% endif %}>API Key</option>
+            <option value="bearer"  {% if auth_scheme == 'bearer' %}selected{% endif %}>Bearer</option>
+            <option value="basic"   {% if auth_scheme == 'basic' %}selected{% endif %}>Basic</option>
+          </select>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_auth_credential">Credential</label>
+          <select class="form-select" id="id_auth_credential" name="auth_credential">
+            <option value="">&mdash; none &mdash;</option>
+            {% for c in credentials %}
+              <option value="{{ c }}" {% if c == auth_credential %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+          <div class="frappe-help">Secret is resolved by NAME at fetch time. Never stored here.</div>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_auth_placement">Placement</label>
+          <select class="form-select" id="id_auth_placement" name="auth_placement">
+            <option value="header" {% if auth_placement == 'header' %}selected{% endif %}>Header</option>
+            <option value="query"  {% if auth_placement == 'query' %}selected{% endif %}>Query</option>
+          </select>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_auth_param">Param</label>
+          <input class="form-control" type="text" id="id_auth_param" name="auth_param"
+                 value="{{ auth_param }}" placeholder="X-Api-Key or api_key">
+          <div class="frappe-help">For api_key: the header/query key the secret is placed under.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Caching <span class="frappe-muted frappe-text-sm">(outputs are defined above; a series collapses an array to time &amp; value)</span></div>
+      {# Legacy single-value fallback path; outputs are now defined in the editor above (kept hidden for old connectors). #}
+      <input type="hidden" id="id_output_path" name="output_path" value="{{ output_path }}">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_ttl_seconds">Cache TTL (seconds)</label>
+          <input class="form-control" type="number" step="1" id="id_ttl_seconds" name="ttl_seconds"
+                 value="{{ ttl_seconds }}">
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_timeout">Timeout (seconds)</label>
+          <input class="form-control" type="number" step="1" id="id_timeout" name="timeout"
+                 value="{{ timeout }}">
+        </div>
+      </div>
+    </div>
+
+    {# ---- Test panel ---- #}
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Test</div>
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_test_attrs">Sample field values (JSON)</label>
+        <textarea class="form-control" id="id_test_attrs" rows="3"
+                  placeholder='{"sites": "01646500", "parameterCd": "00060"}'>{}</textarea>
+        <div class="frappe-help">
+          When the Inputs table is used these key off <strong>input names</strong>
+          (e.g. <code>sites</code>) as a runtime override or the source field;
+          otherwise they fill the implicit <code>{placeholders}</code> directly.
+          The response is shown below as a clickable tree &mdash; click a node to
+          fill a path field.
+        </div>
+      </div>
+      <button type="button" id="hd-test-btn" class="btn btn-default">
+        <i class="bi bi-lightning-charge"></i> Test fetch
+      </button>
+      <span id="hd-test-status" class="frappe-muted frappe-text-sm" style="margin-left:10px;"></span>
+
+      <div id="hd-test-target" style="margin-top:10px;display:none;">
+        <div style="margin-bottom:6px;">
+          <span class="frappe-muted frappe-text-sm">
+            Click a <strong>scalar</strong> leaf (e.g. <code>…value.-1.value</code>)
+            &rarr; adds a <em>value</em> output. Click an <strong>array</strong>
+            <code>[n]</code> node &rarr; adds <em>one series</em> output that captures
+            <strong>ALL</strong> the element's variables (one column each). An array
+            of 20+ points becomes <strong>ONE</strong> multi-column series &mdash;
+            never 20+ outputs &mdash; rendered as a single table on the record.
+          </span>
+        </div>
+        <div id="hd-series-banner" class="indicator-pill orange"
+             style="display:none;margin-bottom:6px;"></div>
+      </div>
+      <div id="hd-test-result" style="margin-top:10px;"></div>
+      <div id="hd-test-tree" class="frappe-card" style="margin-top:10px;padding:10px 14px;display:none;
+            max-height:360px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;"></div>
+    </div>
+
+    <div class="frappe-form-actions">
+      <a class="btn btn-default" href="{% url 'hydrodesk:connectors' %}">Cancel</a>
+      <button type="submit" class="btn btn-primary">
+        <i class="bi bi-check-lg"></i> Save connector
+      </button>
+    </div>
+  </form>
+
+</div>
+
+<style>
+  .hd-tree-node { cursor:pointer; padding:0 3px; border-radius:3px; }
+  .hd-tree-node:hover { background:var(--blue-100); }
+  .hd-tree-key { color:#1366ae; }
+  .hd-tree-leaf { color:var(--gray-700); }
+  .hd-tree-children { margin-left:16px; border-left:1px dotted var(--gray-300); padding-left:8px; }
+</style>
+
+<script>
+(function () {
+  // ---- CSRF (cookie) for the X-CSRFToken header on the test POST. ----
+  function getCookie(name) {
+    var v = null;
+    document.cookie.split(';').forEach(function (c) {
+      var p = c.trim();
+      if (p.indexOf(name + '=') === 0) v = decodeURIComponent(p.substring(name.length + 1));
+    });
+    return v;
+  }
+
+  // ---- Inputs editor: add/remove rows + (re)build from a list. ----
+  var inputsBox = document.getElementById('hd-inputs');
+  var inputTpl = document.getElementById('hd-input-tpl');
+  var addInputBtn = document.getElementById('hd-add-input');
+  // Continue numbering past server-rendered rows so indices stay unique on POST.
+  var inputNext = inputsBox ? inputsBox.querySelectorAll('.hd-input-row').length : 0;
+  function wireDelete(row) {
+    var del = row.querySelector('.hd-input-del');
+    if (del) del.addEventListener('click', function () { row.remove(); });
+  }
+  if (inputsBox) {
+    inputsBox.querySelectorAll('.hd-input-row').forEach(wireDelete);
+  }
+  function addInputRow(values) {
+    if (!inputTpl || !inputsBox) return null;
+    var html = inputTpl.innerHTML.replace(/IDX/g, inputNext);
+    var wrap = document.createElement('div');
+    wrap.innerHTML = html.trim();
+    var row = wrap.firstChild;
+    inputsBox.appendChild(row);
+    if (values) {
+      var setField = function (suffix, v) {
+        var el = row.querySelector('[name="input_' + suffix + '_' + inputNext + '"]');
+        if (el != null && v != null) {
+          if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
+        }
+      };
+      setField('name', values.name);
+      setField('label', values.label);
+      setField('type', values.type || 'string');
+      setField('source', values.source || 'field');
+      setField('field', values.field);
+      setField('value', values.value);
+      setField('default', values.default);
+      setField('required', values.required);
+      setField('in', values.in || 'url');
+    }
+    wireDelete(row);
+    inputNext++;
+    return row;
+  }
+  if (addInputBtn) addInputBtn.addEventListener('click', function () { addInputRow(null); });
+  function rebuildInputs(list) {
+    if (!inputsBox) return;
+    inputsBox.querySelectorAll('.hd-input-row').forEach(function (r) { r.remove(); });
+    (list || []).forEach(function (inp) { addInputRow(inp); });
+  }
+  // Read the current inputs[] from the editor rows (for currentConfig/Test).
+  function currentInputs() {
+    var out = [];
+    if (!inputsBox) return out;
+    inputsBox.querySelectorAll('.hd-input-row').forEach(function (row) {
+      function g(suffix) {
+        var el = row.querySelector('[name^="input_' + suffix + '_"]');
+        return el ? (el.type === 'checkbox' ? el.checked : el.value) : '';
+      }
+      var name = (g('name') || '').trim();
+      if (!name) return;
+      out.push({
+        name: name, label: g('label'), type: g('type') || 'string',
+        source: g('source') || 'field', field: g('field'), value: g('value'),
+        default: g('default'), required: !!g('required'), in: g('in') || 'url'
+      });
+    });
+    return out;
+  }
+
+  // ---- Outputs editor: add/remove rows + kind-driven path toggle + (re)build. ----
+  var outputsBox = document.getElementById('hd-outputs');
+  var outputTpl = document.getElementById('hd-output-tpl');
+  var addOutputBtn = document.getElementById('hd-add-output');
+  var outputNext = outputsBox ? outputsBox.querySelectorAll('.hd-output-row').length : 0;
+  // A SERIES row's captured variables live in HIDDEN carriers (array path + a JSON
+  // list of {name,path}), set by clicking a source array node in the Test tree. We
+  // hide the value Path box and show a read-only CHIP listing the captured COLUMN
+  // names — so the output is clear without exposing raw path strings.
+  function outLastSeg(p) {
+    var s = String(p || '').split('.').filter(function (x) { return x && x !== '*'; });
+    return s.length ? s[s.length - 1] : '';
+  }
+  function rowVariables(row) {
+    var vEl = row.querySelector('.hd-out-vars');
+    try { var a = JSON.parse((vEl && vEl.value) || '[]'); return Array.isArray(a) ? a : []; }
+    catch (e) { return []; }
+  }
+  function syncOutputKind(row) {
+    var kindSel = row.querySelector('.hd-out-kind');
+    var kind = kindSel ? kindSel.value : 'value';
+    var path = row.querySelector('.hd-out-path');
+    var chip = row.querySelector('.hd-out-series-chip');
+    var typeSel = row.querySelector('.hd-out-type');
+    var isSeries = (kind === 'series');
+    if (path) path.style.display = isSeries ? 'none' : '';
+    if (chip) {
+      chip.style.display = isSeries ? '' : 'none';
+      if (isSeries) {
+        var names = rowVariables(row).map(function (v) { return v && v.name; })
+          .filter(Boolean);
+        chip.textContent = names.length
+          ? ('columns: ' + names.join(', '))
+          : 'series — click a source array node in Test below to capture its variables';
+      }
+    }
+    // A series output always renders as a table -> force its type to 'series'.
+    if (isSeries && typeSel) typeSel.value = 'series';
+  }
+  function wireOutputRow(row) {
+    var del = row.querySelector('.hd-output-del');
+    if (del) del.addEventListener('click', function () { row.remove(); });
+    var kindSel = row.querySelector('.hd-out-kind');
+    if (kindSel) kindSel.addEventListener('change', function () { syncOutputKind(row); });
+    syncOutputKind(row);
+  }
+  if (outputsBox) outputsBox.querySelectorAll('.hd-output-row').forEach(wireOutputRow);
+  function addOutputRow(values) {
+    if (!outputTpl || !outputsBox) return null;
+    var html = outputTpl.innerHTML.replace(/IDX/g, outputNext);
+    var wrap = document.createElement('div');
+    wrap.innerHTML = html.trim();
+    var row = wrap.firstChild;
+    outputsBox.appendChild(row);
+    if (values) {
+      var setF = function (sel, v) {
+        var el = row.querySelector(sel);
+        if (el != null && v != null) {
+          if (el.type === 'radio' || el.type === 'checkbox') el.checked = !!v; else el.value = v;
+        }
+      };
+      setF('[name^="output_name_"]', values.name);
+      setF('.hd-out-kind', values.kind || 'value');
+      setF('.hd-out-path', values.path);
+      setF('.hd-out-arraypath', values.array_path);
+      // Series variables: accept a ready array, else synthesize from legacy x/y.
+      var vEl = row.querySelector('.hd-out-vars');
+      if (vEl) {
+        var vars = values.variables;
+        if (!vars && (values.x_path || values.y_path)) {
+          vars = [];
+          if (values.x_path) vars.push({ name: outLastSeg(values.x_path) || 'time', path: values.x_path });
+          if (values.y_path) vars.push({ name: outLastSeg(values.y_path) || 'value', path: values.y_path });
+        }
+        if (vars) vEl.value = JSON.stringify(vars);
+      }
+      setF('.hd-out-type', values.type || ((values.kind === 'series') ? 'series' : 'string'));
+      setF('[name^="output_unit_"]', values.unit);
+      if (values.primary) setF('.hd-out-primary', true);
+    }
+    wireOutputRow(row);
+    outputNext++;
+    return row;
+  }
+  if (addOutputBtn) addOutputBtn.addEventListener('click', function () { addOutputRow(null); });
+  function rebuildOutputs(list) {
+    if (!outputsBox) return;
+    outputsBox.querySelectorAll('.hd-output-row').forEach(function (r) { r.remove(); });
+    (list || []).forEach(function (out) { addOutputRow(out); });
+    // Guarantee a primary selection exists after a rebuild.
+    if (outputsBox.querySelector('.hd-output-row') &&
+        !outputsBox.querySelector('.hd-out-primary:checked')) {
+      var first = outputsBox.querySelector('.hd-out-primary');
+      if (first) first.checked = true;
+    }
+  }
+  // Read the current outputs[] from the editor rows (for currentConfig/save).
+  function currentOutputs() {
+    var out = [];
+    if (!outputsBox) return out;
+    outputsBox.querySelectorAll('.hd-output-row').forEach(function (row) {
+      var name = ((row.querySelector('[name^="output_name_"]') || {}).value || '').trim();
+      if (!name) return;
+      var kind = (row.querySelector('.hd-out-kind') || {}).value || 'value';
+      var o = {
+        name: name, kind: kind,
+        type: (row.querySelector('.hd-out-type') || {}).value ||
+              (kind === 'series' ? 'series' : 'string'),
+        unit: ((row.querySelector('[name^="output_unit_"]') || {}).value || '').trim(),
+        primary: !!(row.querySelector('.hd-out-primary') || {}).checked
+      };
+      if (kind === 'series') {
+        o.array_path = ((row.querySelector('.hd-out-arraypath') || {}).value || '').trim();
+        o.variables = rowVariables(row);
+      } else {
+        o.path = ((row.querySelector('.hd-out-path') || {}).value || '').trim();
+      }
+      out.push(o);
+    });
+    return out;
+  }
+  // Add an output row from a clicked Test-tree node and return the new row, so the
+  // caller can fill its carriers (a value's path, or a series' array_path + vars).
+  function addOutputFromNode(kind, name) {
+    var row = addOutputRow({ name: name, kind: kind,
+      type: (kind === 'series' ? 'series' : 'string') });
+    if (row) {
+      // Make this new row the primary only if none is set yet.
+      if (!outputsBox.querySelector('.hd-out-primary:checked')) {
+        var pr = row.querySelector('.hd-out-primary');
+        if (pr) pr.checked = true;
+      }
+      row.scrollIntoView({ block: 'nearest' });
+    }
+    return row;
+  }
+
+  // ---- Presets: fill the form from a preset's config JSON. ----
+  function setVal(id, v) { var el = document.getElementById(id); if (el != null && v != null) el.value = v; }
+  document.querySelectorAll('.hd-preset').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var cfg;
+      try { cfg = JSON.parse(btn.getAttribute('data-config')); } catch (e) { return; }
+      rebuildInputs(cfg.inputs || []);
+      rebuildOutputs(cfg.outputs || []);
+      setVal('id_url_template', cfg.url_template);
+      setVal('id_method', cfg.method);
+      setVal('id_result_kind', cfg.result_kind);
+      setVal('id_output_path', cfg.output_path);
+      setVal('id_ttl_seconds', cfg.ttl_seconds);
+      setVal('id_timeout', cfg.timeout);
+      setVal('id_headers', JSON.stringify(cfg.headers || {}, null, 2));
+      setVal('id_query', JSON.stringify(cfg.query || {}, null, 2));
+      var a = cfg.auth || {};
+      setVal('id_auth_scheme', a.scheme || 'none');
+      setVal('id_auth_placement', a.placement || 'header');
+      setVal('id_auth_param', a.param || '');
+      // Leave Credential selection to the user (preset ships no secret/credential).
+      var nameEl = document.getElementById('id_name');
+      if (nameEl && !nameEl.value) nameEl.value = (btn.textContent || '').trim()
+        .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    });
+  });
+
+  // ---- Build the connector config object from the current form state. ----
+  function jsonOr(id, fallback) {
+    var raw = (document.getElementById(id).value || '').trim();
+    if (!raw) return fallback;
+    try { return JSON.parse(raw); } catch (e) { return fallback; }
+  }
+  function currentConfig() {
+    return {
+      name: document.getElementById('id_name').value,
+      url_template: document.getElementById('id_url_template').value,
+      method: document.getElementById('id_method').value,
+      inputs: currentInputs(),
+      outputs: currentOutputs(),
+      headers: jsonOr('id_headers', {}),
+      query: jsonOr('id_query', {}),
+      auth: {
+        scheme: document.getElementById('id_auth_scheme').value,
+        credential: document.getElementById('id_auth_credential').value,
+        placement: document.getElementById('id_auth_placement').value,
+        param: document.getElementById('id_auth_param').value
+      },
+      result_kind: document.getElementById('id_result_kind').value,
+      output_path: document.getElementById('id_output_path').value,
+      ttl_seconds: parseInt(document.getElementById('id_ttl_seconds').value || '900', 10),
+      timeout: parseInt(document.getElementById('id_timeout').value || '15', 10)
+    };
+  }
+
+  // ---- Clickable JSON tree. Distinguishes ARRAY vs SCALAR:
+  //   * SCALAR leaf -> "Add as value": ONE value output row, path = childPath.
+  //   * ARRAY [n]   -> "Add as series": ONE series output row, then the next two
+  //                    clicks on its element sub-keys set the Time then Value path,
+  //                    with the '*' auto-inserted (arrayPath.*.<subkey>). An array
+  //                    of 20+ points becomes ONE series (Time + Value) — never N
+  //                    outputs. The picked paths are stored in the row's HIDDEN
+  //                    carriers and summarized in the row's read-only chip. ----
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  var seriesBanner = document.getElementById('hd-series-banner');
+  function setBanner(text) {
+    if (!seriesBanner) return;
+    if (text) { seriesBanner.textContent = text; seriesBanner.style.display = ''; }
+    else { seriesBanner.style.display = 'none'; }
+  }
+  // Build the captured-variable list for a clicked ARRAY node. Each element sub-key
+  // (scalar or array-of-scalars) becomes ONE variable -> ONE column, path
+  // ``arrayPath.*.<subkey>``. An array of bare scalars -> ONE variable = the
+  // element itself (``arrayPath.*``). Nested OBJECT sub-keys are skipped (not a
+  // flat column). This is the "click a node -> all its variables as output" rule.
+  function buildVariablesFromArray(arr, arrayPath) {
+    var star = arrayPath + '.*';
+    var first = (arr && arr.length) ? arr[0] : null;
+    if (first === null || typeof first !== 'object' || Array.isArray(first)) {
+      return [{ name: defaultOutputName(arrayPath), path: star }];
+    }
+    var vars = [];
+    Object.keys(first).forEach(function (k) {
+      var v = first[k];
+      if (v !== null && typeof v === 'object' && !Array.isArray(v)) return;  // skip nested object
+      vars.push({ name: k, path: star + '.' + k });
+    });
+    if (!vars.length) vars.push({ name: defaultOutputName(arrayPath), path: star });
+    return vars;
+  }
+  function defaultOutputName(path) {
+    var segs = String(path).split('.').filter(function (s) { return s && s !== '*'; });
+    for (var i = segs.length - 1; i >= 0; i--) {
+      if (!/^-?\d+$/.test(segs[i])) return segs[i];
+    }
+    return 'output';
+  }
+  function renderTree(obj, path) {
+    var wrap = document.createElement('div');
+    if (obj !== null && typeof obj === 'object') {
+      var isArr = Array.isArray(obj);
+      var keys = isArr ? obj.map(function (_, i) { return i; }) : Object.keys(obj);
+      var children = document.createElement('div');
+      children.className = 'hd-tree-children';
+      keys.forEach(function (k, idx) {
+        var seg = isArr ? String(k) : k;
+        var childPath = path ? (path + '.' + seg) : seg;
+        var row = document.createElement('div');
+        var node = document.createElement('span');
+        node.className = 'hd-tree-node';
+        var preview = '';
+        var val = obj[k];
+        var valIsArr = Array.isArray(val);
+        var valIsObj = (val !== null && typeof val === 'object');
+        if (!valIsObj) preview = ': ' + escapeHtml(JSON.stringify(val));
+        else preview = valIsArr ? ' [' + val.length + ']' : ' {…}';
+        node.innerHTML = '<span class="hd-tree-key">' + escapeHtml(seg) + '</span>'
+          + '<span class="hd-tree-leaf">' + preview + '</span>';
+        var altLast = isArr && idx === keys.length - 1
+          ? (path ? (path + '.-1') : '-1') : null;
+        node.title = valIsArr
+          ? ('array — click: capture ALL variables as one series (' + childPath + ')')
+          : (valIsObj ? childPath
+             : ('scalar — click: Add as value (' + childPath + ')'
+                + (altLast ? '  ·  shift+click uses ' + altLast : '')));
+        node.addEventListener('click', function (e) {
+          e.stopPropagation();
+          // 1) Array node -> ONE series output capturing ALL its element variables
+          //    (each sub-key becomes a column). No more two-click time/value pick.
+          if (valIsArr) {
+            var name = defaultOutputName(childPath);
+            var variables = buildVariablesFromArray(val, childPath);
+            var srow = addOutputFromNode('series', name);
+            if (srow) {
+              var apEl = srow.querySelector('.hd-out-arraypath');
+              if (apEl) apEl.value = childPath + '.*';
+              var vEl = srow.querySelector('.hd-out-vars');
+              if (vEl) vEl.value = JSON.stringify(variables);
+              syncOutputKind(srow);  // chip now lists the captured columns
+              setBanner('Series "' + name + '": captured ' + variables.length
+                + ' variable' + (variables.length === 1 ? '' : 's') + ' — '
+                + variables.map(function (v) { return v.name; }).join(', '));
+            }
+            return;
+          }
+          // 2) Scalar leaf -> Add as value.
+          if (!valIsObj) {
+            var p = (e.shiftKey && altLast) ? altLast : childPath;
+            var vrow = addOutputFromNode('value', defaultOutputName(p));
+            var vp = vrow && vrow.querySelector('.hd-out-path');
+            if (vp) vp.value = p;
+            return;
+          }
+        });
+        row.appendChild(node);
+        if (valIsObj) row.appendChild(renderTree(val, childPath));
+        children.appendChild(row);
+      });
+      wrap.appendChild(children);
+    }
+    return wrap;
+  }
+
+  var btn = document.getElementById('hd-test-btn');
+  if (btn) {
+    btn.addEventListener('click', function () {
+      var status = document.getElementById('hd-test-status');
+      var tree = document.getElementById('hd-test-tree');
+      var resultBox = document.getElementById('hd-test-result');
+      var target = document.getElementById('hd-test-target');
+      var attrs;
+      try { attrs = JSON.parse(document.getElementById('id_test_attrs').value || '{}'); }
+      catch (e) { status.textContent = 'Sample values must be valid JSON.'; return; }
+      status.textContent = 'Fetching…';
+      fetch('{{ test_url }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: JSON.stringify({ config: currentConfig(), attrs: attrs })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { status.textContent = 'Error: ' + (d.error || 'failed'); return; }
+        status.textContent = 'Done · ' + (d.url || '');
+        // Live preview of the extracted result.
+        var prev = '';
+        if (d.kind === 'value') prev = 'Value: ' + escapeHtml(JSON.stringify(d.value));
+        else if (d.kind === 'series') prev = 'Series: ' + ((d.x || []).length) + ' points';
+        resultBox.innerHTML = prev ? '<span class="indicator-pill blue">' + prev + '</span>' : '';
+        // Clickable tree of the raw JSON. A fresh fetch clears any stale banner.
+        setBanner('');
+        tree.innerHTML = '';
+        if (d.raw !== null && typeof d.raw === 'object') {
+          tree.appendChild(renderTree(d.raw, ''));
+          tree.style.display = '';
+          target.style.display = '';
+        } else {
+          tree.style.display = 'none';
+          target.style.display = 'none';
+        }
+      }).catch(function (e) { status.textContent = 'Request failed: ' + e; });
+    });
+  }
+})();
+</script>
+{% endblock %}

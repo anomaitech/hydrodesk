@@ -1,0 +1,83 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Connectors — list of saved API connectors (hydro_connector rows). A connector
+  is a data-driven REST/JSON integration referenced BY NAME from an API field.
+  Context (controllers.connectors): rows:[{id,name,url_template,result_kind,
+  auth_scheme,edit_url,delete_url}], record_count, new_url.
+{% endcomment %}
+{% load static %}
+
+{% block title %}Connectors - {{ block.super }}{% endblock %}
+
+{# mark "Connectors" active in the shared sidebar #}
+{% block nav_active_connectors %} active{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span>Connectors
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Connectors</h1>
+      <span class="indicator-pill gray">{{ record_count }} connector{{ record_count|pluralize }}</span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-primary btn-sm" href="{{ new_url }}">
+        <i class="bi bi-plus-lg"></i> New Connector
+      </a>
+    </div>
+  </div>
+
+  <p class="frappe-muted frappe-text-sm" style="margin:-10px 0 18px;">
+    A connector declares a URL template with <code>{placeholders}</code> filled
+    from a record's fields, an extraction path, and optional auth (via a named
+    Credential). API fields reference a connector by name to render a live value.
+  </p>
+
+  {% if rows %}
+  <div class="frappe-list">
+    <div class="frappe-list-head">
+      <span class="frappe-list-check" style="visibility:hidden;"></span>
+      <span class="frappe-list-subject head">Name</span>
+      <span class="frappe-list-col head">URL Template</span>
+      <span class="frappe-list-col head">Result</span>
+      <span class="frappe-list-col head">Auth</span>
+      <span class="frappe-list-activity">&nbsp;</span>
+    </div>
+    {% for row in rows %}
+    <div class="frappe-list-row">
+      <input type="checkbox" class="frappe-list-check" aria-label="Select row">
+      <span class="frappe-list-subject">
+        <a href="{{ row.edit_url }}">{{ row.name }}</a>
+      </span>
+      <span class="frappe-list-col" title="{{ row.url_template }}">
+        <code style="font-size:11px;">{{ row.url_template }}</code>
+      </span>
+      <span class="frappe-list-col">{{ row.result_kind }}</span>
+      <span class="frappe-list-col">{{ row.auth_scheme }}</span>
+      <span class="frappe-list-activity">
+        <a class="btn btn-link btn-sm" href="{{ row.edit_url }}">Edit</a>
+        <form method="post" action="{{ row.delete_url }}" style="display:inline;"
+              onsubmit="return confirm('Delete connector &quot;{{ row.name }}&quot;? API fields referencing it will stop resolving.');">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-link btn-sm" style="color:#e24c4c;">Delete</button>
+        </form>
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="frappe-list">
+    <div class="frappe-list-empty">
+      <span class="ico"><i class="bi bi-hdd-network"></i></span>
+      No connectors yet. <a href="{{ new_url }}">Create one</a> to wire an API into an API field.
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

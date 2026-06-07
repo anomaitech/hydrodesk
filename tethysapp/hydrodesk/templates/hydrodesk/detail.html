@@ -1,0 +1,95 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Generic Frappe-Desk read-style DETAIL VIEW for ONE HydroRecord of any
+  HydroType. Context (controllers.hydrotype_detail): slug, record_id,
+  display_name, record_found, fields:[{label,value}], has_geom, longitude,
+  latitude, list_url, new_url. Rendered as a Frappe form-card read view
+  (label/value definition list). Zero CDN.
+{% endcomment %}
+{% load static %}
+
+{% block title %}{{ display_name }} Record - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span><a href="{{ list_url }}">{{ display_name }}</a>
+    <span class="sep">/</span>Record
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">{{ display_name }}</h1>
+      {% if record_found %}<span class="indicator-pill green">Saved</span>{% endif %}
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{{ list_url }}">
+        <i class="bi bi-arrow-left"></i> Back to list
+      </a>
+      {% if record_found %}
+      <a class="btn btn-primary btn-sm" href="{{ edit_url }}">
+        <i class="bi bi-pencil"></i> Edit
+      </a>
+      <form method="post" action="{{ delete_url }}" style="display:inline;"
+            onsubmit="return confirm('Delete this record? This cannot be undone.');">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-default btn-sm" style="color:#e24c4c;">
+          <i class="bi bi-trash"></i> Delete
+        </button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="frappe-breadcrumb" style="margin:-10px 0 16px;">
+    Hydrotype: <code>{{ slug }}</code> &middot; ID: <code>{{ record_id }}</code>
+  </div>
+
+  {% if not record_found %}
+    <div class="alert alert-warning" role="alert">
+      No record <code>{{ record_id }}</code> was found for hydrotype
+      <code>{{ slug }}</code>.
+      <a href="{{ list_url }}">Back to the list</a>.
+    </div>
+  {% else %}
+  <div class="frappe-form-card">
+    <div class="frappe-form-section">
+      <dl class="frappe-dl">
+        {% for f in fields %}
+          {% if f.is_section %}
+            {# Section Break: close this group and start a new titled section. #}
+            </dl></div><div class="frappe-form-section">
+            {% if f.section %}<div class="frappe-section-head">{{ f.section }}</div>{% endif %}
+            <dl class="frappe-dl">
+          {% else %}
+            <div class="frappe-dl-row">
+              <dt class="frappe-dl-term">{{ f.label }}</dt>
+              <dd class="frappe-dl-desc{% if not f.value %} empty{% endif %}">{{ f.value|default:"&mdash;" }}</dd>
+            </div>
+          {% endif %}
+        {% endfor %}
+      </dl>
+    </div>
+
+    {% if has_geom %}
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">(point geometry)</span></div>
+      <dl class="frappe-dl">
+        <div class="frappe-dl-row">
+          <dt class="frappe-dl-term">Longitude</dt>
+          <dd class="frappe-dl-desc">{{ longitude }}</dd>
+        </div>
+        <div class="frappe-dl-row">
+          <dt class="frappe-dl-term">Latitude</dt>
+          <dd class="frappe-dl-desc">{{ latitude }}</dd>
+        </div>
+      </dl>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
