@@ -506,6 +506,10 @@
     }
     .frappe-form-section { padding:18px 24px; }
     .frappe-form-section + .frappe-form-section { border-top:1px solid var(--fr-border-color); }
+    /* Column Break: side-by-side columns within a section (one column = full width) */
+    .frappe-section-cols { display:flex; gap:28px; align-items:flex-start; }
+    .frappe-section-col { flex:1 1 0; min-width:0; }
+    @media (max-width:680px) { .frappe-section-cols { flex-direction:column; gap:0; } }
     .frappe-section-head {
       font-size:var(--fr-text-md);
       font-weight:600;

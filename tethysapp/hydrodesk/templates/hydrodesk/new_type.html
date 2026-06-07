@@ -124,6 +124,7 @@
               <option value="table"    {% if r.type == 'table' %}selected{% endif %}>Table</option>
               <option value="tags"     {% if r.type == 'tags' %}selected{% endif %}>Tags</option>
               <option value="section"  {% if r.type == 'section' %}selected{% endif %}>&mdash; Section Break &mdash;</option>
+              <option value="column"   {% if r.type == 'column' %}selected{% endif %}>&mdash; Column Break &mdash;</option>
             </select>
             <div class="form-check">
               <input class="form-check-input" type="checkbox"
@@ -177,6 +178,7 @@
               <option value="table">Table</option>
               <option value="tags">Tags</option>
               <option value="section">&mdash; Section Break &mdash;</option>
+              <option value="column">&mdash; Column Break &mdash;</option>
             </select>
             <div class="form-check"><input class="form-check-input" type="checkbox" name="field_required_IDX" value="true"></div>
             <div class="hd-config-cell">
@@ -529,7 +531,7 @@
     // Field options: default value + conditional display), plus type-specific
     // config. Only a Section Break (layout-only) has nothing to configure.
     function typeNeedsConfig(t) {
-      return t !== 'section';
+      return t !== 'section' && t !== 'column';
     }
     function refreshRow(wrap) {
       var p = rowParts(wrap);
@@ -607,13 +609,14 @@
       modalBody.innerHTML = '';
       applyBtn.style.display = '';
       // Common per-field options (default value + conditional display) for every
-      // DATA field. A Section Break is layout-only -> no options.
-      if (t !== 'section') buildCommonOptions(wrap);
+      // DATA field. Section/Column breaks are layout-only -> no options.
+      var isLayout = (t === 'section' || t === 'column');
+      if (!isLayout) buildCommonOptions(wrap);
       if (t === 'select')      buildSelectUI(wrap);
       else if (t === 'link')   buildLinkUI(wrap);
       else if (t === 'api')    buildApiUI(wrap);
       else if (t === 'table')  buildTableUI(wrap);
-      else if (t === 'section') buildEmptyUI(t);
+      else if (isLayout)       buildEmptyUI(t);
       showModal();
     }
 

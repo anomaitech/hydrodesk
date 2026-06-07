@@ -1612,6 +1612,11 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 fields.append({"widget": "section", "name": name,
                                "label": prop.get("title") or ""})
                 continue
+            if prop.get("x-layout") == "column":
+                # Layout-only widget: starts a new column within the section.
+                fields.append({"widget": "column", "name": name,
+                               "label": prop.get("title") or ""})
+                continue
             t = prop.get("type")
             label = prop.get("title") or name.replace("_", " ").title()
             f = {
@@ -2537,6 +2542,9 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
             fields.append({"is_section": True, "section": prop.get("title") or ""})
             seen.add(name)
             continue
+        if prop.get("x-layout") == "column":
+            seen.add(name)   # column breaks don't affect the read-only detail view
+            continue
         label = prop.get("title") or name.replace("_", " ").title()
         connector_name = prop.get("x-api-connector")
         if connector_name:
@@ -2696,6 +2704,10 @@ def _schema_for(field_type, options):
         # follow it under a heading (its label, set as 'title' by the caller). The
         # x-layout key is ignored by validation and skipped by the data paths.
         return {"x-layout": "section"}
+    if ft == "column":
+        # LAYOUT-ONLY: a Column Break. Splits the current section into side-by-side
+        # columns on the form (its label, if any, is an optional column heading).
+        return {"x-layout": "column"}
     if ft == "number":
         return {"type": "number"}
     if ft == "checkbox":
@@ -2813,6 +2825,8 @@ def _builder_type_for(prop):
     prop = prop or {}
     if prop.get("x-layout") == "section":
         return "section"
+    if prop.get("x-layout") == "column":
+        return "column"
     if prop.get("x-api-connector"):
         return "api"
     if prop.get("x-child-type"):
@@ -3064,21 +3078,36 @@ def _assemble_type_spec(post, force_slug=None):
     # exist. Each entry: (display_row_no, prop_name, connector_name, raw_field_map,
     # raw_api_outputs).
     api_rows = []
+    layout_seq = 0
     for idx, row in enumerate(rows):
         label = row["label"]
-        if not label:
-            continue  # blank label => skip the row entirely
-        prop_name = _slugify_underscore(label)
-        if not prop_name:
-            form_errors.append(
-                f"Row {idx + 1}: field label '{label}' yields an empty field name."
-            )
-            continue
-        if prop_name in seen:  # two labels slugify to the same key -> would overwrite
-            form_errors.append(
-                f"Row {idx + 1}: duplicate field name '{prop_name}'."
-            )
-            continue
+        rtype = (row["type"] or "text").strip().lower()
+        is_layout = rtype in ("section", "column")
+        if not label and not is_layout:
+            continue  # a blank non-layout row => skip it entirely
+        if is_layout:
+            # Layout breaks (Section / Column) hold no data and are usually UNLABELED
+            # (a column break especially), so they get a synthetic unique key rather
+            # than being dropped for a blank label.
+            layout_seq += 1
+            prop_name = _slugify_underscore(label) if label else ""
+            if not prop_name or prop_name in seen:
+                prop_name = f"{rtype}_break_{layout_seq}"
+                while prop_name in seen:
+                    layout_seq += 1
+                    prop_name = f"{rtype}_break_{layout_seq}"
+        else:
+            prop_name = _slugify_underscore(label)
+            if not prop_name:
+                form_errors.append(
+                    f"Row {idx + 1}: field label '{label}' yields an empty field name."
+                )
+                continue
+            if prop_name in seen:  # two labels slugify to the same key -> overwrite
+                form_errors.append(
+                    f"Row {idx + 1}: duplicate field name '{prop_name}'."
+                )
+                continue
         # A Link field's Options column carries the target HydroType slug; an
         # empty target makes the field unusable, so reject it early.
         if (row["type"] or "").strip().lower() == "link" and not (row["options"] or "").strip():

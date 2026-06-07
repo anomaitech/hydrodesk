@@ -60,17 +60,26 @@
     {% endif %}
 
     <div class="frappe-form-section">
-      <div class="frappe-section-head">Details</div>
+      {% if widgets.0.widget == "section" %}{% if widgets.0.label %}<div class="frappe-section-head">{{ widgets.0.label }}</div>{% endif %}
+      {% else %}<div class="frappe-section-head">Details</div>{% endif %}
+      <div class="frappe-section-cols"><div class="frappe-section-col">
 
       {% for w in widgets %}
-        {% if w.widget == "section" %}
-          {# Section Break: close the current section and open a new titled one. #}
-          </div><div class="frappe-form-section">
+        {% if forloop.first and w.widget == "section" %}{# leading section already used as the first heading above #}
+        {% elif w.widget == "section" %}
+          {# Section Break: close col+cols+section, open a new titled section. #}
+          </div></div></div><div class="frappe-form-section">
           {% if w.label %}<div class="frappe-section-head">{{ w.label }}</div>{% endif %}
+          <div class="frappe-section-cols"><div class="frappe-section-col">
+        {% elif w.widget == "column" %}
+          {# Column Break: close the current column, open a new one in this section. #}
+          </div><div class="frappe-section-col">
+          {% if w.label %}<div class="frappe-help" style="font-weight:600;margin:0 0 6px;">{{ w.label }}</div>{% endif %}
         {% else %}
         {% if w.is_geom %}{% ifchanged %}
-          </div><div class="frappe-form-section">
+          </div></div></div><div class="frappe-form-section">
           <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">(point geometry)</span></div>
+          <div class="frappe-section-cols"><div class="frappe-section-col">
         {% endifchanged %}{% endif %}
 
         <div class="frappe-form-group"{% if w.show_if %} data-showif-field="{{ w.show_if.field }}" data-showif-value="{{ w.show_if.value }}"{% endif %}>
@@ -170,6 +179,7 @@
         </div>
         {% endif %}{# /section-vs-field #}
       {% endfor %}
+      </div></div>{# /col /cols #}
     </div>
 
     <div class="frappe-form-actions">

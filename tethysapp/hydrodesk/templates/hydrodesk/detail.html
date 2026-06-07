@@ -56,9 +56,11 @@
   {% else %}
   <div class="frappe-form-card">
     <div class="frappe-form-section">
+      {% if fields.0.is_section and fields.0.section %}<div class="frappe-section-head">{{ fields.0.section }}</div>{% endif %}
       <dl class="frappe-dl">
         {% for f in fields %}
-          {% if f.is_section %}
+          {% if forloop.first and f.is_section %}{# leading section already used as the first heading above #}
+          {% elif f.is_section %}
             {# Section Break: close this group and start a new titled section. #}
             </dl></div><div class="frappe-form-section">
             {% if f.section %}<div class="frappe-section-head">{{ f.section }}</div>{% endif %}
