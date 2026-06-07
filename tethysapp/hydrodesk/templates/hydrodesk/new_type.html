@@ -83,6 +83,14 @@
         </select>
         <div class="frappe-help">Point types offer Longitude/Latitude inputs on the record form.</div>
       </div>
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_title_field">Record title</label>
+        <select class="form-select" id="id_title_field" name="title_field" data-current="{{ title_field }}">
+          <option value="">(auto &mdash; first field)</option>
+        </select>
+        <div class="frappe-help">Which field names each record (shown as the record's heading and in links). Options come from the fields below.</div>
+      </div>
     </div>
 
     <div class="frappe-form-section">
@@ -1097,5 +1105,42 @@
       next++;
     });
   })();
+</script>
+
+<script>
+// Record-title dropdown: populate from the current field labels (skipping layout/
+// table/api fields, which have no scalar title value). Keeps the selection across
+// label edits; pre-selects the stored title field (data-current) when editing.
+(function () {
+  var sel = document.getElementById('id_title_field');
+  if (!sel) return;
+  function slugify(s) {
+    return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+  function refresh() {
+    var current = sel.value || sel.getAttribute('data-current') || '';
+    var opts = ['<option value="">(auto — first field)</option>'];
+    document.querySelectorAll('.frappe-row-wrap').forEach(function (wrap) {
+      var labEl = wrap.querySelector('input[name^="field_label_"]');
+      var typEl = wrap.querySelector('select[name^="field_type_"]');
+      var lab = labEl ? (labEl.value || '').trim() : '';
+      var t = typEl ? typEl.value : 'text';
+      if (!lab || t === 'section' || t === 'table' || t === 'api') return;
+      var slug = slugify(lab);
+      if (!slug) return;
+      opts.push('<option value="' + slug + '">' + lab.replace(/</g, '&lt;') + '</option>');
+    });
+    sel.innerHTML = opts.join('');
+    var has = Array.prototype.some.call(sel.options, function (o) { return o.value === current; });
+    sel.value = has ? current : '';
+  }
+  document.addEventListener('input', function (e) {
+    if (e.target && /^field_label_/.test(e.target.name || '')) refresh();
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target && /^field_type_/.test(e.target.name || '')) refresh();
+  });
+  refresh();
+})();
 </script>
 {% endblock %}

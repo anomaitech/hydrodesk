@@ -21,7 +21,7 @@
 
   <div class="frappe-page-head">
     <div class="frappe-title-area">
-      <h1 class="frappe-title">{{ display_name }}</h1>
+      <h1 class="frappe-title">{{ record_title|default:display_name }}</h1>
       {% if record_found %}<span class="indicator-pill green">Saved</span>{% endif %}
     </div>
     <div class="frappe-page-actions">

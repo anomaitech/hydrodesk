@@ -1175,23 +1175,32 @@ def _load_hydrotype(session, slug):
 
 
 def _label_for(target_field_schema, attrs):
-    """Pick a human label for a linked record from its attributes.
+    """Pick a human TITLE/label for a record from its attributes — the single
+    'record title' function used by link labels, link pickers, and the detail
+    header.
 
-    Prefers a ``name`` attribute (Frappe-style display key), else the value of
-    the FIRST schema property (declaration order), else the first non-empty
-    attribute. Always returns a plain string for safe linkification.
+    Order: (1) the type's designated TITLE FIELD (``x-title-field``) when set and
+    non-empty; (2) a Frappe-style ``name`` attribute; (3) the first non-empty real
+    field in declaration order (skipping layout/api/child-table fields, which have
+    no scalar value); (4) any non-empty non-reserved attribute. Always a plain
+    string for safe linkification.
     """
+    fs = target_field_schema or {}
     attrs = attrs or {}
-    name = attrs.get("name")
-    if name not in (None, ""):
-        return str(name)
-    props = (target_field_schema or {}).get("properties") or {}
-    for key in props:  # first declared property
+    tf = fs.get("x-title-field")
+    if tf and str(attrs.get(tf) or "").strip():
+        return _format_cell(attrs.get(tf))
+    if str(attrs.get("name") or "").strip():
+        return str(attrs.get("name"))
+    for key, prop in _ordered_props(fs):
+        prop = prop or {}
+        if prop.get("x-layout") or prop.get("x-api-connector") or prop.get("x-child-type"):
+            continue
         v = attrs.get(key)
-        if v not in (None, ""):
+        if v not in (None, "") and not isinstance(v, (list, dict)):
             return _format_cell(v)
-    for v in attrs.values():  # any non-empty attribute
-        if v not in (None, ""):
+    for k, v in attrs.items():
+        if not str(k).startswith("_") and v not in (None, ""):
             return _format_cell(v)
     return ""
 
@@ -2351,11 +2360,16 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
                                     parent_slug=slug, parent_id=record_id)
 
     has_geom = lon is not None and lat is not None
+    # The record's human TITLE (designated title field / name / first field), shown
+    # as the detail H1 instead of a bare UUID. Falls back to a short id.
+    record_title = (_label_for(field_schema, attributes)
+                    or (str(record_id)[:8] if record_found else "")) if record_found else ""
 
     context = {
         "slug": slug,
         "record_id": str(record_id),
         "display_name": display_name,
+        "record_title": record_title,
         "record_found": record_found,
         "fields": fields,
         "has_geom": has_geom,
@@ -2643,7 +2657,7 @@ def _parse_builder_rows(post):
 
 
 def _builder_context(form_errors, type_name, geometry, rows, row_count,
-                     mode="new", slug=None):
+                     mode="new", slug=None, title_field=""):
     """Build the template context. row_indexes drives the fixed rows; rows holds
     re-fill values keyed by index (template loops row_indexes and reads rows[i]).
     ``mode`` ('new'|'edit') + ``slug`` drive the form action, title, and submit
@@ -2667,6 +2681,7 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         "form_action": form_action,
         "page_title": ("Edit HydroType" if is_edit else "New HydroType"),
         "submit_label": ("Save changes" if is_edit else "Create type"),
+        "title_field": title_field or "",
         "row_indexes": list(range(row_count)),
         # Pad rows so every rendered index has a dict to read on re-fill.
         "rows": rows + [{"label": "", "type": "text", "options": "",
@@ -2879,6 +2894,12 @@ def _assemble_type_spec(post, force_slug=None):
                         "x-order": list(properties.keys())}
         if required:
             field_schema["required"] = required
+        # Record TITLE field: the field whose value names each record (shown as the
+        # detail H1, link labels, pickers). Stored only when it resolves to a real
+        # (non-layout) property of this type.
+        title_field = _slugify_underscore(post.get("title_field") or "")
+        if title_field in properties and not (properties[title_field] or {}).get("x-layout"):
+            field_schema["x-title-field"] = title_field
         spec = {
             "slug": slug,
             "display_name": type_name,
@@ -2920,7 +2941,8 @@ def new_hydrotype(request):
             form_errors.append(f"A type with slug '{slug}' already exists.")
 
     context = _builder_context(form_errors, type_name, geometry, rows, row_count,
-                               mode="new")
+                               mode="new",
+                               title_field=request.POST.get("title_field", ""))
     return render(request, "hydrodesk/new_type.html", context)
 
 
@@ -2958,7 +2980,8 @@ def edit_hydrotype(request, slug="monitoring_station"):
             else:
                 return redirect(reverse("hydrodesk:list", kwargs={"slug": slug}))
         context = _builder_context(form_errors, type_name, geometry, rows, row_count,
-                                   mode="edit", slug=slug)
+                                   mode="edit", slug=slug,
+                                   title_field=request.POST.get("title_field", ""))
         return render(request, "hydrodesk/new_type.html", context)
 
     # GET: reverse the stored schema back into editable builder rows.
@@ -2966,7 +2989,8 @@ def edit_hydrotype(request, slug="monitoring_station"):
     row_count = max(_BUILDER_MIN_ROWS, len(rows))
     geometry = geometry_kind or "none"
     context = _builder_context([], display_name, geometry, rows, row_count,
-                               mode="edit", slug=slug)
+                               mode="edit", slug=slug,
+                               title_field=(field_schema or {}).get("x-title-field", ""))
     return render(request, "hydrodesk/new_type.html", context)
 
 
