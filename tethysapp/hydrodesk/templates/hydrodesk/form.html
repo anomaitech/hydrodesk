@@ -73,7 +73,7 @@
           <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">(point geometry)</span></div>
         {% endifchanged %}{% endif %}
 
-        <div class="frappe-form-group">
+        <div class="frappe-form-group"{% if w.show_if %} data-showif-field="{{ w.show_if.field }}" data-showif-value="{{ w.show_if.value }}"{% endif %}>
           {% if w.widget == "checkbox" %}
             <div class="form-check">
               <input class="form-check-input" type="checkbox" id="id_{{ w.name }}"
@@ -276,6 +276,44 @@
   }
 
   document.querySelectorAll('.hd-tablefield').forEach(initTable);
+})();
+</script>
+
+<script>
+// Conditional fields (depends-on): show a field only when its controlling field
+// matches. A blank target value means "controlling field is set/truthy". Hidden
+// fields are DISABLED so they don't post stale values; missing controller =
+// fail-open (always show).
+(function () {
+  var form = document.querySelector('.frappe-form-card');
+  if (!form) return;
+  var groups = form.querySelectorAll('.frappe-form-group[data-showif-field]');
+  if (!groups.length) return;
+  function currentValue(name) {
+    var el = form.querySelector('[name="' + name + '"]');
+    if (!el) return null;
+    if (el.type === 'checkbox') return el.checked ? 'true' : 'false';
+    return el.value;
+  }
+  function evalGroup(g) {
+    var field = g.getAttribute('data-showif-field');
+    var want = g.getAttribute('data-showif-value') || '';
+    var cur = currentValue(field);
+    var show;
+    if (cur === null) show = true;                       // controller missing -> show
+    else if (want === '') show = !!(String(cur).trim() && cur !== 'false');  // "is set"
+    else show = String(cur) === String(want);
+    g.style.display = show ? '' : 'none';
+    g.querySelectorAll('input, select, textarea').forEach(function (i) { i.disabled = !show; });
+  }
+  function evalAll() { groups.forEach(evalGroup); }
+  var seen = {};
+  groups.forEach(function (g) { seen[g.getAttribute('data-showif-field')] = 1; });
+  Object.keys(seen).forEach(function (name) {
+    var el = form.querySelector('[name="' + name + '"]');
+    if (el) { el.addEventListener('change', evalAll); el.addEventListener('input', evalAll); }
+  });
+  evalAll();
 })();
 </script>
 {% endblock %}

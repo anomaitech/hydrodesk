@@ -1346,6 +1346,7 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 "required": name in required,
                 "help": prop.get("description", ""),
                 "value": values.get(name, prop.get("default", "")),
+                "show_if": prop.get("x-show-if"),
             }
             link_target = prop.get("x-link-type")
             api_connector = prop.get("x-api-connector")
@@ -2507,6 +2508,30 @@ def _parse_table_config(options):
     return ("columns", [])
 
 
+def _coerce_default(prop, raw):
+    """Coerce a builder-entered default string to the property's JSON type, or None
+    when blank/un-coercible (so a bad default is simply dropped, never stored)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    t = (prop or {}).get("type")
+    if t == "boolean":
+        return str(raw).lower() in ("true", "on", "1", "yes")
+    if t == "number":
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+    if t == "integer":
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    if t == "array":
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return raw
+
+
 def _builder_type_for(prop):
     """Inverse of _schema_for's TYPE choice: a stored property fragment -> the
     builder 'Type' select value (text/number/select/checkbox/date/textarea/email/
@@ -2586,6 +2611,15 @@ def _schema_to_builder_rows(field_schema):
                 field_map[inp] = "__const__:" + str(mp.get("value", ""))
             elif mp.get("field"):
                 field_map[inp] = mp.get("field")
+        # Default value -> string carrier (bool -> 'true'/'false').
+        dflt = prop.get("default")
+        if isinstance(dflt, bool):
+            dflt = "true" if dflt else "false"
+        elif dflt is None:
+            dflt = ""
+        else:
+            dflt = str(dflt)
+        si = prop.get("x-show-if") or {}
         rows.append({
             "label": prop.get("title") or key.replace("_", " ").title(),
             "type": bt,
@@ -2593,6 +2627,9 @@ def _schema_to_builder_rows(field_schema):
             "required": key in required,
             "field_map": field_map,
             "api_outputs": list(prop.get("x-api-outputs") or []),
+            "default": dflt,
+            "showif": si,
+            "showif_json": json.dumps(si) if si.get("field") else "",
         })
     return rows
 
@@ -2641,8 +2678,21 @@ def _parse_builder_rows(post):
                     api_outputs = parsed
             except (ValueError, TypeError):
                 api_outputs = []
+        # Common per-field options: a default value + a structured "show only if"
+        # (depends-on) carried as field_default_<i> / field_showif_<i> (JSON).
+        default_val = (post.get(f"field_default_{i}") or "").strip()
+        showif = {}
+        raw_showif = (post.get(f"field_showif_{i}") or "").strip()
+        if raw_showif:
+            try:
+                parsed_si = json.loads(raw_showif)
+                if isinstance(parsed_si, dict) and (parsed_si.get("field") or "").strip():
+                    showif = {"field": str(parsed_si["field"]).strip(),
+                              "value": str(parsed_si.get("value") or "")}
+            except (ValueError, TypeError):
+                showif = {}
         has_any = (bool(label) or bool(options) or is_req or bool(field_map)
-                   or bool(api_outputs))
+                   or bool(api_outputs) or bool(default_val) or bool(showif))
         if has_any:
             submitted_count = i + 1
         rows.append({
@@ -2652,6 +2702,8 @@ def _parse_builder_rows(post):
             "required": is_req,
             "field_map": field_map,
             "api_outputs": api_outputs,
+            "default": default_val,
+            "showif": showif,
         })
     return rows, submitted_count
 
@@ -2669,6 +2721,8 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         if isinstance(row, dict):
             row["field_map_json"] = json.dumps(row.get("field_map") or {})
             row["api_outputs_json"] = json.dumps(row.get("api_outputs") or [])
+            si = row.get("showif") or {}
+            row["showif_json"] = json.dumps(si) if si.get("field") else ""
     is_edit = mode == "edit"
     form_action = (reverse("hydrodesk:edit_type", kwargs={"slug": slug})
                    if is_edit else reverse("hydrodesk:new_type"))
@@ -2686,7 +2740,8 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         # Pad rows so every rendered index has a dict to read on re-fill.
         "rows": rows + [{"label": "", "type": "text", "options": "",
                          "required": False, "field_map": {}, "api_outputs": [],
-                         "field_map_json": "{}", "api_outputs_json": "[]"}]
+                         "field_map_json": "{}", "api_outputs_json": "[]",
+                         "default": "", "showif": {}, "showif_json": ""}]
                 * max(0, row_count - len(rows)),
         # The mapping endpoint base for the per-row x-api-map JS (a placeholder
         # connector name the JS swaps with the typed name).
@@ -2786,6 +2841,18 @@ def _assemble_type_spec(post, force_slug=None):
         # A layout marker (Section Break) holds no data, so it can never be required.
         if row["required"] and not prop.get("x-layout"):
             required.append(prop_name)
+        # Common per-field options (skip layout markers): a typed default value and
+        # a structured depends-on (x-show-if: shows the field only when another
+        # field matches). The controlling field is stored as a slug; the form JS
+        # resolves it at render (fail-open if it no longer exists).
+        if not prop.get("x-layout"):
+            dv = _coerce_default(prop, row.get("default") or "")
+            if dv is not None:
+                prop["default"] = dv
+            si = row.get("showif") or {}
+            if (si.get("field") or "").strip():
+                prop["x-show-if"] = {"field": _slugify_underscore(si["field"]),
+                                     "value": str(si.get("value") or "")}
 
     # --- SECOND PASS: per-doctype x-api-map (the headline). Now that every
     # property exists we can validate each API field's connector-input -> field

@@ -134,6 +134,12 @@
               <input class="hd-options" type="hidden"
                      name="field_options_{{ forloop.counter0 }}"
                      value="{{ r.options|default:'' }}">
+              <input class="hd-default" type="hidden"
+                     name="field_default_{{ forloop.counter0 }}"
+                     value="{{ r.default|default:'' }}">
+              <input class="hd-showif" type="hidden"
+                     name="field_showif_{{ forloop.counter0 }}"
+                     value="{{ r.showif_json|default:'' }}">
               <button type="button" class="btn btn-default btn-sm hd-configure"
                       title="Configure this field">
                 <i class="bi bi-gear"></i> Configure
@@ -175,6 +181,8 @@
             <div class="form-check"><input class="form-check-input" type="checkbox" name="field_required_IDX" value="true"></div>
             <div class="hd-config-cell">
               <input class="hd-options" type="hidden" name="field_options_IDX">
+              <input class="hd-default" type="hidden" name="field_default_IDX">
+              <input class="hd-showif" type="hidden" name="field_showif_IDX">
               <button type="button" class="btn btn-default btn-sm hd-configure"
                       title="Configure this field">
                 <i class="bi bi-gear"></i> Configure
@@ -390,6 +398,8 @@
         label: wrap.querySelector('[name^="field_label_"]'),
         type: wrap.querySelector('[name^="field_type_"]'),
         opt: wrap.querySelector('.hd-options'),     // hidden carrier field_options_<i>
+        dflt: wrap.querySelector('.hd-default'),    // hidden carrier field_default_<i>
+        showif: wrap.querySelector('.hd-showif'),   // hidden carrier field_showif_<i>
         cfg: wrap.querySelector('.hd-configure'),
         summary: wrap.querySelector('.hd-config-summary'),
         panel: wrap.querySelector('.hd-map-panel'),
@@ -486,7 +496,25 @@
           else { html = 'no columns yet'; muted = true; }
         }
       } else {
-        html = ''; // nothing to configure
+        html = ''; // nothing type-specific to configure
+      }
+      // Common-option chips (apply to every data field): default + conditional.
+      var extra = [];
+      if (p.dflt && (p.dflt.value || '').trim()) {
+        extra.push('default <code>' + escapeHtml(p.dflt.value.trim()) + '</code>');
+      }
+      if (p.showif && (p.showif.value || '').trim()) {
+        try {
+          var si = JSON.parse(p.showif.value);
+          if (si && si.field) {
+            extra.push('if <code>' + escapeHtml(si.field)
+              + (si.value ? '=' + escapeHtml(si.value) : '') + '</code>');
+          }
+        } catch (e) {}
+      }
+      if (extra.length) {
+        html = (html ? html + ' &middot; ' : '') + extra.join(' &middot; ');
+        muted = false;
       }
       p.summary.innerHTML = html;
       p.summary.classList.toggle('muted', muted);
@@ -497,10 +525,11 @@
       });
     }
 
-    // Enable/disable the Configure button per type. text/number/checkbox/date/
-    // textarea/email/url/tags have nothing structural to configure -> disabled.
+    // Configure is available for every DATA field (it always offers the common
+    // Field options: default value + conditional display), plus type-specific
+    // config. Only a Section Break (layout-only) has nothing to configure.
     function typeNeedsConfig(t) {
-      return t === 'select' || t === 'link' || t === 'api' || t === 'table';
+      return t !== 'section';
     }
     function refreshRow(wrap) {
       var p = rowParts(wrap);
@@ -551,12 +580,12 @@
     var modalTitle = document.getElementById('hd-cfg-title');
     var applyBtn = document.getElementById('hd-cfg-apply');
     var activeWrap = null;     // the row being configured
-    var applyFn = null;        // type-specific write-back closure
+    var applyFns = [];         // write-back closures (common options + type-specific)
 
     function showModal() { backdrop.hidden = false; modal.hidden = false; }
     function closeModal() {
       backdrop.hidden = true; modal.hidden = true;
-      activeWrap = null; applyFn = null; modalBody.innerHTML = '';
+      activeWrap = null; applyFns = []; modalBody.innerHTML = '';
     }
     document.getElementById('hd-cfg-x').addEventListener('click', closeModal);
     document.getElementById('hd-cfg-cancel').addEventListener('click', closeModal);
@@ -565,7 +594,7 @@
       if (e.key === 'Escape' && !modal.hidden) closeModal();
     });
     applyBtn.addEventListener('click', function () {
-      if (applyFn) applyFn();
+      applyFns.forEach(function (f) { try { f(); } catch (e) {} });
       if (activeWrap) { refreshRow(activeWrap); }
       closeModal();
     });
@@ -573,16 +602,82 @@
     function openModal(wrap) {
       var p = rowParts(wrap);
       var t = p.type ? p.type.value : 'text';
-      activeWrap = wrap; applyFn = null;
+      activeWrap = wrap; applyFns = [];
       modalTitle.textContent = (p.label && p.label.value.trim()) || 'Field';
       modalBody.innerHTML = '';
       applyBtn.style.display = '';
+      // Common per-field options (default value + conditional display) for every
+      // DATA field. A Section Break is layout-only -> no options.
+      if (t !== 'section') buildCommonOptions(wrap);
       if (t === 'select')      buildSelectUI(wrap);
       else if (t === 'link')   buildLinkUI(wrap);
       else if (t === 'api')    buildApiUI(wrap);
       else if (t === 'table')  buildTableUI(wrap);
-      else                     buildEmptyUI(t);
+      else if (t === 'section') buildEmptyUI(t);
       showModal();
+    }
+
+    // ---- COMMON field options: default value + "show only if" (depends-on). Write
+    //      into the row's hidden field_default_<i> / field_showif_<i> carriers. ----
+    function buildCommonOptions(wrap) {
+      var p = rowParts(wrap);
+      var t = p.type ? p.type.value : 'text';
+      var wrapEl = document.createElement('div');
+      wrapEl.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--fr-border-color,#e2e8f0);';
+
+      // Default value (skip for api/table — those have no stored scalar default).
+      var defIn = null;
+      if (t !== 'api' && t !== 'table') {
+        var dlab = document.createElement('label');
+        dlab.className = 'frappe-label'; dlab.textContent = 'Default value';
+        defIn = document.createElement('input');
+        defIn.className = 'form-control form-control-sm';
+        defIn.placeholder = (t === 'checkbox') ? 'true / false' : 'optional default';
+        defIn.value = (p.dflt && p.dflt.value) || '';
+        wrapEl.appendChild(dlab); wrapEl.appendChild(defIn);
+      }
+
+      // Show only if <field> [= <value>] — a structured (safe) depends-on.
+      var slab = document.createElement('label');
+      slab.className = 'frappe-label'; slab.style.marginTop = '10px';
+      slab.textContent = 'Show only if';
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:8px;align-items:center;';
+      var fieldSel = document.createElement('select');
+      fieldSel.className = 'form-select form-select-sm';
+      var valIn = document.createElement('input');
+      valIn.className = 'form-control form-control-sm';
+      valIn.placeholder = 'equals value (blank = is set)';
+      // populate the controlling-field dropdown from OTHER data fields
+      var cur = {}; try { cur = JSON.parse((p.showif && p.showif.value) || '{}') || {}; } catch (e) { cur = {}; }
+      var opts = ['<option value="">(always show)</option>'];
+      document.querySelectorAll('.frappe-row-wrap').forEach(function (w2) {
+        if (w2 === wrap) return;                 // not itself
+        var l2 = w2.querySelector('input[name^="field_label_"]');
+        var t2 = w2.querySelector('select[name^="field_type_"]');
+        var lab = l2 ? (l2.value || '').trim() : '';
+        var ty = t2 ? t2.value : 'text';
+        if (!lab || ty === 'section' || ty === 'table' || ty === 'api') return;
+        var sl = lab.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (sl) opts.push('<option value="' + sl + '">' + lab.replace(/</g, '&lt;') + '</option>');
+      });
+      fieldSel.innerHTML = opts.join('');
+      fieldSel.value = cur.field || '';
+      valIn.value = (cur.value != null) ? cur.value : '';
+      row.appendChild(fieldSel); row.appendChild(valIn);
+      var hint = document.createElement('div');
+      hint.className = 'frappe-help';
+      hint.textContent = 'Hide this field on the form unless the chosen field matches.';
+      wrapEl.appendChild(slab); wrapEl.appendChild(row); wrapEl.appendChild(hint);
+      modalBody.appendChild(wrapEl);
+
+      applyFns.push(function () {
+        if (defIn && p.dflt) p.dflt.value = defIn.value.trim();
+        if (p.showif) {
+          var f = fieldSel.value.trim();
+          p.showif.value = f ? JSON.stringify({ field: f, value: valIn.value }) : '';
+        }
+      });
     }
 
     // ---- SELECT: an options LIST editor -> comma list into field_options_<i> ----
@@ -629,14 +724,14 @@
       modalBody.appendChild(list);
       modalBody.appendChild(add);
 
-      applyFn = function () {
+      applyFns.push(function () {
         var vals = [];
         list.querySelectorAll('.hd-opt-val').forEach(function (i) {
           var v = i.value.trim();
           if (v) vals.push(v);
         });
         if (p.opt) p.opt.value = vals.join(', ');   // comma list (server splits on ',')
-      };
+      });
     }
 
     // ---- TABLE: a child-COLUMN editor -> JSON [{label,type,options}] into
@@ -773,7 +868,7 @@
       });
       setMode(mode);
 
-      applyFn = function () {
+      applyFns.push(function () {
         if (mode === 'link') {
           var slug = (linkSel.value || '').trim();
           if (p.opt) p.opt.value = slug ? JSON.stringify({ child_type: slug }) : '';
@@ -788,7 +883,7 @@
           cols.push({ label: label, type: type, options: (type === 'select') ? options : '' });
         });
         if (p.opt) p.opt.value = JSON.stringify(cols);
-      };
+      });
     }
 
     // ---- LINK: target HydroType <select> -> slug into field_options_<i> ----
@@ -833,10 +928,10 @@
         typeIn.value = (current && sel.value !== current) ? current : '';
         modalBody.appendChild(typeIn);
 
-        applyFn = function () {
+        applyFns.push(function () {
           var v = typeIn.value.trim() || sel.value;
           if (p.opt) p.opt.value = (v || '').trim();
-        };
+        });
       });
     }
 
@@ -1048,7 +1143,7 @@
         sel.addEventListener('change', function () { renderInputs(sel.value); });
         if (currentConn) renderInputs(currentConn);
 
-        applyFn = function () {
+        applyFns.push(function () {
           var conn = sel.value.trim();
           if (p.opt) p.opt.value = conn;          // connector name verbatim (NOT slugified)
           var mapping = {};
@@ -1070,23 +1165,18 @@
               field_type: ft });
           });
           writeRowOutputs(wrap, ticked);          // field_outputs_<i> hidden input
-        };
+        });
       });
     }
 
     // ---- everything else: clean empty state. ----
     function buildEmptyUI(t) {
       applyBtn.style.display = 'none';            // nothing to apply
-      var labels = {
-        text: 'Text', number: 'Number', checkbox: 'Checkbox', date: 'Date',
-        textarea: 'Long Text', email: 'Email', url: 'URL', tags: 'Tags'
-      };
       var div = document.createElement('div');
       div.className = 'hd-empty-state';
       div.innerHTML = '<span class="ico"><i class="bi bi-info-circle"></i></span>'
-        + 'No extra configuration for a <strong>' + escapeHtml(labels[t] || t) + '</strong> field.';
+        + 'A Section Break is layout-only &mdash; no field options.';
       modalBody.appendChild(div);
-      applyFn = null;
     }
 
     // =====================================================================
