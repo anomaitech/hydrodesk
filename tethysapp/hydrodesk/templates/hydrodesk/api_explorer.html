@@ -15,7 +15,11 @@
   .hd-subhead { font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
                 color:var(--fr-text-muted,#6b7280); margin-bottom:10px; display:flex; align-items:center; gap:8px; }
   .hd-opts-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
-  .hd-filter-row { display:grid; grid-template-columns:1fr 130px 1fr 32px; gap:8px; align-items:center; margin-bottom:8px; }
+  .hd-filter-row { padding:12px 0; }
+  .hd-filter-row + .hd-filter-row { border-top:1px solid var(--fr-border-color,#e6e9ee); }
+  .hd-x-btn { border:none; background:none; color:var(--fr-text-muted,#8d99a6); font-size:18px;
+              line-height:1; cursor:pointer; flex:0 0 auto; padding:2px 6px; border-radius:4px; }
+  .hd-x-btn:hover { color:#c0392b; background:rgba(192,57,45,.08); }
   .hd-dt-row { padding:8px 9px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
   .hd-toolbar { display:flex; gap:8px; align-items:stretch; }
   .hd-toolbar input { flex:1 1 auto; }
@@ -186,69 +190,103 @@
     if (!active) return;
     var row = document.createElement("div");
     row.className = "hd-filter-row";
-    row.style.cssText = "display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid "
-      + "var(--fr-border-color,#e6e9ee);border-radius:8px;margin-bottom:8px;background:var(--fr-control-bg,#fafbfc);";
-    var fopts = '<option value="">— field —</option>' + active.fields.map(function (f) {
-      var mark = f.is_connector_output ? ' ⚡' : (f.is_table ? ' ⊞' : '');
-      return '<option value="' + esc(f.key) + '">' + esc(f.title) + mark + '</option>'; }).join("");
-    var head = document.createElement("div");
-    head.style.cssText = "display:flex;gap:8px;align-items:center;";
-    head.innerHTML = '<select class="form-select form-select-sm hd-f-field" style="flex:1;">' + fopts + '</select>'
-      + '<button class="btn btn-link btn-sm hd-f-x" type="button" style="padding:0;color:#c00;">remove</button>';
-    var body = document.createElement("div");
-    body.className = "hd-fr-body";
-    row.appendChild(head); row.appendChild(body);
-    var fieldEl = head.querySelector(".hd-f-field");
-    fieldEl.addEventListener("change", function () {
-      row._fieldKey = fieldEl.value;
-      var f = fieldByKey(fieldEl.value);
-      if (f && f.is_table) renderTableBody(body, f);
-      else renderScalarBody(body);
-      buildUrl();
-    });
-    head.querySelector(".hd-f-x").onclick = function () { row.remove(); buildUrl(); };
+    renderRow(row);
     filtersEl.appendChild(row);
-    renderScalarBody(body);   // until a field is chosen
   }
 
-  // SCALAR field body: a single [op][value] pair (stored-attribute filter).
-  function renderScalarBody(body) {
-    body.innerHTML = '<div style="display:grid;grid-template-columns:130px 1fr;gap:8px;">'
-      + '<select class="form-select form-select-sm hd-f-op">' + opOptions(OPS, "") + '</select>'
-      + '<input class="form-control form-control-sm hd-f-val" placeholder="value"></div>';
-    body.querySelectorAll("select,input").forEach(function (el) { el.addEventListener("input", buildUrl); });
+  // (Re)render one filter row from its selected field. A SCALAR field is a single
+  // compact line [field][op][value][×] (op/value disabled until a field is chosen);
+  // a TABLE field (⊞ inline / ⚡ live) keeps the field line and drops an indented
+  // row-condition builder beneath it.
+  function renderRow(row) {
+    var selectedKey = row._fieldKey || "";
+    var f = selectedKey ? fieldByKey(selectedKey) : null;
+    row.innerHTML = "";
+
+    var line = document.createElement("div");
+    line.style.cssText = "display:flex;gap:8px;align-items:center;";
+
+    var fopts = '<option value="">— field —</option>' + active.fields.map(function (fl) {
+      var mark = fl.is_connector_output ? ' ⚡' : (fl.is_table ? ' ⊞' : '');
+      return '<option value="' + esc(fl.key) + '"' + (fl.key === selectedKey ? ' selected' : '')
+        + '>' + esc(fl.title) + mark + '</option>'; }).join("");
+    var fieldEl = document.createElement("select");
+    fieldEl.className = "form-select form-select-sm hd-f-field";
+    fieldEl.style.cssText = "flex:1 1 170px;min-width:0;";
+    fieldEl.innerHTML = fopts;
+    fieldEl.addEventListener("change", function () {
+      row._fieldKey = fieldEl.value; renderRow(row); buildUrl();
+    });
+    line.appendChild(fieldEl);
+
+    if (f && f.is_table) {
+      var tag = document.createElement("span");
+      tag.className = "frappe-muted frappe-text-sm";
+      tag.style.cssText = "flex:2 1 auto;";
+      tag.innerHTML = (f.is_connector_output ? "⚡ live" : "⊞ table") + " — set row conditions below";
+      line.appendChild(tag);
+    } else {
+      var mid = document.createElement("div");
+      mid.style.cssText = "display:flex;gap:8px;flex:2 1 auto;min-width:0;";
+      var opEl = document.createElement("select");
+      opEl.className = "form-select form-select-sm hd-f-op";
+      opEl.style.cssText = "flex:0 0 104px;"; opEl.innerHTML = opOptions(OPS, ""); opEl.disabled = !f;
+      var valEl = document.createElement("input");
+      valEl.className = "form-control form-control-sm hd-f-val";
+      valEl.style.cssText = "flex:1 1 auto;min-width:0;";
+      valEl.placeholder = f ? "value" : "pick a field…"; valEl.disabled = !f;
+      opEl.addEventListener("input", buildUrl); valEl.addEventListener("input", buildUrl);
+      mid.appendChild(opEl); mid.appendChild(valEl);
+      line.appendChild(mid);
+    }
+
+    var rm = document.createElement("button");
+    rm.type = "button"; rm.className = "hd-x-btn"; rm.title = "Remove filter"; rm.textContent = "×";
+    rm.onclick = function () { row.remove(); buildUrl(); };
+    line.appendChild(rm);
+    row.appendChild(line);
+
+    if (f && f.is_table) row.appendChild(tableBuilder(row, f));
   }
 
-  // TABLE field body (inline ⊞ or live ⚡): a row-predicate builder — N column
-  // conditions joined by AND/OR, matching a SINGLE row of the table.
-  function renderTableBody(body, f) {
-    body.innerHTML = "";
+  // The indented row-condition builder shown under a TABLE field: N column
+  // conditions joined by AND/OR, each match tested against a SINGLE row.
+  function tableBuilder(row, f) {
+    var panel = document.createElement("div");
+    panel.style.cssText = "margin:10px 0 2px 4px;padding:10px 12px;border-left:3px solid "
+      + "var(--fr-primary,#2490ef);background:var(--fr-control-bg,#f6f8fa);border-radius:0 6px 6px 0;";
     var cols = f.columns || [];
     var hint = document.createElement("div");
-    hint.className = "frappe-help"; hint.style.margin = "0 0 6px";
+    hint.className = "frappe-help"; hint.style.margin = "0 0 8px";
     hint.innerHTML = (f.is_connector_output
-        ? "⚡ live output via <code>" + esc(f.connector || "") + "</code> — fetched per record (first 50). "
+        ? "⚡ live via <code>" + esc(f.connector || "") + "</code>, fetched per record (first 50). "
         : "")
       + (cols.length ? "columns: <strong>" + cols.map(esc).join("</strong>, <strong>") + "</strong>"
                      : "columns appear after the first fetch");
-    body.appendChild(hint);
+    panel.appendChild(hint);
+
     var joinWrap = document.createElement("div");
     joinWrap.className = "hd-joinwrap";
-    joinWrap.style.cssText = "display:none;align-items:center;gap:6px;margin-bottom:6px;";
+    joinWrap.style.cssText = "display:none;align-items:center;gap:6px;margin-bottom:8px;";
     joinWrap.innerHTML = '<span class="frappe-muted frappe-text-sm">match a row where</span>'
-      + '<select class="form-select form-select-sm hd-join" style="width:auto;">'
-      + '<option value="AND">all conditions (AND)</option><option value="OR">any condition (OR)</option></select>';
+      + '<select class="form-select form-select-sm hd-join" style="width:auto;flex:0 0 auto;">'
+      + '<option value="AND">all conditions (AND)</option>'
+      + '<option value="OR">any condition (OR)</option></select>';
     joinWrap.querySelector(".hd-join").addEventListener("change", buildUrl);
-    body.appendChild(joinWrap);
+    panel.appendChild(joinWrap);
+
     var conds = document.createElement("div");
     conds.className = "hd-conds";
-    body.appendChild(conds);
+    panel.appendChild(conds);
+
     var add = document.createElement("button");
     add.type = "button"; add.className = "btn btn-link btn-sm"; add.style.padding = "0";
     add.textContent = "+ condition";
     add.onclick = function () { addCond(conds, f, joinWrap); buildUrl(); };
-    body.appendChild(add);
+    panel.appendChild(add);
+
     addCond(conds, f, joinWrap);   // start with one condition
+    return panel;
   }
 
   function addCond(conds, f, joinWrap) {
