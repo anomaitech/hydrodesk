@@ -3290,9 +3290,15 @@ def _render_linked_table(session, child_slug, parent_slug, parent_id, field,
             params["parent_link_field"] = child_link
         add_url = reverse("hydrodesk:new", kwargs={"slug": child_slug}) + "?" \
             + urllib.parse.urlencode(params)
+        link_url = reverse("hydrodesk:link_existing", kwargs={
+            "parent_slug": parent_slug, "parent_id": str(parent_id), "field": field})
         add_btn = str(format_html(
-            "<div style='margin-top:6px;'><a class='btn btn-default btn-sm' href='{}'>"
-            "<i class='bi bi-plus-lg'></i> Add {}</a></div>", add_url, child_name))
+            "<div style='margin-top:6px;display:flex;gap:6px;'>"
+            "<a class='btn btn-default btn-sm' href='{}'>"
+            "<i class='bi bi-plus-lg'></i> Add {}</a>"
+            "<a class='btn btn-default btn-sm' href='{}'>"
+            "<i class='bi bi-link-45deg'></i> Link existing</a></div>",
+            add_url, child_name, link_url))
 
     if child_link:
         children = _child_records_by_link(session, child_slug, child_link, parent_id)
@@ -3333,6 +3339,96 @@ def _render_linked_table(session, child_slug, parent_slug, parent_id, field,
              + "</tr></thead><tbody>" + body + "</tbody></table>")
     return mark_safe("<div class='hd-series-wrap'><div class='hd-series-scroll'>"
                      + table + "</div>" + foot + "</div>" + add_btn)
+
+
+@controller(name="link_existing",
+            url="link-existing/{parent_slug}/{parent_id}/{field}",
+            title="Link existing")
+def link_existing(request, parent_slug=None, parent_id=None, field=None):
+    """Attach an EXISTING child record to a parent's linked Table (vs. '+ New').
+    GET lists candidate records of the child type (those not already linked here);
+    POST re-points the chosen child at this parent — by setting its Link field
+    (reverse-link mode) or its hidden ``_parent`` (the _parent-owned mode) — then
+    returns to the parent detail. Gated by WRITE on the CHILD type (it edits the
+    child record)."""
+    engine = App.get_persistent_store_database("hydro_db")
+    home = redirect(reverse("hydrodesk:home"))
+    back = redirect(reverse("hydrodesk:detail",
+                            kwargs={"slug": parent_slug, "record_id": parent_id}))
+    with Session(engine) as session:
+        pmeta = _load_hydrotype(session, parent_slug)
+        if pmeta is None:
+            return home
+        p_display, p_schema, _gk = pmeta
+        prop = ((p_schema or {}).get("properties") or {}).get(field) or {}
+        child_slug = prop.get("x-child-type")
+        child_link = prop.get("x-child-link")
+        if not child_slug:   # not a linked Table field -> nothing to attach
+            return back
+        cmeta = _load_hydrotype(session, child_slug)
+        if cmeta is None:
+            return back
+        c_display, c_schema, _cgk = cmeta
+        if not _user_can(request, c_schema, "write"):
+            return _denied(request, "link", c_display)
+
+        if request.method == "POST":
+            child_id = (request.POST.get("child_id") or "").strip()
+            rec = session.execute(
+                select(m.HydroRecord).where(
+                    m.HydroRecord.hydrotype_slug == child_slug,
+                    m.HydroRecord.id == child_id)
+            ).scalar_one_or_none() if child_id else None
+            if rec is not None:
+                attrs = dict(rec.attributes or {})
+                if child_link:
+                    attrs[child_link] = str(parent_id)            # reverse-link mode
+                else:
+                    attrs["_parent"] = {"slug": parent_slug,      # _parent-owned mode
+                                        "id": str(parent_id), "field": field}
+                rec.attributes = attrs
+                session.add(rec)
+                session.commit()
+            return back
+
+        # GET: candidate records = all of the child type NOT already linked here.
+        if child_link:
+            already = _child_records_by_link(session, child_slug, child_link, parent_id)
+        else:
+            already = _child_records(session, child_slug, parent_id, field)
+        already_ids = {str(r.id) for r in already}
+        options = [{"id": rid, "label": lab}
+                   for rid, lab in _link_options(session, child_slug)
+                   if rid not in already_ids]
+        parent_label = _label_for(p_schema, _record_attrs(session, parent_slug, parent_id)) \
+            or str(parent_id)[:8]
+        new_params = {"parent_slug": parent_slug or "", "parent_id": str(parent_id),
+                      "parent_field": field or ""}
+        if child_link:
+            new_params["parent_link_field"] = child_link
+        return render(request, "hydrodesk/link_existing.html", {
+            "parent_display": p_display,
+            "parent_label": parent_label,
+            "child_display": c_display,
+            "field": field,
+            "options": options,
+            "form_action": reverse("hydrodesk:link_existing", kwargs={
+                "parent_slug": parent_slug, "parent_id": parent_id, "field": field}),
+            "parent_detail_url": reverse("hydrodesk:detail", kwargs={
+                "slug": parent_slug, "record_id": parent_id}),
+            "new_url": reverse("hydrodesk:new", kwargs={"slug": child_slug})
+            + "?" + urllib.parse.urlencode(new_params),
+        })
+
+
+def _record_attrs(session, slug, record_id):
+    """The attributes dict of one record (or {}) — for a label lookup."""
+    row = session.execute(
+        select(m.HydroRecord.attributes).where(
+            m.HydroRecord.hydrotype_slug == slug,
+            m.HydroRecord.id == record_id)
+    ).first()
+    return (row[0] if row else {}) or {}
 
 
 def _load_connector(session, connector_name):
