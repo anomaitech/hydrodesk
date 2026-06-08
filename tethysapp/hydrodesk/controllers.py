@@ -4878,9 +4878,21 @@ def _coerce_script_output(value, ftype):
             return float(v) if v is not None else None
         except (TypeError, ValueError):
             return v
+    if ft in ("time-series", "table", "series"):
+        # A table is a list of row dicts. A single dict -> a one-row table (its keys
+        # become the columns). A bare scalar -> one row {value}.
+        if isinstance(v, dict):
+            return [v]
+        if isinstance(v, list):
+            return v
+        return [] if v is None else [{"value": v}]
     if ft in ("text", "string", "date"):
-        return v if (v is None or isinstance(v, str)) else str(v)
-    return v   # time-series / table / other -> the json-ified structure
+        if v is None or isinstance(v, str):
+            return v
+        if isinstance(v, (dict, list)):     # store JSON, never a Python repr string
+            return json.dumps(v)
+        return str(v)
+    return v
 
 
 def _script_output_json_type(field_type):
@@ -4918,6 +4930,8 @@ def _infer_script_output_field_type(value):
         return ("Date", "date")
     if isinstance(value, (list, tuple)):
         return ("Time-Series", "series")
+    if isinstance(value, dict):
+        return ("Time-Series", "table")        # a dict -> a one-row table (cols = keys)
     return ("Text", "string")
 
 
