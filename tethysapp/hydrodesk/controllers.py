@@ -2742,6 +2742,145 @@ def hydrotype_new(request, slug="monitoring_station"):
                                 parent=parent))
 
 
+def _importable_fields(field_schema):
+    """The scalar fields a flat CSV can populate, in declaration order. Skips layout
+    markers, API fields (computed/not stored), linked Tables (separate records) and
+    inline Tables (not flat-CSV). Returns [(key, prop, title)]."""
+    out = []
+    for key, prop in _ordered_props(field_schema):
+        prop = prop or {}
+        if prop.get("x-layout") or prop.get("x-api-connector") or prop.get("x-child-type"):
+            continue
+        if prop.get("type") == "array" and prop.get("x-widget") == "table":
+            continue
+        out.append((key, prop, prop.get("title") or key.replace("_", " ").title()))
+    return out
+
+
+@controller(name="import_records", url="import/{slug}", title="Import CSV")
+def import_records(request, slug="monitoring_station"):
+    """Bulk-create HydroRecords of one HydroType from an uploaded CSV, auto-mapped by
+    header name. GET shows the upload form + the expected headers; POST parses the
+    file, matches each header to a field (by key / slugified title, case-insensitive),
+    coerces + validates each row with the SAME engine as the record form, inserts the
+    good rows, and reports per-row errors so a few bad rows never block the good ones.
+    Point types read latitude/longitude (or lat/lon) columns for the geometry."""
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+    if meta is None:
+        return redirect(reverse("hydrodesk:home"))
+    display_name, field_schema, geometry_kind = meta
+    if not _user_can(request, field_schema, "write"):
+        return _denied(request, "import", display_name)
+    geometry_kind = _resolve_geometry_kind(field_schema, geometry_kind)
+    importable = _importable_fields(field_schema)
+    required = (field_schema or {}).get("required") or []
+
+    ctx = {
+        "slug": slug,
+        "display_name": display_name,
+        "list_url": reverse("hydrodesk:list", kwargs={"slug": slug}),
+        "form_action": reverse("hydrodesk:import_records", kwargs={"slug": slug}),
+        "is_point": geometry_kind == "point",
+        "fields": [{"key": k, "title": t, "required": k in required}
+                   for k, _p, t in importable],
+        "done": False,
+    }
+
+    if request.method != "POST":
+        return render(request, "hydrodesk/import_records.html", ctx)
+
+    upload = request.FILES.get("csv_file")
+    if upload is None:
+        ctx["error"] = "Choose a CSV file to import."
+        return render(request, "hydrodesk/import_records.html", ctx)
+
+    import csv as _csvmod
+    import io
+    try:
+        text = upload.read().decode("utf-8-sig", "replace")
+    except Exception:
+        ctx["error"] = "Could not read the file as UTF-8 text."
+        return render(request, "hydrodesk/import_records.html", ctx)
+
+    reader = _csvmod.DictReader(io.StringIO(text), skipinitialspace=True)
+    headers = reader.fieldnames or []
+    if not headers:
+        ctx["error"] = "The CSV has no header row."
+        return render(request, "hydrodesk/import_records.html", ctx)
+
+    # Map each importable field -> a CSV header (by field key or slugified title).
+    norm = {}
+    for h in headers:
+        norm.setdefault(_slugify_underscore(h or ""), h)
+    col_for = {}
+    for key, prop, title in importable:
+        for cand in (_slugify_underscore(key), _slugify_underscore(title)):
+            if cand in norm:
+                col_for[key] = norm[cand]
+                break
+    lat_col = next((norm[c] for c in ("latitude", "lat") if c in norm), None)
+    lon_col = next((norm[c] for c in ("longitude", "lon", "lng") if c in norm), None)
+    matched = sorted(set(col_for.values()))
+    ignored = [h for h in headers if h not in matched and h not in (lat_col, lon_col)]
+
+    created, row_errors = 0, []
+    MAX_ROWS = 5000
+    with Session(engine) as session:
+        for i, raw in enumerate(reader, start=2):  # row 1 is the header
+            if (i - 1) > MAX_ROWS:
+                row_errors.append({"row": i, "msg": f"stopped at the {MAX_ROWS}-row limit"})
+                break
+            # Build a form-like post dict from the mapped columns; a boolean field is
+            # True only when its cell is truthy (presence => True in _coerce_attributes).
+            row_post = {}
+            for key, prop, _t in importable:
+                col = col_for.get(key)
+                if col is None:
+                    continue
+                cell = (raw.get(col) or "").strip()
+                if prop.get("type") == "boolean":
+                    if cell.lower() in ("true", "1", "yes", "y", "t", "on"):
+                        row_post[key] = "on"
+                elif cell != "":
+                    row_post[key] = cell
+            attributes, coerce_errors = _coerce_attributes(field_schema, row_post)
+            if coerce_errors:
+                row_errors.append({"row": i, "msg": "; ".join(
+                    f"{k} {v}" for k, v in coerce_errors.items())})
+                continue
+            validated, vmsg = _validate_attributes(field_schema, attributes)
+            if vmsg:
+                row_errors.append({"row": i, "msg": vmsg})
+                continue
+            geom = None
+            if geometry_kind == "point":
+                geom, gmsg = _parse_point({
+                    "longitude": (raw.get(lon_col) or "") if lon_col else "",
+                    "latitude": (raw.get(lat_col) or "") if lat_col else ""})
+                if gmsg:
+                    row_errors.append({"row": i, "msg": gmsg})
+                    continue
+            session.add(m.HydroRecord(
+                hydrotype_slug=slug, attributes=dict(validated), geom=geom,
+                created_by=getattr(request.user, "username", None)))
+            created += 1
+        session.commit()
+
+    ctx.update({
+        "done": True,
+        "created": created,
+        "error_count": len(row_errors),
+        "row_errors": row_errors[:200],
+        "matched_columns": matched,
+        "ignored_columns": ignored,
+        "point_mapped": bool(geometry_kind == "point" and lat_col and lon_col),
+        "point_missing": bool(geometry_kind == "point" and not (lat_col and lon_col)),
+    })
+    return render(request, "hydrodesk/import_records.html", ctx)
+
+
 @controller(name="edit", url="record/{slug}/{record_id}/edit", title="Edit Record")
 def hydrotype_edit(request, slug="monitoring_station", record_id=None):
     """Edit an existing HydroRecord. GET pre-fills the form from the record;

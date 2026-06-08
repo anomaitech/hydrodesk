@@ -1,0 +1,122 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Bulk CSV record import for one HydroType (auto-mapped by header). Context
+  (controllers.import_records): slug, display_name, list_url, form_action,
+  is_point, fields:[{key,title,required}], done, and on POST also created,
+  error_count, row_errors:[{row,msg}], matched_columns, ignored_columns,
+  point_mapped, point_missing, error.
+{% endcomment %}
+{% block title %}Import {{ display_name }} - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span><a href="{{ list_url }}">{{ display_name }}</a>
+    <span class="sep">/</span>Import
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Import {{ display_name }}</h1>
+      <span class="indicator-pill blue">CSV</span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{{ list_url }}">
+        <i class="bi bi-arrow-left"></i> Back to list
+      </a>
+    </div>
+  </div>
+
+  {% if error %}
+    <div class="alert alert-warning" role="alert">{{ error }}</div>
+  {% endif %}
+
+  {% if done %}
+    {# ---- RESULT ---- #}
+    <div class="frappe-form-card" style="max-width:760px;">
+      <div class="frappe-form-section">
+        <div class="frappe-section-head">Result</div>
+        <p style="margin:0 0 8px;">
+          <span class="indicator-pill green">{{ created }} imported</span>
+          {% if error_count %}<span class="indicator-pill red">{{ error_count }} skipped</span>{% endif %}
+        </p>
+        <div class="frappe-help">
+          Matched columns: {% for c in matched_columns %}<code>{{ c }}</code>{% if not forloop.last %}, {% endif %}{% empty %}<em>none</em>{% endfor %}.
+          {% if point_mapped %} Geometry read from latitude/longitude columns.{% endif %}
+          {% if point_missing %} <strong>No latitude/longitude columns found</strong> &mdash; rows for this point type were skipped.{% endif %}
+          {% if ignored_columns %}<br>Ignored columns (no matching field): {% for c in ignored_columns %}<code>{{ c }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}.{% endif %}
+        </div>
+      </div>
+
+      {% if row_errors %}
+      <div class="frappe-form-section">
+        <div class="frappe-section-head">Skipped rows <span class="frappe-muted frappe-text-sm">(first 200)</span></div>
+        <table class="hd-series-table">
+          <thead><tr><th style="width:80px;">Row</th><th>Reason</th></tr></thead>
+          <tbody>
+            {% for e in row_errors %}
+            <tr><td>{{ e.row }}</td><td>{{ e.msg }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+
+      <div class="frappe-form-actions">
+        <a class="btn btn-primary btn-sm" href="{{ list_url }}">View records</a>
+        <a class="btn btn-default btn-sm" href="{{ form_action }}">Import another file</a>
+      </div>
+    </div>
+
+  {% else %}
+    {# ---- UPLOAD ---- #}
+    <form method="post" action="{{ form_action }}" enctype="multipart/form-data"
+          class="frappe-form-card" style="max-width:760px;">
+      {% csrf_token %}
+      <div class="frappe-form-section">
+        <div class="frappe-section-head">Upload a CSV</div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_csv_file">CSV file<span class="req">*</span></label>
+          <input class="form-control" type="file" id="id_csv_file" name="csv_file" accept=".csv,text/csv" required>
+          <div class="frappe-help">
+            The first row must be a header. Columns are matched to fields by name
+            (case-insensitive); unmatched columns are ignored and each row is
+            validated like the record form &mdash; bad rows are skipped and reported,
+            good rows still import.
+          </div>
+        </div>
+      </div>
+
+      <div class="frappe-form-section">
+        <div class="frappe-section-head">Expected columns</div>
+        <div class="frappe-help" style="margin-bottom:6px;">
+          Use these header names (a <span style="color:#e24c4c;">*</span> marks a required field):
+        </div>
+        <p style="margin:0;line-height:2;">
+          {% for f in fields %}
+            <code>{{ f.title }}</code>{% if f.required %}<span style="color:#e24c4c;">*</span>{% endif %}{% if not forloop.last %} &nbsp; {% endif %}
+          {% empty %}
+            <em>This type has no importable scalar fields.</em>
+          {% endfor %}
+        </p>
+        {% if is_point %}
+        <div class="frappe-help" style="margin-top:10px;">
+          <i class="bi bi-geo-alt"></i> This is a <strong>point</strong> type &mdash; also include
+          <code>latitude</code> and <code>longitude</code> columns (or <code>lat</code>/<code>lon</code>).
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="frappe-form-actions">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="bi bi-upload"></i> Import
+        </button>
+        <a class="btn btn-default btn-sm" href="{{ list_url }}">Cancel</a>
+      </div>
+    </form>
+  {% endif %}
+
+</div>
+{% endblock %}
