@@ -3486,9 +3486,10 @@ def _api_authorized(request, field_schema):
     if not tok:
         return False
     try:
+        import hmac
         with Session(App.get_persistent_store_database("hydro_db")) as session:
             secret = _resolve_secret(session, "api_read_token")
-        return bool(secret) and tok == secret
+        return bool(secret) and hmac.compare_digest(tok, str(secret))
     except Exception:
         return False
 
@@ -3574,9 +3575,11 @@ def api_records(request, slug=None):
         filtered, ferr = _api_apply_filters(base, request.GET)
         if ferr:
             return JsonResponse({"ok": False, "error": "; ".join(ferr)}, status=400)
-        total = session.execute(
-            select(func.count()).select_from(filtered.subquery())).scalar() or 0
+        # Both the count and the page can fail on a numeric filter over mixed-type data
+        # (cast(Float) on a non-numeric attribute) -> 400, never a 500.
         try:
+            total = session.execute(
+                select(func.count()).select_from(filtered.subquery())).scalar() or 0
             rows = session.execute(filtered.limit(limit).offset(offset)).all()
         except Exception as exc:
             return JsonResponse({"ok": False, "error": "query failed: %s" % str(exc)[:160]}, status=400)
