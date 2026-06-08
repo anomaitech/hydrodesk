@@ -4842,6 +4842,38 @@ def _apply_nc_map(cfg, attrs, nc_map):
     return cfg, attrs
 
 
+def _nc_params_bar(slug, record_id, field, nc_map, attrs):
+    """A small EDIT-IN-PLACE bar shown above a netcdf API field's table: the active
+    region (polygon count) + date window, and an 'Adjust & refresh' button that opens
+    the params modal (data-* carry the field's current values + the update URL)."""
+    nc_map = nc_map or {}
+    if not (slug and record_id and nc_map):
+        return ""
+    try:
+        url = reverse("hydrodesk:api_params",
+                      kwargs={"slug": slug, "record_id": record_id, "field": field})
+    except Exception:
+        return ""
+    start_f, end_f, shp_f = nc_map.get("start"), nc_map.get("end"), nc_map.get("shapefile")
+    start_v = str((attrs or {}).get(start_f) or "") if start_f else ""
+    end_v = str((attrs or {}).get(end_f) or "") if end_f else ""
+    n = _geojson_feature_count((attrs or {}).get(shp_f)) if shp_f else 0
+    summary = []
+    if shp_f:
+        summary.append("region: %d polygon%s" % (n, "" if n == 1 else "s"))
+    if start_f or end_f:
+        summary.append("window: %s … %s" % (start_v or "—", end_v or "—"))
+    return format_html(
+        '<div class="hd-ncparams" data-url="{}" data-start="{}" data-end="{}" '
+        'data-haveshp="{}" data-havedate="{}" '
+        'style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px;">'
+        '<span class="frappe-muted">{}</span>'
+        '<button type="button" class="btn btn-link btn-sm hd-ncparams-btn" '
+        'style="padding:0 4px;">Adjust &amp; refresh</button></div>',
+        url, start_v, end_v, "1" if shp_f else "", "1" if (start_f or end_f) else "",
+        " · ".join(summary) or "query parameters")
+
+
 def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
                       field_map=None, api_outputs=None, nc_map=None):
     """Render an API field's LIVE result as safe HTML for the detail view.
@@ -5036,15 +5068,18 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
         connector_name = prop.get("x-api-connector")
         if connector_name:
             connector = _load_connector(session, connector_name) if session else None
-            fields.append({
-                "label": label,
-                "value": _render_api_field(
-                    connector_name, connector, attrs.get(name), attrs,
-                    refresh_url=refresh_urls.get(name),
-                    field_map=prop.get("x-api-map"),
-                    api_outputs=prop.get("x-api-outputs"),
-                    nc_map=prop.get("x-nc-map")),
-            })
+            api_val = _render_api_field(
+                connector_name, connector, attrs.get(name), attrs,
+                refresh_url=refresh_urls.get(name),
+                field_map=prop.get("x-api-map"),
+                api_outputs=prop.get("x-api-outputs"),
+                nc_map=prop.get("x-nc-map"))
+            if prop.get("x-nc-map"):     # edit-in-place params bar above the table
+                bar = _nc_params_bar(parent_slug, parent_id, name,
+                                     prop.get("x-nc-map"), attrs)
+                if bar:
+                    api_val = mark_safe(str(bar) + str(api_val))
+            fields.append({"label": label, "value": api_val})
             seen.add(name)
             continue
         if prop.get("type") == "array" and prop.get("x-child-type"):
@@ -5076,6 +5111,50 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
             "value": _format_cell(value),
         })
     return fields
+
+
+@controller(name="api_params", url="record/{slug}/{record_id}/api-params/{field}",
+            title="Update query")
+def api_params_update(request, slug=None, record_id=None, field=None):
+    """EDIT-IN-PLACE for a netcdf API field: update the record's mapped date/shapefile
+    fields (the ``x-nc-map`` targets) from the params modal, then redirect to the detail
+    with ``?refresh=<field>`` so the query re-runs with the new parameters. POST only,
+    write-gated, multipart (the shapefile may be re-uploaded)."""
+    engine = App.get_persistent_store_database("hydro_db")
+    detail_url = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST":
+        return redirect(detail_url)
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(reverse("hydrodesk:home"))
+        _dn, field_schema, _ = meta
+        if not _user_can(request, field_schema, "write"):
+            return _denied(request, "edit", _dn)
+        prop = ((field_schema.get("properties") or {}).get(field)) or {}
+        nc_map = prop.get("x-nc-map") or {}
+        rec = session.execute(
+            select(m.HydroRecord)
+            .where(m.HydroRecord.hydrotype_slug == slug)
+            .where(m.HydroRecord.id == record_id)
+        ).scalar_one_or_none()
+        if rec is None or not nc_map:
+            return redirect(detail_url)
+        attrs = dict(rec.attributes or {})
+        for key in ("start", "end"):
+            fld = nc_map.get(key)
+            if fld:
+                v = (request.POST.get("p_" + key) or "").strip()
+                if v:
+                    attrs[fld] = v
+        shp_fld = nc_map.get("shapefile")
+        if shp_fld and request.FILES.get("p_shapefile") is not None:
+            gj = _shapefile_to_featurecollection(request.FILES["p_shapefile"])
+            if gj:
+                attrs[shp_fld] = gj
+        rec.attributes = attrs
+        session.commit()
+    return redirect(detail_url + "?refresh=" + urllib.parse.quote(field or ""))
 
 
 @controller(name="detail", url="record/{slug}/{record_id}", title="Record")

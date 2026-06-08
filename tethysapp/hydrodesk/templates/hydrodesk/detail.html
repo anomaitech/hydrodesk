@@ -192,5 +192,73 @@
     .then(draw)
     .catch(function () { holder.innerHTML = '<div class="frappe-help" style="padding:12px;">Map library could not be loaded (offline?). Geometry is still stored.</div>'; });
 })();
+
+// ---- Edit-in-place: a netcdf API field's "Adjust & refresh" -> params modal. ----
+(function () {
+  var btns = document.querySelectorAll('.hd-ncparams-btn');
+  if (!btns.length) return;
+  var modal = document.getElementById('hd-ncp-modal');
+  var backdrop = document.getElementById('hd-ncp-backdrop');
+  var form = document.getElementById('hd-ncp-form');
+  if (!modal || !form) return;
+  var dateWrap = document.getElementById('hd-ncp-dates');
+  var shpWrap = document.getElementById('hd-ncp-shp');
+  var startIn = document.getElementById('hd-ncp-start');
+  var endIn = document.getElementById('hd-ncp-end');
+  function open() { backdrop.hidden = false; modal.hidden = false; }
+  function close() { backdrop.hidden = true; modal.hidden = true; }
+  btns.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var bar = btn.closest('.hd-ncparams');
+      form.action = bar.getAttribute('data-url');
+      var hasDate = bar.getAttribute('data-havedate') === '1';
+      var hasShp = bar.getAttribute('data-haveshp') === '1';
+      dateWrap.style.display = hasDate ? '' : 'none';
+      shpWrap.style.display = hasShp ? '' : 'none';
+      if (startIn) startIn.value = bar.getAttribute('data-start') || '';
+      if (endIn) endIn.value = bar.getAttribute('data-end') || '';
+      var f = form.querySelector('input[type=file]'); if (f) f.value = '';
+      open();
+    });
+  });
+  document.getElementById('hd-ncp-x').addEventListener('click', close);
+  document.getElementById('hd-ncp-cancel').addEventListener('click', close);
+  backdrop.addEventListener('click', close);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !modal.hidden) close(); });
+})();
 </script>
+
+{# ---- Edit-in-place params modal (netcdf API fields) ---- #}
+<div id="hd-ncp-backdrop" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1040;"></div>
+<div id="hd-ncp-modal" hidden role="dialog" aria-modal="true"
+     style="position:fixed;z-index:1050;left:50%;top:50%;transform:translate(-50%,-50%);width:min(440px,92vw);background:#fff;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.25);">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--fr-border,#e2e6ea);">
+    <strong>Adjust query &amp; refresh</strong>
+    <button type="button" id="hd-ncp-x" class="btn btn-link btn-sm" style="padding:0;">&times;</button>
+  </div>
+  <form id="hd-ncp-form" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <div style="padding:16px;">
+      <div id="hd-ncp-dates" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="hd-ncp-start">Start date</label>
+          <input class="form-control" type="date" id="hd-ncp-start" name="p_start">
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="hd-ncp-end">End date</label>
+          <input class="form-control" type="date" id="hd-ncp-end" name="p_end">
+        </div>
+      </div>
+      <div id="hd-ncp-shp" class="frappe-form-group" style="margin-bottom:6px;">
+        <label class="frappe-label">Replace shapefile <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+        <input class="form-control" type="file" name="p_shapefile" accept=".zip,.shp,application/zip">
+        <div class="frappe-help">Leave empty to keep the current region.</div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--fr-border,#e2e6ea);">
+      <button type="button" id="hd-ncp-cancel" class="btn btn-secondary btn-sm">Cancel</button>
+      <button type="submit" class="btn btn-primary btn-sm">Save &amp; refresh</button>
+    </div>
+  </form>
+</div>
 {% endblock %}
