@@ -476,6 +476,36 @@
         </div>
       </div>
 
+      {# ---- Per-record region & time (WCS + GEE): same shapefile + date-range mapping as NetCDF ---- #}
+      <div class="hd-kind-prparams">
+        <div class="frappe-section-head" style="margin-top:6px;">Per-record region &amp; time</div>
+        <div class="frappe-form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="id_pr_region" name="pr_region" value="on" {% if pr_region %}checked{% endif %}>
+            Region = the record's uploaded <strong>Shapefile</strong> field
+          </label>
+          <div class="frappe-help">When ticked, the query reduces over each record's own shapefile (mapped on the doctype's API field). Otherwise it uses the record's point.</div>
+        </div>
+        <div class="frappe-form-group" style="max-width:360px;">
+          <label class="frappe-label" for="id_pr_time_source">Date range</label>
+          <select class="form-select" id="id_pr_time_source" name="pr_time_source">
+            <option value="none"  {% if pr_time_source != 'range' %}selected{% endif %}>None</option>
+            <option value="range" {% if pr_time_source == 'range' %}selected{% endif %}>Per-record (start&ndash;end)</option>
+          </select>
+        </div>
+        <div class="hd-pr-timerange" style="display:none;grid-template-columns:1fr 1fr;gap:14px;">
+          <div class="frappe-form-group"><label class="frappe-label" for="id_pr_time_start">Start</label>
+            <input class="form-control" type="text" id="id_pr_time_start" name="pr_time_start" value="{{ pr_time_start }}" placeholder="{start_date} or 2014-07-01"></div>
+          <div class="frappe-form-group"><label class="frappe-label" for="id_pr_time_end">End</label>
+            <input class="form-control" type="text" id="id_pr_time_end" name="pr_time_end" value="{{ pr_time_end }}" placeholder="{end_date} or 2014-07-31"></div>
+          <div class="hd-kind-wcs frappe-form-group" style="grid-column:1/-1;max-width:220px;">
+            <label class="frappe-label" for="id_pr_time_axis">WCS time axis</label>
+            <input class="form-control" type="text" id="id_pr_time_axis" name="pr_time_axis" value="{{ time_axis|default:'ansi' }}" placeholder="ansi">
+          </div>
+        </div>
+        <div class="frappe-help">These let the DocType builder map a record's Shapefile + Date fields to this connector — the same per-record mapping as NetCDF. Use <code>{field}</code> tokens or a literal date.</div>
+      </div>
+
       {# ---- REST URL + method ---- #}
       <div class="hd-kind-rest">
         <div class="frappe-form-group">
@@ -884,9 +914,22 @@
       show('.hd-kind-wms', k === 'wms');
       show('.hd-kind-wcs', k === 'wcs');
       show('.hd-kind-gee', k === 'gee');
+      // Per-record region & time mapping applies to the geospatial raster kinds.
+      show('.hd-kind-prparams', k === 'wcs' || k === 'gee');
     }
     if (kindSel) kindSel.addEventListener('change', applyKind);
     applyKind();
+  })();
+
+  // ---- WCS/GEE per-record date-range toggle. ----
+  (function () {
+    var ps = document.getElementById('id_pr_time_source');
+    function applyPr() {
+      var tr = document.querySelector('.hd-pr-timerange');
+      if (tr) tr.style.display = (ps && ps.value === 'range') ? 'grid' : 'none';
+    }
+    if (ps) ps.addEventListener('change', applyPr);
+    applyPr();
   })();
 
   // ---- NetCDF spatial-filter sub-fields toggle (point vs bbox). ----

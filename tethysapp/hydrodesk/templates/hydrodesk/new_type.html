@@ -1131,10 +1131,11 @@
           }
           return ms;
         }
+        var RECORD_PARAM_KINDS = ['netcdf', 'thredds', 'gee', 'wcs'];
         function renderNcMap(connName) {
           ncBox.innerHTML = ''; ncSelects = {};
           var c = null; (conns || []).forEach(function (x) { if (x.name === connName) c = x; });
-          if (!c || c.kind !== 'netcdf') return;
+          if (!c || RECORD_PARAM_KINDS.indexOf(c.kind) < 0) return;
           var wantShp = (c.spatial === 'shapefile');
           var wantTime = (c.time_source === 'range');
           if (!wantShp && !wantTime) return;

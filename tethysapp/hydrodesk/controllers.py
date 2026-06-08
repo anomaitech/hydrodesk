@@ -2239,31 +2239,53 @@ def _wms_describe(cfg, attrs):
 
 # --- WCS connector (a coverage service -> the value at the record's point) ---
 def _wcs_getcoverage_url(cfg, attrs):
-    """Build a WCS 2.0.1 GetCoverage URL for a small Lat/Long subset around the
-    record's point, requesting NetCDF (read locally via netCDF4 — no raster lib
-    needed). Returns (url, (lon,lat)); ('', (lon,lat)) when the point or service is
-    missing. The subset axis labels default to Lat/Long but are configurable
-    (some coverages use E/N or x/y)."""
+    """Build a WCS 2.0.1 GetCoverage URL for a Lat/Long subset, requesting NetCDF (read
+    locally via netCDF4 — no raster lib needed). The spatial subset is the per-record
+    SHAPEFILE's bounding box when one is mapped (spatial='shapefile' / _shapefile),
+    otherwise the record's point ± buffer; a per-record DATE RANGE (time_source='range')
+    becomes a time subset on the time axis. Returns (url, (lon,lat)); ('', (lon,lat))
+    when the region or service is missing. Axis labels default to Lat/Long (configurable)."""
     base = _render_template(cfg.get("wcs_url") or "", attrs)
     cov = (cfg.get("coverage") or "").strip()
-    lon, lat = _wms_point(cfg, attrs)
-    if not base or not cov or lon is None or lat is None:
-        return "", (lon, lat)
     version = (cfg.get("wcs_version") or "2.0.1").strip()
     fmt = (cfg.get("wcs_format") or "application/netcdf").strip()
-    buf = _wms_num(cfg.get("bbox_buffer")) or 0.25
     lon_axis = (cfg.get("lon_axis") or "Long").strip()
     lat_axis = (cfg.get("lat_axis") or "Lat").strip()
+    rings = (_shapefile_union_rings(cfg, attrs)
+             if ((cfg.get("spatial") or "").lower() == "shapefile" or attrs.get("_shapefile"))
+             else None)
+    if rings:                                   # the shapefile's bounding box
+        allx = [p[0] for r in rings for p in r]
+        ally = [p[1] for r in rings for p in r]
+        lon_lo, lon_hi, lat_lo, lat_hi = min(allx), max(allx), min(ally), max(ally)
+        lon, lat = (lon_lo + lon_hi) / 2.0, (lat_lo + lat_hi) / 2.0
+    else:                                       # the record's point ± buffer (legacy)
+        lon, lat = _wms_point(cfg, attrs)
+        buf = _wms_num(cfg.get("bbox_buffer")) or 0.25
+        if lon is not None and lat is not None:
+            lon_lo, lon_hi, lat_lo, lat_hi = lon - buf, lon + buf, lat - buf, lat + buf
+        else:
+            lon_lo = lon_hi = lat_lo = lat_hi = None
+    if not base or not cov or lon is None or lat is None or lon_lo is None:
+        return "", (lon, lat)
     params = [
         ("service", "WCS"), ("version", version), ("request", "GetCoverage"),
         ("coverageId", cov),
-        ("subset", "%s(%s,%s)" % (lat_axis, lat - buf, lat + buf)),
-        ("subset", "%s(%s,%s)" % (lon_axis, lon - buf, lon + buf)),
+        ("subset", "%s(%s,%s)" % (lat_axis, lat_lo, lat_hi)),
+        ("subset", "%s(%s,%s)" % (lon_axis, lon_lo, lon_hi)),
         ("format", fmt),
     ]
-    extra = (cfg.get("extra_subset") or "").strip()
-    if extra:  # e.g. ansi("2014-07-01") for a coverage with a time axis
-        params.append(("subset", extra))
+    start = _resolve_date(cfg.get("time_start"), attrs)
+    end = _resolve_date(cfg.get("time_end"), attrs)
+    if (cfg.get("time_source") or "").lower() == "range" and (start or end):
+        tax = (cfg.get("time_axis") or "ansi").strip()
+        if start and end and start > end:
+            start, end = end, start
+        params.append(("subset", '%s("%s","%s")' % (tax, start or end, end or start)))
+    else:
+        extra = (cfg.get("extra_subset") or "").strip()
+        if extra:  # e.g. ansi("2014-07-01") for a coverage with a time axis
+            params.append(("subset", extra))
     sep = "&" if "?" in base else "?"
     return base + sep + urllib.parse.urlencode(params), (lon, lat)
 
@@ -2417,13 +2439,34 @@ def _gee_init(cfg):
         return None, "Earth Engine init failed: %s" % (str(exc)[:140])
 
 
+def _gee_geometry(ee, cfg, attrs):
+    """An ``ee.Geometry`` for the record: its mapped SHAPEFILE as a MultiPolygon when
+    one is present (region reduction), otherwise its point. Returns (geom, is_region);
+    (None, False) when neither resolves."""
+    if (cfg.get("spatial") or "").lower() == "shapefile" or (attrs or {}).get("_shapefile"):
+        zones = _shapefile_zones(cfg, attrs)
+        if zones:
+            mp = [[[[float(p[0]), float(p[1])] for p in ring] for ring in zrings]
+                  for _label, zrings in zones]
+            try:
+                return ee.Geometry.MultiPolygon(mp), True
+            except Exception:
+                pass
+    lon, lat = _wms_point(cfg, attrs)
+    if lon is not None and lat is not None:
+        return ee.Geometry.Point([lon, lat]), False
+    return None, False
+
+
 def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
                connector_name="connector"):
-    """Fetch one output from an Earth Engine connector. 'value' samples an Image at
-    the record's point (reduceRegion); 'series' reduces an ImageCollection over a
-    date range at the point. Requires the 'ee' package + a service-account
-    credential; without them it returns a soft-empty (NEVER raises). Caches per
-    (name, asset, point, output)."""
+    """Fetch one output from an Earth Engine connector. 'value' reduces an Image over
+    the record's REGION (its mapped shapefile) or point; 'series' reduces an
+    ImageCollection over a date range across that region/point. The date range and the
+    region come from the per-record mapping (x-nc-map) when set, else the connector's
+    gee_start/gee_end + point. Requires the 'ee' package + a service-account credential;
+    without them it returns a soft-empty (NEVER raises). Caches per (name, asset, region,
+    dates, output)."""
     cfg = cfg or {}
     if cfg.get("inputs"):
         attrs, missing_required = _resolve_inputs(cfg, record_attrs, field_map)
@@ -2443,14 +2486,21 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
 
     lon, lat = _wms_point(cfg, attrs)
     asset = (cfg.get("gee_asset") or "").strip()
-    if missing_required or out_entry is None or lon is None or lat is None or not asset:
+    # A per-record shapefile gives a REGION even when there's no point.
+    _have_region = ((cfg.get("spatial") or "").lower() == "shapefile" or attrs.get("_shapefile"))
+    if missing_required or out_entry is None or not asset or (lon is None and not _have_region):
         return _empty(False)
 
     ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
     scale = int(cfg.get("gee_scale") or 30)
     band = (cfg.get("gee_band") or "").strip()
-    cache_key = (connector_name, "gee::%s::%s,%s::%s::%s"
-                 % (asset, lon, lat, out_entry.get("name") or "", band))
+    # The date window + region are per-record, so key the cache on them.
+    _gstart = _resolve_date(cfg.get("time_start"), attrs) or (cfg.get("gee_start") or "").strip()
+    _gend = _resolve_date(cfg.get("time_end"), attrs) or (cfg.get("gee_end") or "").strip()
+    import hashlib as _hl
+    _rgn = _hl.md5(str(attrs.get("_shapefile") or "%s,%s" % (lon, lat)).encode("utf-8", "replace")).hexdigest()[:12]
+    cache_key = (connector_name, "gee::%s::%s::%s,%s::%s::%s"
+                 % (asset, _rgn, _gstart, _gend, out_entry.get("name") or "", band))
     now = time.time()
     hit = _API_CACHE.get(cache_key)
     if hit and (now - hit[0]) < ttl:
@@ -2462,16 +2512,43 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
         res = _empty(False); res["note"] = reason
         return res
     try:
-        pt = ee.Geometry.Point([lon, lat])
+        geom, is_region = _gee_geometry(ee, cfg, attrs)
+        if geom is None:
+            return _empty(False)
+        start, end = str(_gstart or ""), str(_gend or "")
         if (out_entry.get("kind") or "value").lower() == "series":
-            col = ee.ImageCollection(asset).filterBounds(pt)
-            start = (cfg.get("gee_start") or "").strip()
-            end = (cfg.get("gee_end") or "").strip()
+            col = ee.ImageCollection(asset).filterBounds(geom)
             if start and end:
                 col = col.filterDate(start, end)
             if band:
                 col = col.select(band)
-            rows = col.getRegion(pt, scale).getInfo() or []
+            if is_region:
+                # A region series = the per-image MEAN over the polygon.
+                reducer = (cfg.get("gee_reducer") or "mean").strip().lower()
+                red = {"mean": ee.Reducer.mean, "median": ee.Reducer.median,
+                       "max": ee.Reducer.max, "min": ee.Reducer.min}.get(reducer, ee.Reducer.mean)()
+
+                def _img_mean(img):
+                    d = img.reduceRegion(red, geom, scale)
+                    return ee.Feature(None, {"time": img.date().millis(),
+                                             "value": d.values().get(0)})
+                feats = (col.map(_img_mean).getInfo() or {}).get("features", [])
+                import datetime as _dt
+                xs, ys = [], []
+                for ft in feats:
+                    pr = (ft or {}).get("properties") or {}
+                    t = pr.get("time")
+                    xs.append(_dt.datetime.utcfromtimestamp(t / 1000.0).isoformat()
+                              if isinstance(t, (int, float)) else str(t))
+                    ys.append(pr.get("value"))
+                extracted = {"kind": "series",
+                             "columns": [{"name": "time", "values": xs},
+                                         {"name": band or "value", "values": ys}],
+                             "n": len(ys), "x": xs, "y": ys}
+                _API_CACHE[cache_key] = (now, extracted)
+                res = dict(extracted); res["cached"] = False
+                return res
+            rows = col.getRegion(geom, scale).getInfo() or []
             if len(rows) < 2:
                 extracted = {"kind": "series", "columns": [], "n": 0, "x": [], "y": []}
             else:
@@ -2493,11 +2570,12 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
             img = ee.Image(asset)
             if band:
                 img = img.select(band)
-            reducer = (cfg.get("gee_reducer") or "first").strip().lower()
+            # Over a polygon the default is a MEAN; a point keeps 'first' (the pixel).
+            reducer = (cfg.get("gee_reducer") or ("mean" if is_region else "first")).strip().lower()
             red = {"mean": ee.Reducer.mean, "median": ee.Reducer.median,
                    "first": ee.Reducer.first, "max": ee.Reducer.max,
                    "min": ee.Reducer.min}.get(reducer, ee.Reducer.first)()
-            d = img.reduceRegion(red, pt, scale).getInfo() or {}
+            d = img.reduceRegion(red, geom, scale).getInfo() or {}
             val = None
             if band and band in d:
                 val = d[band]
@@ -4823,11 +4901,28 @@ def _render_image_block(result, label="map"):
         url, url, label or "map")
 
 
+# Connector kinds that accept a per-record parameter mapping (x-nc-map): a record's
+# Shapefile field -> the region, and Date fields -> the time window. NetCDF/THREDDS,
+# Earth Engine, and WCS are all region+time data sources.
+_RECORD_PARAM_KINDS = ("netcdf", "thredds", "gee", "wcs")
+
+
+def _supports_record_params(cfg):
+    """True when a connector CAN take a per-record shapefile/date mapping — its kind is
+    a region+time source AND it is configured to use one (spatial='shapefile' or a date
+    range). Drives the builder mapping section, the x-nc-map gate, and the params bar."""
+    cfg = cfg or {}
+    if (cfg.get("kind") or "rest").lower() not in _RECORD_PARAM_KINDS:
+        return False
+    return ((cfg.get("spatial") or "").lower() == "shapefile"
+            or (cfg.get("time_source") or "").lower() == "range")
+
+
 def _apply_nc_map(cfg, attrs, nc_map):
-    """Apply a netcdf API field's per-record parameter mapping (x-nc-map). Returns
-    (cfg, attrs) where the record's mapped Shapefile field is exposed as _shapefile
-    (the shapefile spatial source) and the connector's date window is pointed at the
-    record's mapped start/end date fields. No-op when nc_map is empty."""
+    """Apply an API field's per-record parameter mapping (x-nc-map) for ANY region+time
+    connector kind. Returns (cfg, attrs) where the record's mapped Shapefile field is
+    exposed as _shapefile (the spatial source every kind reads) and the connector's date
+    window is pointed at the record's mapped start/end date fields. No-op when empty."""
     nc_map = nc_map or {}
     if not nc_map:
         return cfg, attrs
@@ -5077,7 +5172,7 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
                 api_outputs=prop.get("x-api-outputs"),
                 nc_map=prop.get("x-nc-map"))
             if (prop.get("x-nc-map") and connector       # edit-in-place params bar
-                    and (connector.config or {}).get("kind") == "netcdf"):
+                    and _supports_record_params(connector.config or {})):
                 bar = _nc_params_bar(parent_slug, parent_id, name,
                                      prop.get("x-nc-map"), attrs)
                 if bar:
@@ -5859,7 +5954,7 @@ def _assemble_type_spec(post, force_slug=None):
         # builder UI enforces this, but never trust the client POST.
         nc_map = {}
         _nc_cfg = _connector_config_by_name(conn_name) or {}
-        if (_nc_cfg.get("kind") or "").lower() == "netcdf":
+        if _supports_record_params(_nc_cfg):
             for _k in ("shapefile", "start", "end"):
                 _sel = (raw_ncmap.get(_k) or "").strip()
                 if not _sel:
@@ -6640,6 +6735,18 @@ def _parse_json_field(raw, default):
     return val, None
 
 
+def _parse_record_params(post, config):
+    """Shared per-record region/time fields for the geospatial connectors (WCS, GEE):
+    a checkbox 'pr_region' opts the region into the record's shapefile (spatial=shapefile);
+    'pr_time_source'=range + pr_time_start/pr_time_end (literals or {field} tokens) define
+    the per-record date window. Lets the x-nc-map builder mapping drive these kinds too."""
+    if (post.get("pr_region") or "").strip().lower() in ("1", "on", "true", "shapefile", "yes"):
+        config["spatial"] = "shapefile"
+    config["time_source"] = (post.get("pr_time_source") or "none").strip().lower()
+    config["time_start"] = (post.get("pr_time_start") or "").strip()
+    config["time_end"] = (post.get("pr_time_end") or "").strip()
+
+
 def _connector_config_from_post(post, files=None):
     """Assemble a HydroConnector.config dict from the builder POST, with the auth
     block, paths, and templated headers/query. Returns (name, config, errors).
@@ -6870,6 +6977,8 @@ def _connector_config_from_post(post, files=None):
         config["lat_axis"] = (post.get("lat_axis") or "Lat").strip()
         config["extra_subset"] = (post.get("extra_subset") or "").strip()
         config["unit"] = (post.get("wcs_unit") or "").strip()
+        config["time_axis"] = (post.get("pr_time_axis") or "ansi").strip()
+        _parse_record_params(post, config)   # per-record shapefile region + date range
         try:
             config["bbox_buffer"] = float(post.get("wcs_bbox_buffer") or 0.25)
         except (TypeError, ValueError):
@@ -6897,6 +7006,7 @@ def _connector_config_from_post(post, files=None):
         config["gee_start"] = (post.get("gee_start") or "").strip()
         config["gee_end"] = (post.get("gee_end") or "").strip()
         config["unit"] = (post.get("gee_unit") or "").strip()
+        _parse_record_params(post, config)   # per-record shapefile region + date range
         try:
             config["gee_scale"] = int(post.get("gee_scale") or 30)
         except (TypeError, ValueError):
@@ -7022,6 +7132,14 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "gee_end": (config or {}).get("gee_end", ""),
         "gee_scale": (config or {}).get("gee_scale", 30),
         "gee_unit": (config or {}).get("unit", "") if (config or {}).get("kind") == "gee" else "",
+        # Per-record region & time (WCS/GEE): round-trip the shared pr_* controls.
+        "pr_region": (config or {}).get("spatial") == "shapefile"
+        if (config or {}).get("kind") in ("wcs", "gee") else False,
+        "pr_time_source": (config or {}).get("time_source", "none")
+        if (config or {}).get("kind") in ("wcs", "gee") else "none",
+        "pr_time_start": (config or {}).get("time_start", "") if (config or {}).get("kind") in ("wcs", "gee") else "",
+        "pr_time_end": (config or {}).get("time_end", "") if (config or {}).get("kind") in ("wcs", "gee") else "",
+        "time_axis": (config or {}).get("time_axis", "ansi"),
         "url_template": (config or {}).get("url_template", ""),
         "method": (config or {}).get("method", "GET"),
         "headers": json.dumps((config or {}).get("headers") or {}, indent=2),
