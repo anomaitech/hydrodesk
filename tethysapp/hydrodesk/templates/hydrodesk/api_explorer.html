@@ -3,6 +3,20 @@
    preview the JSON, and copy a ready URL (with token) for another app / TethysDash. #}
 {% block title %}Data API - {{ block.super }}{% endblock %}
 {% block desk_content %}
+<style>
+  .hd-api-grid { display:grid; grid-template-columns:320px 1fr; gap:20px; align-items:start; }
+  @media (max-width:900px){ .hd-api-grid{ grid-template-columns:1fr; } }
+  .hd-sec { padding-top:16px; margin-top:16px; border-top:1px solid var(--fr-border,#e6e9ee); }
+  .hd-sec:first-child { padding-top:0; margin-top:0; border-top:0; }
+  .hd-subhead { font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+                color:var(--fr-text-muted,#6b7280); margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+  .hd-opts-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
+  .hd-filter-row { display:grid; grid-template-columns:1fr 130px 1fr 32px; gap:8px; align-items:center; margin-bottom:8px; }
+  .hd-dt-row { padding:8px 9px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
+  .hd-toolbar { display:flex; gap:8px; align-items:stretch; }
+  .hd-toolbar input { flex:1 1 auto; }
+</style>
+
 <div class="frappe-page">
   <div class="frappe-page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">
     <div>
@@ -12,12 +26,12 @@
   </div>
 
   {# ---- Access token ---- #}
-  <div class="frappe-form-card" style="margin-bottom:16px;">
-    <div class="frappe-section-head">Access</div>
+  <div class="frappe-form-card" style="margin-bottom:20px;">
+    <div class="hd-subhead" style="margin-bottom:8px;">Access</div>
     {% if has_token %}
       <div class="frappe-help">External consumers authenticate with a read <strong>token</strong> (<code>?token=</code> or the <code>X-API-Token</code> header). Logged-in users with read permission don't need it.</div>
-      <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
-        <input class="form-control" id="hd-token" type="text" readonly value="{{ token }}" style="max-width:320px;font-family:monospace;">
+      <div class="hd-toolbar" style="margin-top:8px;max-width:560px;">
+        <input class="form-control" id="hd-token" type="text" readonly value="{{ token }}" style="font-family:monospace;">
         <button class="btn btn-secondary btn-sm" type="button" onclick="navigator.clipboard.writeText(document.getElementById('hd-token').value)">Copy token</button>
         <a class="btn btn-link btn-sm" href="{{ credentials_url }}">Manage</a>
       </div>
@@ -26,48 +40,61 @@
     {% endif %}
   </div>
 
-  <div style="display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start;">
+  <div class="hd-api-grid">
     {# ---- Endpoint list ---- #}
     <div class="frappe-form-card">
-      <div class="frappe-section-head">Doctypes <span class="frappe-muted frappe-text-sm" id="hd-count"></span></div>
-      <input class="form-control form-control-sm" id="hd-filter" placeholder="filter…" style="margin-bottom:8px;">
-      <div id="hd-doctypes" style="max-height:460px;overflow:auto;"></div>
+      <div class="hd-subhead">Doctypes <span class="frappe-muted" id="hd-count" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
+      <input class="form-control form-control-sm" id="hd-filter" placeholder="filter…" style="margin-bottom:10px;">
+      <div id="hd-doctypes" style="max-height:520px;overflow:auto;"></div>
     </div>
 
     {# ---- Query builder + preview ---- #}
     <div class="frappe-form-card">
-      <div class="frappe-section-head" id="hd-builder-title">Query builder</div>
+      <div class="frappe-section-head" id="hd-builder-title" style="margin-bottom:4px;">Query builder</div>
       <div id="hd-builder" class="frappe-muted">Pick a doctype on the left to build a query.</div>
+
       <div id="hd-builder-body" style="display:none;">
-        <div id="hd-filters"></div>
-        <button class="btn btn-link btn-sm" type="button" id="hd-add-filter" style="padding:0;">+ Add filter</button>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px;">
-          <div class="frappe-form-group"><label class="frappe-label">Format</label>
-            <select class="form-select form-select-sm" id="hd-format"><option value="json">JSON</option><option value="geojson">GeoJSON</option></select></div>
-          <div class="frappe-form-group"><label class="frappe-label">Limit</label>
-            <input class="form-control form-control-sm" id="hd-limit" value="50"></div>
-          <div class="frappe-form-group"><label class="frappe-label">Offset</label>
-            <input class="form-control form-control-sm" id="hd-offset" value="0"></div>
-          <div class="frappe-form-group"><label class="frappe-label">Order by</label>
-            <input class="form-control form-control-sm" id="hd-order" placeholder="field or -field"></div>
+        {# Filters #}
+        <div class="hd-sec">
+          <div class="hd-subhead">Filters</div>
+          <div id="hd-filters"></div>
+          <button class="btn btn-link btn-sm" type="button" id="hd-add-filter" style="padding:0;">+ Add filter</button>
         </div>
-        <div style="margin-top:6px;">
-          <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal;">
-            <input type="checkbox" id="hd-tables" checked> Include inline table fields <span class="frappe-muted frappe-text-sm">(uncheck to omit large row arrays — <code>⊞</code> fields — and slim the payload)</span>
+
+        {# Options #}
+        <div class="hd-sec">
+          <div class="hd-subhead">Options</div>
+          <div class="hd-opts-grid">
+            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Format</label>
+              <select class="form-select form-select-sm" id="hd-format"><option value="json">JSON</option><option value="geojson">GeoJSON</option></select></div>
+            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Limit</label>
+              <input class="form-control form-control-sm" id="hd-limit" value="50"></div>
+            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Offset</label>
+              <input class="form-control form-control-sm" id="hd-offset" value="0"></div>
+            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Order by</label>
+              <input class="form-control form-control-sm" id="hd-order" placeholder="field or -field"></div>
+          </div>
+          <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal;margin-top:12px;">
+            <input type="checkbox" id="hd-tables" checked> Include inline table fields
+            <span class="frappe-muted frappe-text-sm">(uncheck to omit large row arrays — <code>⊞</code> fields — and slim the payload)</span>
           </label>
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label">Endpoint URL</label>
-          <div style="display:flex;gap:8px;">
+
+        {# Endpoint #}
+        <div class="hd-sec">
+          <div class="hd-subhead">Endpoint URL</div>
+          <div class="hd-toolbar">
             <input class="form-control" id="hd-url" readonly style="font-family:monospace;font-size:12px;">
             <button class="btn btn-secondary btn-sm" type="button" id="hd-copy">Copy</button>
-            <button class="btn btn-primary btn-sm" type="button" id="hd-run">Run</button>
+            <button class="btn btn-primary btn-sm" type="button" id="hd-run">Run ▸</button>
           </div>
-          <div class="frappe-help">Append <code>&amp;token=…</code> for external apps (added automatically when a token is set).</div>
+          <div class="frappe-help">The token is appended automatically when one is set, so this URL works as-is from another app.</div>
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label">Preview <span class="frappe-muted frappe-text-sm" id="hd-preview-meta"></span></label>
-          <pre id="hd-preview" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;max-height:360px;overflow:auto;font-size:12px;">—</pre>
+
+        {# Preview #}
+        <div class="hd-sec">
+          <div class="hd-subhead">Preview <span class="frappe-muted frappe-text-sm" id="hd-preview-meta" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
+          <pre id="hd-preview" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;max-height:380px;overflow:auto;font-size:12px;margin:0;">—</pre>
         </div>
       </div>
     </div>
@@ -76,9 +103,11 @@
 
 <script>
 (function () {
-  var API_BASE = "{{ api_base }}";           // …/apps/hydrodesk/api
-  var CATALOG  = "{{ catalog_url }}";
-  var TOKEN    = "{{ token|escapejs }}";
+  var CATALOG = "{{ catalog_url }}";                          // /apps/hydrodesk/api/catalog/
+  // Same-origin relative base for record endpoints (avoids any absolute-host / cookie
+  // mismatch that could bounce the preview fetch to an HTML login page).
+  var API_REL = CATALOG.replace(/catalog\/?$/, "");           // -> /apps/hydrodesk/api/
+  var TOKEN   = "{{ token|escapejs }}";
   var OPS = [["", "="], ["__ne", "≠"], ["__gt", ">"], ["__lt", "<"],
             ["__gte", "≥"], ["__lte", "≤"], ["__contains", "contains"], ["__in", "in (a,b)"]];
   var OPS_TABLE = [["__any", "row matches"]];
@@ -91,7 +120,7 @@
   function esc(s) { return (s || "").toString().replace(/[&<>"]/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
 
-  fetch(CATALOG, { headers: { "Accept": "application/json" } })
+  fetch(CATALOG, { headers: { "Accept": "application/json" }, credentials: "same-origin" })
     .then(function (r) { return r.json(); })
     .then(function (d) {
       collections = (d && d.collections) || [];
@@ -110,12 +139,11 @@
     }).forEach(function (c) {
       var row = document.createElement("div");
       row.className = "hd-dt-row";
-      row.style.cssText = "padding:7px 8px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;";
       row.onmouseover = function () { row.style.background = "var(--fr-control-bg,#f3f5f7)"; };
       row.onmouseout = function () { row.style.background = (active === c) ? "var(--fr-control-bg,#eef1f4)" : ""; };
       row.innerHTML = '<span><strong>' + esc(c.display_name) + '</strong>'
         + '<div class="frappe-muted frappe-text-sm"><code>' + esc(c.doctype) + '</code>'
-        + (c.geometry ? ' · ' + esc(c.geometry) : '') + '</div></span>'
+        + (c.geometry && c.geometry !== "none" ? ' · ' + esc(c.geometry) : '') + '</div></span>'
         + '<span class="frappe-muted">' + (c.count || 0) + '</span>';
       row.onclick = function () { active = c; select(c); renderList(q); };
       if (active === c) row.style.background = "var(--fr-control-bg,#eef1f4)";
@@ -145,7 +173,6 @@
     if (!active) return;
     var row = document.createElement("div");
     row.className = "hd-filter-row";
-    row.style.cssText = "display:grid;grid-template-columns:1fr 110px 1fr 28px;gap:8px;margin-bottom:6px;";
     var fopts = '<option value="">— field —</option>' + active.fields.map(function (f) {
       return '<option value="' + esc(f.key) + '">' + esc(f.title) + (f.is_table ? ' ⊞' : '') + '</option>'; }).join("");
     row.innerHTML = '<select class="form-select form-select-sm hd-f-field">' + fopts + '</select>'
@@ -178,8 +205,8 @@
   });
   document.getElementById("hd-tables").addEventListener("change", buildUrl);
 
-  function buildUrl() {
-    if (!active) return "";
+  // Build the query params (shared by the copy box and the preview fetch).
+  function buildParams() {
     var params = [];
     filtersEl.querySelectorAll(".hd-filter-row").forEach(function (row) {
       var f = row.querySelector(".hd-f-field").value;
@@ -193,29 +220,57 @@
     var off = document.getElementById("hd-offset").value; if (off && off !== "0") params.push("offset=" + encodeURIComponent(off));
     var ord = document.getElementById("hd-order").value; if (ord) params.push("order=" + encodeURIComponent(ord));
     if (!document.getElementById("hd-tables").checked) params.push("tables=false");
-    var displayUrl = API_BASE + "/" + active.doctype + "/records/" + (params.length ? "?" + params.join("&") : "");
-    var p2 = params.slice(); if (TOKEN) p2.push("token=" + encodeURIComponent(TOKEN));
-    var copyUrl = API_BASE + "/" + active.doctype + "/records/" + (p2.length ? "?" + p2.join("&") : "");
-    document.getElementById("hd-url").value = copyUrl;
-    return displayUrl;
+    return params;
+  }
+
+  // The ready-to-use URL: same-origin relative path, token appended when one is set.
+  // Both the Copy box and the Run preview use exactly this, so the preview behaves like
+  // a real external consumer (token-authorized) — never a cookie-only request that could
+  // get bounced to an HTML login page.
+  function buildUrl() {
+    if (!active) return "";
+    var params = buildParams();
+    if (TOKEN) params.push("token=" + encodeURIComponent(TOKEN));
+    var url = API_REL + active.doctype + "/records/" + (params.length ? "?" + params.join("&") : "");
+    document.getElementById("hd-url").value = url;
+    return url;
   }
 
   document.getElementById("hd-copy").onclick = function () {
     navigator.clipboard.writeText(document.getElementById("hd-url").value);
   };
+
   document.getElementById("hd-run").onclick = function () {
     var url = buildUrl();
     var pre = document.getElementById("hd-preview");
-    pre.textContent = "Loading…";
-    fetch(url, { headers: { "Accept": "application/json" } })
-      .then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }); })
+    var metaEl = document.getElementById("hd-preview-meta");
+    pre.textContent = "Loading…"; metaEl.textContent = "";
+    fetch(url, { headers: { "Accept": "application/json" }, credentials: "same-origin" })
+      .then(function (r) {
+        return r.text().then(function (t) {
+          return { s: r.status, ct: (r.headers.get("Content-Type") || ""), t: t };
+        });
+      })
       .then(function (res) {
-        var j = res.j;
-        var meta = (j.matched != null) ? (j.numberReturned != null ? j.numberReturned : j.count) + " of " + (j.matched != null ? j.matched : j.numberMatched) + " records" : "";
-        document.getElementById("hd-preview-meta").textContent = meta + " · HTTP " + res.s;
+        var j = null;
+        try { j = JSON.parse(res.t); }
+        catch (e) {
+          // Non-JSON body (e.g. an HTML login/error page) — explain instead of throwing
+          // "Unexpected token '<'".
+          metaEl.textContent = "HTTP " + res.s + " · non-JSON response";
+          var hint = (res.s === 401 || res.s === 403)
+            ? "Not authorized. The preview needs a read token — set an 'api_read_token' credential (Access, above), or sign in with read permission on this doctype."
+            : "The server returned a non-JSON response (" + (res.ct || "unknown type") + "). The first bytes are shown below.";
+          pre.textContent = hint + "\n\n" + res.t.slice(0, 600);
+          return;
+        }
+        var ret = (j.numberReturned != null) ? j.numberReturned : j.count;
+        var mat = (j.numberMatched != null) ? j.numberMatched : j.matched;
+        var meta = (mat != null) ? (ret + " of " + mat + " records") : (j.ok === false ? "error" : "");
+        metaEl.textContent = (meta ? meta + " · " : "") + "HTTP " + res.s;
         pre.textContent = JSON.stringify(j, null, 2).slice(0, 12000);
       })
-      .catch(function (e) { pre.textContent = "Error: " + e; });
+      .catch(function (e) { metaEl.textContent = ""; pre.textContent = "Network error: " + e; });
   };
 })();
 </script>
