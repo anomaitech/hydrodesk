@@ -63,6 +63,11 @@
           <div class="hd-subhead">Filters</div>
           <div id="hd-filters"></div>
           <button class="btn btn-link btn-sm" type="button" id="hd-add-filter" style="padding:0;">+ Add filter</button>
+          <div class="frappe-help" style="margin-top:8px;">
+            <code>⊞</code> inline table — filter rows with <code>col:value</code> / <code>col&gt;100</code>.
+            <code>⚡</code> live connector output (e.g. a time-series fetched per record) — selecting it
+            adds <code>include=</code> so the table is materialized, and the same row filters apply (over the first 50 records).
+          </div>
         </div>
 
         {# Options #}
@@ -178,7 +183,8 @@
     var row = document.createElement("div");
     row.className = "hd-filter-row";
     var fopts = '<option value="">— field —</option>' + active.fields.map(function (f) {
-      return '<option value="' + esc(f.key) + '">' + esc(f.title) + (f.is_table ? ' ⊞' : '') + '</option>'; }).join("");
+      var mark = f.is_connector_output ? ' ⚡' : (f.is_table ? ' ⊞' : '');
+      return '<option value="' + esc(f.key) + '">' + esc(f.title) + mark + '</option>'; }).join("");
     row.innerHTML = '<select class="form-select form-select-sm hd-f-field">' + fopts + '</select>'
       + '<select class="form-select form-select-sm hd-f-op">' + opOptions(OPS, "") + '</select>'
       + '<input class="form-control form-control-sm hd-f-val" placeholder="value">'
@@ -191,8 +197,15 @@
       if (f && f.is_table) {
         opEl.innerHTML = opOptions(OPS_TABLE, "__any");
         var cols = (f.columns || []);
-        valEl.placeholder = "col:value or col>value" + (cols.length ? " (e.g. " + cols[0] + ">100)" : "");
-        valEl.title = cols.length ? ("columns: " + cols.join(", ")) : "";
+        if (f.is_connector_output) {
+          var ex = (f.outputs && f.outputs[0] && f.outputs[0].output) || "value";
+          valEl.placeholder = "col:value or col>value (live — e.g. " + ex + ">20)";
+          valEl.title = "Live connector output (" + (f.connector || "") + "), fetched per record. "
+                      + "Selecting it adds include=" + f.key + "; filters apply over the first 50 records.";
+        } else {
+          valEl.placeholder = "col:value or col>value" + (cols.length ? " (e.g. " + cols[0] + ">100)" : "");
+          valEl.title = cols.length ? ("columns: " + cols.join(", ")) : "";
+        }
       } else {
         opEl.innerHTML = opOptions(OPS, "");
         valEl.placeholder = "value"; valEl.title = "";
@@ -211,13 +224,17 @@
 
   // Build the query params (shared by the copy box and the preview fetch).
   function buildParams() {
-    var params = [];
+    var params = [], includeSet = {};
     filtersEl.querySelectorAll(".hd-filter-row").forEach(function (row) {
       var f = row.querySelector(".hd-f-field").value;
       var op = row.querySelector(".hd-f-op").value;
       var v = row.querySelector(".hd-f-val").value;
+      var fld = f ? fieldByKey(f) : null;
+      if (fld && fld.is_connector_output) includeSet[f] = 1;   // materialize the live series
       if (f && v !== "") params.push(encodeURIComponent(f + op) + "=" + encodeURIComponent(v));
     });
+    var inc = Object.keys(includeSet);
+    if (inc.length) params.push("include=" + encodeURIComponent(inc.join(",")));
     var fmt = document.getElementById("hd-format").value;
     if (fmt && fmt !== "json") params.push("format=" + fmt);
     var lim = document.getElementById("hd-limit").value; if (lim) params.push("limit=" + encodeURIComponent(lim));

@@ -3464,7 +3464,8 @@ def _format_cell(value):
 # doctype's read permission OR a valid read token (the 'api_read_token'
 # credential), so external consumers can pull with ?token=/X-API-Token.
 # ===========================================================================
-_API_RESERVED = {"limit", "offset", "order", "fields", "format", "bbox", "q", "token", "tables"}
+_API_RESERVED = {"limit", "offset", "order", "fields", "format", "bbox", "q", "token",
+                 "tables", "include"}
 _API_OPS = {"gt", "lt", "gte", "lte", "ne", "contains", "in", "any"}
 
 
@@ -3563,13 +3564,98 @@ def _api_apply_filters(stmt, params):
     return stmt, errors
 
 
+# --- Connector-output fields in the API ----------------------------------------
+# Some fields don't STORE their value in the record's attributes — they render a
+# LIVE connector result per record (x-api-connector + x-nc-map, e.g. a Time-Series
+# table fetched from THREDDS/NetCDF/REST/GEE/WCS). The stored attributes hold only
+# the connector INPUTS (region, dates, site id). The Data API can MATERIALIZE these
+# on request (?include=field) and filter on their rows (field__any=col OP value),
+# reusing the exact detail-view path (_load_connector + _apply_nc_map + fetch_api).
+
+def _connector_output_fields(field_schema):
+    """{field_name: prop} for every field that renders a live connector output."""
+    return {name: prop for name, prop in _ordered_props(field_schema or {})
+            if (prop or {}).get("x-api-connector")}
+
+
+def _materialize_connector_series(session, prop, attrs, cache):
+    """Fetch ONE connector-output field for ONE record and return its series as a
+    list of row dicts ([{col: val, ...}, ...]), or None. Picks the first Time-Series
+    output. ``cache`` memoizes loaded HydroConnector rows across records in a request."""
+    connector_name = (prop or {}).get("x-api-connector")
+    if not connector_name:
+        return None
+    if connector_name in cache:
+        connector = cache[connector_name]
+    else:
+        connector = _load_connector(session, connector_name)
+        cache[connector_name] = connector
+    if connector is None:
+        return None
+    cfg, mapped = _apply_nc_map(connector.config or {}, attrs, prop.get("x-nc-map"))
+    field_map = prop.get("x-api-map")
+    for entry in (prop.get("x-api-outputs") or [{}]):
+        entry = entry if isinstance(entry, dict) else {}
+        oname = (entry.get("output") or "").strip() or None
+        try:
+            result = fetch_api(cfg, mapped, connector_name=connector_name,
+                               field_map=field_map, output=oname)
+        except Exception:
+            continue
+        if (result or {}).get("kind") == "series":
+            cols = result.get("columns") or []
+            n = result.get("n") or max((len(c.get("values") or []) for c in cols), default=0)
+            rows = []
+            for i in range(n):
+                rows.append({c.get("name"): (c.get("values") or [None] * (i + 1))[i]
+                             if i < len(c.get("values") or []) else None
+                             for c in cols})
+            return rows
+    return None
+
+
+def _parse_table_expr(expr):
+    """Parse a row predicate 'key:value' / 'key>val' (the __any payload) into
+    (key, op, value_str), or None when malformed."""
+    me = re.match(r"^\s*([A-Za-z0-9_]+)\s*(>=|<=|!=|>|<|=|:)\s*(.+?)\s*$", str(expr))
+    return (me.group(1), me.group(2), me.group(3)) if me else None
+
+
+def _rows_match_any(rows, key, op, valstr):
+    """True if ANY row's ``key`` cell satisfies ``op valstr``. Numeric comparison when
+    both sides parse as float; otherwise string (==, != exact; ':' is contains).
+    Mirrors the inline-table __any jsonpath semantics, in Python, for live series."""
+    for row in (rows or []):
+        if not isinstance(row, dict) or key not in row:
+            continue
+        cell = row.get(key)
+        if cell is None:
+            continue
+        try:
+            cf, vf = float(cell), float(valstr)
+        except (TypeError, ValueError):
+            cs = str(cell)
+            if (op == "!=" and cs != valstr) or (op == "=" and cs == valstr) \
+                    or (op == ":" and valstr.lower() in cs.lower()):
+                return True
+            continue
+        if (op == ">" and cf > vf) or (op == "<" and cf < vf) \
+                or (op == ">=" and cf >= vf) or (op == "<=" and cf <= vf) \
+                or (op == "!=" and cf != vf) or (op in (":", "=") and cf == vf):
+            return True
+    return False
+
+
 @controller(name="api_records", url="api/{slug}/records", title="Records API",
             login_required=False)
 def api_records(request, slug=None):
     """Outbound JSON/GeoJSON of a doctype's records (any slug). Query params: attribute
-    filters (field / field__gt/lt/gte/lte/ne/contains/in), bbox=, q=, order=, fields=,
-    limit= (<=1000), offset=, format=json|geojson, token=. Read-gated by permission/token."""
+    filters (field / field__gt/lt/gte/lte/ne/contains/in), table-row filter (field__any=
+    col OP val), bbox=, q=, order=, fields=, limit= (<=1000), offset=, format=json|geojson,
+    include= (materialize live connector-output fields), token=. Read-gated by perm/token."""
+    MAT_CAP = 50   # per-request live-fetch ceiling (each materialized field = 1+ HTTP hit)
     engine = App.get_persistent_store_database("hydro_db")
+    page, total, notes = [], 0, []
     with Session(engine) as session:
         meta = _load_hydrotype(session, slug)
         if meta is None:
@@ -3590,49 +3676,119 @@ def api_records(request, slug=None):
         # tables=false / 0 -> drop inline-table (array) fields for a lean list payload.
         drop_tables = (request.GET.get("tables") or "").strip().lower() in ("0", "false", "no")
 
+        # Connector-output fields aren't stored in attributes — they're fetched live.
+        # ?include=field[,field] | all  materializes them; field__any=col OP val filters
+        # on their rows (a Python post-filter, since the data isn't in JSONB).
+        conn_fields = _connector_output_fields(field_schema)
+        inc_raw = (request.GET.get("include") or "").strip()
+        if inc_raw.lower() in ("all", "*", "connectors"):
+            include = set(conn_fields)
+        else:
+            include = {x.strip() for x in inc_raw.split(",") if x.strip()} & set(conn_fields)
+
+        # Split connector __any filters out of the SQL params (they can't be a jsonpath).
+        conn_filters, sql_get = [], {}
+        for k, v in request.GET.items():
+            fld, _, op = k.partition("__")
+            if fld in conn_fields and op == "any":
+                expr = _parse_table_expr(v)
+                if expr is None:
+                    return JsonResponse({"ok": False, "error":
+                        "table filter '%s' must be key:value or key>value" % k}, status=400)
+                conn_filters.append((fld, expr))
+                include.add(fld)          # filtering a connector field implies fetching it
+            else:
+                sql_get[k] = v
+
         base = select(m.HydroRecord.id, m.HydroRecord.attributes,
                       func.ST_AsGeoJSON(m.HydroRecord.geom)).where(
                           m.HydroRecord.hydrotype_slug == slug)
-        filtered, ferr = _api_apply_filters(base, request.GET)
+        filtered, ferr = _api_apply_filters(base, sql_get)
         if ferr:
             return JsonResponse({"ok": False, "error": "; ".join(ferr)}, status=400)
+
+        conn_cache = {}
+
+        def _materialize(rec_attrs):
+            """{field: rows} for the requested connector-output fields of one record."""
+            out = {}
+            for fld in include:
+                rows = _materialize_connector_series(session, conn_fields[fld], rec_attrs, conn_cache)
+                if rows is not None:
+                    out[fld] = rows
+            return out
+
         # Both the count and the page can fail on a numeric filter over mixed-type data
         # (cast(Float) on a non-numeric attribute) -> 400, never a 500.
         try:
-            total = session.execute(
-                select(func.count()).select_from(filtered.subquery())).scalar() or 0
-            rows = session.execute(filtered.limit(limit).offset(offset)).all()
+            if conn_filters:
+                # Connector-row filters are applied in Python after a live fetch, so they
+                # can't be counted/paged in SQL. Scan up to MAT_CAP SQL-filtered records,
+                # materialize, filter, then page the survivors.
+                sql_total = session.execute(
+                    select(func.count()).select_from(filtered.subquery())).scalar() or 0
+                kept = []
+                for rid, attrs, geom in session.execute(filtered.limit(MAT_CAP)).all():
+                    mats = _materialize(attrs)
+                    if all(_rows_match_any(mats.get(fld), key, op, val)
+                           for fld, (key, op, val) in conn_filters):
+                        kept.append((rid, attrs, geom, mats))
+                total = len(kept)
+                if sql_total > MAT_CAP:
+                    notes.append("connector-field filter applied to the first %d of %d "
+                                 "records (live fetch); narrow the stored-field filters "
+                                 "to cover more." % (MAT_CAP, sql_total))
+                page = kept[offset:offset + limit]
+            else:
+                total = session.execute(
+                    select(func.count()).select_from(filtered.subquery())).scalar() or 0
+                eff_limit = limit
+                if include and limit > MAT_CAP:
+                    eff_limit = MAT_CAP
+                    notes.append("limit capped at %d because ?include= fetches live "
+                                 "connector data per record." % MAT_CAP)
+                page = [(rid, attrs, geom, (_materialize(attrs) if include else {}))
+                        for rid, attrs, geom in
+                        session.execute(filtered.limit(eff_limit).offset(offset)).all()]
         except Exception as exc:
             return JsonResponse({"ok": False, "error": "query failed: %s" % str(exc)[:160]}, status=400)
 
-    def _project(attrs):
+    def _project(attrs, mats):
         a = {k: v for k, v in (attrs or {}).items() if not k.startswith("_")}  # hide reserved
         if drop_tables:                                # lean payload: omit inline tables
             a = {k: v for k, v in a.items() if not isinstance(v, list)
                  or (v and not isinstance(v[0], dict))}
+        for fld, rows in (mats or {}).items():         # embed materialized connector series
+            a[fld] = rows
         if want_fields:
             a = {k: v for k, v in a.items() if k in want_fields}
         return a
 
     if fmt == "geojson":
         feats = []
-        for rid, attrs, geom in rows:
-            props = _project(attrs)
+        for rid, attrs, geom, mats in page:
+            props = _project(attrs, mats)
             props["id"] = str(rid)
             feats.append({"type": "Feature", "properties": props,
                           "geometry": json.loads(geom) if geom else None})
-        return JsonResponse({"type": "FeatureCollection", "features": feats,
-                             "numberReturned": len(feats), "numberMatched": total})
+        out = {"type": "FeatureCollection", "features": feats,
+               "numberReturned": len(feats), "numberMatched": total}
+        if notes:
+            out["notes"] = notes
+        return JsonResponse(out)
     records = []
-    for rid, attrs, geom in rows:
+    for rid, attrs, geom, mats in page:
         rec = {"id": str(rid)}
-        rec.update(_project(attrs))
+        rec.update(_project(attrs, mats))
         if geom and not want_fields:
             rec["geometry"] = json.loads(geom)
         records.append(rec)
-    return JsonResponse({"ok": True, "doctype": slug, "display_name": display_name,
-                         "count": len(records), "matched": total,
-                         "limit": limit, "offset": offset, "records": records})
+    out = {"ok": True, "doctype": slug, "display_name": display_name,
+           "count": len(records), "matched": total,
+           "limit": limit, "offset": offset, "records": records}
+    if notes:
+        out["notes"] = notes
+    return JsonResponse(out)
 
 
 @controller(name="api_catalog", url="api/catalog", title="API catalog",
@@ -3665,6 +3821,15 @@ def api_catalog(request):
                     fd["columns"] = list(((p.get("items") or {}).get("properties") or {}).keys())
                     if p.get("x-child-type"):
                         fd["linked_to"] = p["x-child-type"]
+                if p.get("x-api-connector"):        # live connector output (not stored)
+                    fd["is_connector_output"] = True
+                    fd["connector"] = p["x-api-connector"]
+                    outs = [o for o in (p.get("x-api-outputs") or []) if isinstance(o, dict)]
+                    fd["outputs"] = [{"output": o.get("output"), "label": o.get("label"),
+                                      "field_type": o.get("field_type")} for o in outs]
+                    # series outputs become an inline table once materialized (?include=)
+                    if any((o.get("field_type") or "") == "Time-Series" for o in outs):
+                        fd["is_table"] = True
                 fields.append(fd)
             out.append({"doctype": sl, "display_name": dn, "geometry": gk,
                         "count": count, "fields": fields,
