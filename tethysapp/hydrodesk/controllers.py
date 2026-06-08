@@ -2579,6 +2579,60 @@ def _parse_point(post):
     return WKTElement(f"POINT({lon} {lat})", srid=4326), None
 
 
+def _naming_parts(field_schema):
+    """Parse a type's naming series (x-naming, e.g. 'INV-#####') into the target
+    field + fixed prefix/suffix + counter width + a matcher. None when there's no
+    pattern, no '#' run, or no title field to receive the value."""
+    fs = field_schema or {}
+    pattern = (fs.get("x-naming") or "").strip()
+    field = (fs.get("x-title-field") or "").strip()
+    if not pattern or not field:
+        return None
+    mh = re.search(r"#+", pattern)
+    if not mh:
+        return None
+    return {
+        "field": field,
+        "prefix": pattern[:mh.start()],
+        "suffix": pattern[mh.end():],
+        "width": len(mh.group(0)),
+        "rx": re.compile("^" + re.escape(pattern[:mh.start()]) + r"(\d+)"
+                         + re.escape(pattern[mh.end():]) + "$"),
+    }
+
+
+def _naming_max(session, slug, parts):
+    """Highest counter currently used by this type's records for ``parts`` (0 if none)
+    — scanned from the title field, so naming is stateless (no counter row)."""
+    mx = 0
+    rows = session.execute(
+        select(m.HydroRecord.attributes)
+        .where(m.HydroRecord.hydrotype_slug == slug)
+    ).scalars().all()
+    for attrs in rows:
+        hit = parts["rx"].match(str((attrs or {}).get(parts["field"]) or ""))
+        if hit:
+            try:
+                mx = max(mx, int(hit.group(1)))
+            except ValueError:
+                pass
+    return mx
+
+
+def _format_name(parts, number):
+    """Render a counter into the pattern: prefix + zero-padded number + suffix."""
+    return parts["prefix"] + str(number).zfill(parts["width"]) + parts["suffix"]
+
+
+def _next_name(session, slug, field_schema):
+    """The next naming-series value (e.g. 'INV-00001'), or None when the type has no
+    naming series. = max(existing) + 1."""
+    parts = _naming_parts(field_schema)
+    if not parts:
+        return None
+    return _format_name(parts, _naming_max(session, slug, parts) + 1)
+
+
 def _form_context(slug, display_name, type_found, widgets, errors, mode,
                   record_id=None, parent=None):
     """Shared context for the create AND edit forms (both render form.html).
@@ -2715,6 +2769,14 @@ def hydrotype_new(request, slug="monitoring_station"):
                 # parent's detail can query it back. Validated separately so a forged
                 # parent context can never attach a record to an arbitrary parent.
                 attrs_to_store = dict(validated)
+                # Naming series: fill the title field with the next series value
+                # (e.g. INV-00001) when the user left it blank.
+                tf = field_schema.get("x-title-field")
+                if (field_schema.get("x-naming") and tf
+                        and not str(attrs_to_store.get(tf) or "").strip()):
+                    nm = _next_name(session, slug, field_schema)
+                    if nm:
+                        attrs_to_store[tf] = nm
                 linked = _valid_parent_link(session, parent, slug)
                 if linked:
                     attrs_to_store["_parent"] = {
@@ -2842,6 +2904,11 @@ def import_records(request, slug="monitoring_station"):
     created, row_errors = 0, []
     MAX_ROWS = 5000
     with Session(engine) as session:
+        # Naming series: number imported rows sequentially from the current max, so a
+        # batch gets INV-00001, INV-00002, … (the in-memory counter avoids re-scanning
+        # for each row, and uncommitted rows aren't yet queryable).
+        name_parts = _naming_parts(field_schema)
+        name_counter = _naming_max(session, slug, name_parts) if name_parts else 0
         for i, raw in enumerate(reader, start=2):  # row 1 is the header
             if (i - 1) > MAX_ROWS:
                 row_errors.append({"row": i, "msg": f"stopped at the {MAX_ROWS}-row limit"})
@@ -2876,8 +2943,12 @@ def import_records(request, slug="monitoring_station"):
                 if gmsg:
                     row_errors.append({"row": i, "msg": gmsg})
                     continue
+            attrs_to_store = dict(validated)
+            if name_parts and not str(attrs_to_store.get(name_parts["field"]) or "").strip():
+                name_counter += 1
+                attrs_to_store[name_parts["field"]] = _format_name(name_parts, name_counter)
             session.add(m.HydroRecord(
-                hydrotype_slug=slug, attributes=dict(validated), geom=geom,
+                hydrotype_slug=slug, attributes=attrs_to_store, geom=geom,
                 created_by=getattr(request.user, "username", None)))
             created += 1
         session.commit()
@@ -4115,7 +4186,8 @@ def _builder_perm_groups(perms):
 
 
 def _builder_context(form_errors, type_name, geometry, rows, row_count,
-                     mode="new", slug=None, title_field="", perms=None):
+                     mode="new", slug=None, title_field="", perms=None,
+                     naming_series=""):
     """Build the template context. row_indexes drives the fixed rows; rows holds
     re-fill values keyed by index (template loops row_indexes and reads rows[i]).
     ``mode`` ('new'|'edit') + ``slug`` drive the form action, title, and submit
@@ -4142,6 +4214,7 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         "page_title": ("Edit HydroType" if is_edit else "New HydroType"),
         "submit_label": ("Save changes" if is_edit else "Create type"),
         "title_field": title_field or "",
+        "naming_series": naming_series or "",
         "perm_groups": _builder_perm_groups(perms),
         "row_indexes": list(range(row_count)),
         # Pad rows so every rendered index has a dict to read on re-fill.
@@ -4392,6 +4465,13 @@ def _assemble_type_spec(post, force_slug=None):
         title_field = _slugify_underscore(post.get("title_field") or "")
         if title_field in properties and not (properties[title_field] or {}).get("x-layout"):
             field_schema["x-title-field"] = title_field
+        # Naming series: a pattern (e.g. "INV-#####") whose '#' run is the zero-padded
+        # auto-increment counter. On create, the next value fills the title field when
+        # it's left blank. Stored only when the pattern has a '#' run AND a title field
+        # exists to receive it.
+        naming = (post.get("naming_series") or "").strip()
+        if naming and "#" in naming and field_schema.get("x-title-field"):
+            field_schema["x-naming"] = naming
         # Role permissions: read/write group allow-lists. Stored only when non-empty
         # (an absent action = open to every logged-in user; superuser/staff bypass).
         getlist = getattr(post, "getlist", None)
@@ -4447,6 +4527,7 @@ def new_hydrotype(request):
     context = _builder_context(form_errors, type_name, geometry, rows, row_count,
                                mode="new",
                                title_field=request.POST.get("title_field", ""),
+                               naming_series=request.POST.get("naming_series", ""),
                                perms={"read": request.POST.getlist("perm_read"),
                                       "write": request.POST.getlist("perm_write")})
     return render(request, "hydrodesk/new_type.html", context)
@@ -4488,6 +4569,7 @@ def edit_hydrotype(request, slug="monitoring_station"):
         context = _builder_context(form_errors, type_name, geometry, rows, row_count,
                                    mode="edit", slug=slug,
                                    title_field=request.POST.get("title_field", ""),
+                               naming_series=request.POST.get("naming_series", ""),
                                    perms={"read": request.POST.getlist("perm_read"),
                                           "write": request.POST.getlist("perm_write")})
         return render(request, "hydrodesk/new_type.html", context)
@@ -4499,6 +4581,7 @@ def edit_hydrotype(request, slug="monitoring_station"):
     context = _builder_context([], display_name, geometry, rows, row_count,
                                mode="edit", slug=slug,
                                title_field=(field_schema or {}).get("x-title-field", ""),
+                               naming_series=(field_schema or {}).get("x-naming", ""),
                                perms=(field_schema or {}).get("x-permissions"))
     return render(request, "hydrodesk/new_type.html", context)
 

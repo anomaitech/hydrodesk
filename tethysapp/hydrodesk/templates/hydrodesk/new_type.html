@@ -91,6 +91,13 @@
         </select>
         <div class="frappe-help">Which field names each record (shown as the record's heading and in links). Options come from the fields below.</div>
       </div>
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_naming_series">Naming series <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+        <input class="form-control" type="text" id="id_naming_series" name="naming_series"
+               value="{{ naming_series }}" placeholder="e.g. INV-#####">
+        <div class="frappe-help">Auto-number new records into the <strong>title field</strong>: the <code>#</code> run is a zero-padded counter, so <code>INV-#####</code> &rarr; <code>INV-00001</code>, <code>INV-00002</code>, … Leave blank for no auto-numbering. (Needs a Record title field set above.)</div>
+      </div>
     </div>
 
     <div class="frappe-form-section">
