@@ -89,7 +89,7 @@
       {% endif %}
       <dl class="frappe-dl">
         <div class="frappe-dl-row">
-          <dt class="frappe-dl-term">Centroid</dt>
+          <dt class="frappe-dl-term">Location <span class="frappe-muted frappe-text-sm">(lon, lat)</span></dt>
           <dd class="frappe-dl-desc">{{ longitude }}, {{ latitude }}</dd>
         </div>
       </dl>
@@ -155,6 +155,16 @@
       document.head.appendChild(el);
     });
   }
+  // A MultiPolygon is ONE GeoJSON feature, so a single style() call would paint every
+  // part the same colour. Split it into one Feature per part so each zone gets its own.
+  function asFeatures(g) {
+    if (g && g.type === 'MultiPolygon') {
+      return { type: 'FeatureCollection', features: (g.coordinates || []).map(function (c, i) {
+        return { type: 'Feature', properties: { _part: i }, geometry: { type: 'Polygon', coordinates: c } };
+      }) };
+    }
+    return g;
+  }
   function draw() {
     var map = L.map(holder, { scrollWheelZoom: false });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -162,7 +172,7 @@
     // Colour each polygon part distinctly so the zones read as separate cells.
     var palette = ['#2490ef', '#28a745', '#e8590c', '#9c36b5', '#1098ad', '#f08c00', '#e03131', '#37b24d'];
     var idx = 0;
-    var layer = L.geoJSON(geom, {
+    var layer = L.geoJSON(asFeatures(geom), {
       style: function () { return { color: palette[(idx++) % palette.length], weight: 2, fillOpacity: 0.28 }; },
       pointToLayer: function (f, latlng) { return L.circleMarker(latlng, { radius: 7, color: '#2490ef', fillOpacity: 0.7 }); }
     }).addTo(map);
@@ -172,8 +182,11 @@
     } catch (e) { map.setView([0, 0], 2); }
   }
   if (window.L) { draw(); return; }
-  load('link', { rel: 'stylesheet', href: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css' });
-  load('script', { src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js' })
+  // Pinned version + Subresource Integrity so a compromised CDN can't inject script.
+  load('link', { rel: 'stylesheet', href: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+                 integrity: 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=', crossOrigin: 'anonymous' });
+  load('script', { src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+                   integrity: 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=', crossOrigin: 'anonymous' })
     .then(draw)
     .catch(function () { holder.innerHTML = '<div class="frappe-help" style="padding:12px;">Map library could not be loaded (offline?). Geometry is still stored.</div>'; });
 })();

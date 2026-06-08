@@ -1105,15 +1105,14 @@ def _zone_polygons(cfg, attrs=None):
     cfg, attrs = cfg or {}, attrs or {}
     label_field = (cfg.get("zone_label") or "").strip() or None
     if (cfg.get("zones_source") or "").strip().lower() == "record":
-        # DYNAMIC: the record's geometry is the zone set (no .dbf attrs -> centroid /
-        # 'zone_N' labels). _geojson is a bare GeoJSON geometry (Polygon/MultiPolygon).
-        z = _zones_from_geojson(attrs.get("_geojson"), label_field)
-        if z:
-            return z
-        # No record geometry (e.g. the connector Test panel) -> a pasted polygon/zones
-        # acts as a stand-in record geometry so Test still shows the per-zone shape.
-        return (_zones_from_geojson(cfg.get("zones"), label_field)
-                or _zones_from_geojson(cfg.get("polygon"), label_field))
+        # DYNAMIC: ONLY the record's geometry is the zone set (no .dbf attrs -> centroid
+        # / 'zone_N' labels). _geojson is a bare GeoJSON geometry (Polygon/MultiPolygon),
+        # injected by the detail view. A non-polygon / geometry-less record yields None
+        # here -> a soft-empty series (NOT a silent fall-back to some connector-level
+        # polygon, which would mislabel shared zones as this record's own). For the Test
+        # panel, connector_test injects the pasted polygon as a stand-in _geojson so this
+        # same record path runs.
+        return _zones_from_geojson(attrs.get("_geojson"), label_field)
     z = _zones_from_geojson(cfg.get("zones"), label_field)
     if z:
         return z
@@ -3981,8 +3980,11 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
         row = session.execute(
             select(
                 m.HydroRecord.attributes,
-                func.ST_X(m.HydroRecord.geom),
-                func.ST_Y(m.HydroRecord.geom),
+                # ST_PointOnSurface (not ST_X/ST_Y on the raw geom — those raise on a
+                # polygon/line) -> a representative lon/lat guaranteed ON the geometry,
+                # valid for ANY type so editing a polygon/line record doesn't 500.
+                func.ST_X(func.ST_PointOnSurface(m.HydroRecord.geom)),
+                func.ST_Y(func.ST_PointOnSurface(m.HydroRecord.geom)),
             )
             .where(m.HydroRecord.hydrotype_slug == slug)
             .where(m.HydroRecord.id == record_id)
@@ -4792,11 +4794,12 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         row = session.execute(
             select(
                 m.HydroRecord.attributes,
-                # Centroid (not ST_X/ST_Y on the raw geom — those raise on a
-                # polygon/line): the record's representative lon/lat for map centring
-                # and the dynamic point/bbox filters, valid for ANY geometry type.
-                func.ST_X(func.ST_Centroid(m.HydroRecord.geom)),
-                func.ST_Y(func.ST_Centroid(m.HydroRecord.geom)),
+                # A representative point ON the geometry (not ST_X/ST_Y on the raw geom
+                # — those raise on a polygon/line; not ST_Centroid — that can fall in a
+                # gap between disjoint MultiPolygon parts). Valid for ANY geometry type:
+                # the record's lon/lat for map centring + the dynamic point/bbox filters.
+                func.ST_X(func.ST_PointOnSurface(m.HydroRecord.geom)),
+                func.ST_Y(func.ST_PointOnSurface(m.HydroRecord.geom)),
                 func.ST_AsGeoJSON(m.HydroRecord.geom),
             )
             .where(m.HydroRecord.hydrotype_slug == slug)
@@ -6728,6 +6731,19 @@ def connector_test(request):
 
     if not isinstance(attrs, dict):
         attrs = {}
+
+    # DYNAMIC zones (zones_source='record') read the record's geometry from
+    # attrs['_geojson']; the Test panel has no record, so use the pasted polygon/zones
+    # as a STAND-IN geometry here (this is the only place that fallback is allowed —
+    # real records never borrow connector-level zones).
+    if (isinstance(config, dict)
+            and (config.get("spatial") or "").lower() == "zones"
+            and (config.get("zones_source") or "").lower() == "record"
+            and not attrs.get("_geojson")):
+        stand_in = config.get("polygon") or config.get("zones")
+        if stand_in:
+            attrs = dict(attrs)
+            attrs["_geojson"] = stand_in
 
     result = fetch_api(config, attrs, connector_name=config.get("name") or "test")
 

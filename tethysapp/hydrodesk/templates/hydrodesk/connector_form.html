@@ -222,7 +222,7 @@
               <div class="frappe-help">Fixed = upload one multi-polygon layer; every record reduces over the same zones. Dynamic = each record's <strong>own</strong> Polygon/MultiPolygon geometry IS its zone set — so a record drawn as 3 cells gets 3 columns from those exact cells.</div>
             </div>
             <div class="hd-zones-dynamic frappe-help" style="display:none;margin-bottom:10px;">
-              <strong>Dynamic zones:</strong> bind this connector to a doctype with a <strong>polygon</strong> geometry. Each record's MultiPolygon parts become the zone columns — no shapefile needed here. (Test uses whatever's pasted in the Polygon box as a stand-in record geometry.)
+              <strong>Dynamic zones:</strong> bind this connector to a doctype with a <strong>polygon</strong> geometry — each record's Polygon/MultiPolygon parts become its zone columns (no shapefile here). A point/geometry-less record yields no zones (not shared ones). To <strong>Test</strong>, paste a sample <code>MultiPolygon</code> in the <strong>Polygon</strong> box above — it stands in for a record's geometry here only.
             </div>
             <div class="hd-zones-fixed" style="display:none;">
             <div class="frappe-help" id="hd-zones-status" style="margin-bottom:10px;"></div>
@@ -889,9 +889,10 @@
       if (pg) pg.style.display = (m === 'polygon' || m === 'zones') ? '' : 'none';
       if (cl) cl.style.display = (m === 'cells') ? '' : 'none';
       if (zn) zn.style.display = (m === 'zones') ? '' : 'none';
-      // Dynamic zones (record geometry) hide the shapefile upload; fixed zones show it.
+      // Dynamic zones come from each record's geometry; the polygon box above stays
+      // visible only as a Test-panel stand-in geometry. The fixed-zones controls
+      // (label field / max / FC status) are hidden in dynamic mode.
       var dyn = (zsrc && zsrc.value === 'record');
-      if (pg && m === 'zones') pg.style.display = dyn ? 'none' : '';
       var df = document.querySelector('.hd-zones-dynamic');
       var fx = document.querySelector('.hd-zones-fixed');
       if (df) df.style.display = (m === 'zones' && dyn) ? '' : 'none';
