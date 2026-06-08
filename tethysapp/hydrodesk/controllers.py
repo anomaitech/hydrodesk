@@ -347,17 +347,24 @@ def _connector_outputs(cfg):
             return []
         x_dim = (cfg.get("x_dim") or "time").strip()
         unit = (cfg.get("unit") or "").strip()
+        derived = [d for d in (cfg.get("derived") or [])
+                   if isinstance(d, dict) and (d.get("name") or "").strip()
+                   and (d.get("formula") or "").strip()]
         outs = []
-        multi = len(var_list) > 1
-        if multi:
-            outs.append({"name": "table", "kind": "series", "type": "series",
-                         "primary": True, "vars": var_list, "x_dim": x_dim, "unit": unit})
+        # A combined table when there are several variables OR any derived columns
+        # (a computed column needs the table to carry every variable for the row-wise
+        # expression). It's primary unless there's a single plain variable.
+        table = (len(var_list) > 1) or bool(derived)
         for i, var in enumerate(var_list):
             outs.append({"name": var, "kind": "series", "type": "series",
                          "var": var, "x_dim": x_dim, "unit": unit,
-                         "primary": (not multi and i == 0)})
+                         "primary": (not table and i == 0)})
             outs.append({"name": var + "_latest", "kind": "value", "type": "number",
                          "var": var, "unit": unit})
+        if table:
+            outs.insert(0, {"name": "table", "kind": "series", "type": "series",
+                            "primary": True, "vars": var_list, "derived": derived,
+                            "x_dim": x_dim, "unit": unit})
         return outs
     if knd == "csv":
         # CSV: the whole table is ONE series (every column becomes a variable, so it
@@ -760,10 +767,12 @@ def _netcdf_var_along(ds, v, x_dim):
     return _netcdf_to_list(v[idx])
 
 
-def _netcdf_multivar_columns(ds, var_names, x_dim):
+def _netcdf_multivar_columns(ds, var_names, x_dim, derived=None):
     """Build aligned table columns for several variables along ``x_dim``: the x_dim
     coordinate first, then one column per existing variable (each reduced over its
-    non-x dims). Columns are truncated to the shortest so rows stay aligned."""
+    non-x dims), then any DERIVED columns — a row-wise expression over the real
+    variables (e.g. ``sqrt(UWND**2 + VWND**2)``) via the safe formula evaluator.
+    Columns are truncated to the shortest so rows stay aligned."""
     per = []
     for vn in var_names:
         v = ds.variables.get(vn)
@@ -779,6 +788,21 @@ def _netcdf_multivar_columns(ds, var_names, x_dim):
     cols = [{"name": x_dim or "index", "values": xs[:n]}]
     for vn, ys in per:
         cols.append({"name": vn, "values": ys[:n]})
+    # Derived columns: evaluate each formula per row over the real variable values.
+    for d in (derived or []):
+        dname = (d.get("name") or "").strip()
+        formula = (d.get("formula") or "").strip()
+        if not dname or not formula:
+            continue
+        out = []
+        for i in range(n):
+            rowvars = {}
+            for _vn, ys in per:
+                yv = ys[i] if i < len(ys) else None
+                if isinstance(yv, (int, float)) and not isinstance(yv, bool):
+                    rowvars[_vn] = yv
+            out.append(_safe_eval(formula, rowvars))
+        cols.append({"name": dname, "values": out})
     return cols
 
 
@@ -790,7 +814,8 @@ def _netcdf_extract(ds, out_entry):
     out_entry = out_entry or {}
     multi = out_entry.get("vars")
     if multi:
-        cols = _netcdf_multivar_columns(ds, multi, (out_entry.get("x_dim") or "").strip())
+        cols = _netcdf_multivar_columns(ds, multi, (out_entry.get("x_dim") or "").strip(),
+                                        out_entry.get("derived"))
         if not cols:
             return None
         n = max((len(c["values"]) for c in cols), default=0)
@@ -936,6 +961,8 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
     # combined 'table') doesn't return a stale result when the connector's variable
     # list changes (the name alone would collide across different variable sets).
     _sig = ",".join((out_entry.get("vars") or [out_entry.get("var") or ""]))
+    _sig += "|" + ";".join((d.get("name", "") + "=" + d.get("formula", ""))
+                           for d in (out_entry.get("derived") or []))
     cache_key = (connector_name,
                  url + "::" + (out_entry.get("name") or "") + "::" + _sig)
     now = time.time()
@@ -5475,6 +5502,15 @@ def _connector_config_from_post(post):
         config["variable"] = var_list[0] if var_list else ""   # back-compat / describe
         config["x_dim"] = (post.get("x_dim") or "time").strip()
         config["unit"] = (post.get("nc_unit") or "").strip()
+        # Derived (computed) variables: one "name = formula" per line, evaluated
+        # row-wise over the real variables and added as extra table columns.
+        derived = []
+        for line in (post.get("nc_derived") or "").splitlines():
+            name, sep, formula = line.partition("=")
+            name, formula = name.strip(), formula.strip()
+            if sep and name and formula:
+                derived.append({"name": name, "formula": formula})
+        config["derived"] = derived
         if kind == "thredds":
             config["catalog_url"] = (post.get("catalog_url") or "").strip()
             config["dataset"] = (post.get("dataset") or "").strip()
@@ -5614,6 +5650,10 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
                      or (config or {}).get("variable", "")),
         "x_dim": (config or {}).get("x_dim", "time"),
         "nc_unit": (config or {}).get("unit", ""),
+        "nc_derived": "\n".join(
+            (d.get("name", "") + " = " + d.get("formula", ""))
+            for d in ((config or {}).get("derived") or [])
+            if isinstance(d, dict)),
         "catalog_url": (config or {}).get("catalog_url", ""),
         "dataset": (config or {}).get("dataset", ""),
         # CSV

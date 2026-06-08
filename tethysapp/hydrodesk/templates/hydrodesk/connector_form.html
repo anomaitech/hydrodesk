@@ -131,6 +131,12 @@
           </div>
         </div>
         <div class="frappe-help">Comma-separate several variables (e.g. <code>SST, AIRT, SLP</code>) to get a combined table plus a per-variable series + latest value. Click <strong>Test</strong> below to list the dataset's variables. Each is averaged over its non-time dimensions. Declare <strong>Inputs</strong> below to substitute <code>{field}</code> into the dataset/catalog URL.</div>
+        <div class="frappe-form-group" style="margin-top:10px;">
+          <label class="frappe-label" for="id_nc_derived">Derived variables <span class="frappe-muted frappe-text-sm">(optional &mdash; a calculator between variables)</span></label>
+          <textarea class="form-control" id="id_nc_derived" name="nc_derived" rows="2"
+                    placeholder="WSPD = sqrt(UWND**2 + VWND**2)">{{ nc_derived }}</textarea>
+          <div class="frappe-help">One <code>name = formula</code> per line. The formula is evaluated per row over the real variables (by their exact names) and added as an extra <strong>table</strong> column. Operators <code>+ - * / ** %</code>; functions <code>sqrt, abs, min, max, round, floor, ceil, log, exp</code>.</div>
+        </div>
       </div>
 
       {# ---- CSV source ---- #}
@@ -974,6 +980,8 @@
       setVal('id_variable', cfg.variable);
       setVal('id_x_dim', cfg.x_dim);
       setVal('id_nc_unit', cfg.unit);
+      setVal('id_nc_derived', (cfg.derived || []).map(function (d) {
+        return d.name + ' = ' + d.formula; }).join('\n'));
       setVal('id_catalog_url', cfg.catalog_url);
       setVal('id_dataset', cfg.dataset);
       setVal('id_csv_url', cfg.csv_url);
@@ -1044,6 +1052,11 @@
       variable: (val('id_kind') === 'wcs') ? val('id_wcs_variable') : val('id_variable'),
       x_dim: val('id_x_dim') || 'time',
       unit: val('id_nc_unit'),
+      derived: (val('id_nc_derived') || '').split('\n').map(function (l) {
+        var i = l.indexOf('='); if (i < 0) return null;
+        var n = l.slice(0, i).trim(), f = l.slice(i + 1).trim();
+        return (n && f) ? { name: n, formula: f } : null;
+      }).filter(Boolean),
       catalog_url: val('id_catalog_url'),
       dataset: val('id_dataset'),
       csv_url: val('id_csv_url'),
