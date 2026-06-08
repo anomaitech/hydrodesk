@@ -4659,6 +4659,250 @@ def _compute_formulas(field_schema, attrs):
     return attrs
 
 
+# ===========================================================================
+# PYTHON SCRIPT field (x-field == 'script') — runs a sandboxed Python script over
+# the record's fields and stores its declared, typed OUTPUTS on save (so they are
+# fast + filterable in the Data API). Sandbox: RestrictedPython + CURATED PROXIES
+# (np/pd carry only a vetted whitelist; raw modules are never exposed, so a script
+# can't walk pd.compat.os... to the host), an attribute denylist (file/pickle/
+# network/code-exec), an underscore/format compile block, and a module-root guard.
+# Heavy imports (RestrictedPython, numpy, pandas) are LAZY so app startup is unaffected.
+# Inputs bind by NAME: a free variable matching a record field uses that field's value.
+# ===========================================================================
+_SCRIPT_ALLOWED_ROOTS = {"math", "statistics", "datetime", "json", "re"}
+_SCRIPT_PROXY_ROOTS = {"numpy", "pandas"}
+_SCRIPT_DENY_ATTRS = {
+    "eval", "query", "to_pickle", "to_csv", "to_excel", "to_hdf", "to_sql",
+    "to_parquet", "to_feather", "to_clipboard", "to_stata", "to_gbq", "to_xml",
+    "to_latex", "to_markdown", "to_html", "to_json", "to_string", "tofile",
+    "dump", "dumps", "load", "loads", "open", "system", "popen",
+    "ctypes", "data_as", "getfield", "setfield", "setflags", "newbyteorder",
+}
+_SCRIPT_NP_FUNCS = (
+    "array asarray arange linspace logspace zeros ones full eye identity mean "
+    "average std var median percentile quantile min max amin amax argmin argmax "
+    "sum prod cumsum cumprod diff gradient abs absolute sqrt cbrt square exp expm1 "
+    "log log2 log10 log1p sin cos tan arcsin arccos arctan arctan2 deg2rad rad2deg "
+    "floor ceil round clip where select sign mod remainder power dot vdot cross "
+    "outer inner concatenate stack vstack hstack column_stack split reshape ravel "
+    "transpose flip roll sort argsort unique isnan isinf isfinite nan_to_num "
+    "nanmean nanstd nansum nanmin nanmax interp polyfit polyval histogram bincount "
+    "corrcoef cov array_equal allclose isclose pi e nan inf newaxis float64 int64 "
+    "bool_").split()
+_SCRIPT_NP_SUBNS = {
+    "random": "rand randn randint normal uniform choice seed random_sample permutation shuffle".split(),
+    "linalg": "norm inv solve det eig eigvals svd lstsq pinv qr matrix_rank".split(),
+    "fft": "fft ifft rfft irfft fftfreq rfftfreq".split(),
+}
+_SCRIPT_PD_FUNCS = (
+    "DataFrame Series concat merge date_range to_datetime to_numeric to_timedelta "
+    "Timestamp Timedelta NaT isna notna cut qcut Categorical pivot_table melt "
+    "crosstab factorize").split()
+
+
+def _script_ns(module, names, subns=None):
+    """A SimpleNamespace exposing only ``names`` from ``module`` (+ sub-namespaces)."""
+    import types
+    o = types.SimpleNamespace()
+    for n in names:
+        if hasattr(module, n):
+            setattr(o, n, getattr(module, n))
+    for sub, subnames in (subns or {}).items():
+        if hasattr(module, sub):
+            setattr(o, sub, _script_ns(getattr(module, sub), subnames))
+    return o
+
+
+def _build_script_globals():
+    """Build the sandbox global namespace (curated proxies + guarded builtins). Lazy:
+    imports RestrictedPython/numpy/pandas only on first script run. Fresh per run, so a
+    script can't pollute the proxies for the next run."""
+    import types, builtins
+    import numpy, pandas, math, statistics, datetime, json, re
+    from RestrictedPython import safe_builtins
+    from RestrictedPython.Guards import (safer_getattr, guarded_iter_unpack_sequence,
+                                         guarded_unpack_sequence, full_write_guard)
+    from RestrictedPython.Eval import default_guarded_getitem, default_guarded_getiter
+
+    np_proxy = _script_ns(numpy, _SCRIPT_NP_FUNCS, _SCRIPT_NP_SUBNS)
+    pd_proxy = _script_ns(pandas, _SCRIPT_PD_FUNCS)
+    modules = {"np": np_proxy, "numpy": np_proxy, "pd": pd_proxy, "pandas": pd_proxy,
+               "math": math, "statistics": statistics, "datetime": datetime,
+               "json": json, "re": re}
+
+    def _guard_getattr(obj, name, default=None):
+        if name in _SCRIPT_DENY_ATTRS or name.startswith("read_"):
+            raise AttributeError("attribute '%s' is not allowed in a script" % name)
+        val = safer_getattr(obj, name, default)        # blocks _-names, format/format_map
+        if isinstance(val, types.ModuleType):
+            root = (getattr(val, "__name__", "") or "").split(".")[0]
+            if root not in _SCRIPT_ALLOWED_ROOTS:
+                raise AttributeError("reaching module '%s' is not allowed"
+                                     % getattr(val, "__name__", "?"))
+        return val
+
+    def _guard_import(name, *a, **k):
+        root = name.split(".")[0]
+        if root in _SCRIPT_PROXY_ROOTS:
+            return modules[root]                       # import numpy -> the PROXY
+        if root in _SCRIPT_ALLOWED_ROOTS:
+            return __import__(name, *a, **k)
+        raise ImportError("import of '%s' is not allowed in a script" % name)
+
+    b = dict(safe_builtins)
+    b["__import__"] = _guard_import
+    for fn in ("min", "max", "sum", "abs", "round", "len", "range", "sorted",
+               "enumerate", "zip", "map", "filter", "all", "any", "bool", "int",
+               "float", "str", "list", "dict", "tuple", "set", "frozenset",
+               "reversed", "divmod", "pow"):
+        b[fn] = getattr(builtins, fn)
+    g = {"__builtins__": b, "_getattr_": _guard_getattr,
+         "_getitem_": default_guarded_getitem, "_getiter_": default_guarded_getiter,
+         "_write_": full_write_guard,
+         "_iter_unpack_sequence_": guarded_iter_unpack_sequence,
+         "_unpack_sequence_": guarded_unpack_sequence}
+    g.update(modules)
+    return g
+
+
+def _run_python_script(src, inputs=None, timeout=5):
+    """Compile + run ``src`` in the sandbox with ``inputs`` bound, returning the dict
+    of script-assigned variables. Raises on a blocked op / syntax / runtime error /
+    timeout. Best-effort CPU timeout via SIGALRM (main thread only)."""
+    import threading, signal
+    from RestrictedPython import compile_restricted
+    code = compile_restricted(src, "<hydrodesk-script>", "exec")
+    g = _build_script_globals()
+    injected = set(g.keys())
+    g.update(inputs or {})
+    injected |= set((inputs or {}).keys())
+    use_alarm = (hasattr(signal, "SIGALRM")
+                 and threading.current_thread() is threading.main_thread())
+    if use_alarm:
+        def _on_timeout(signum, frame):
+            raise TimeoutError("script exceeded %ss" % timeout)
+        old = signal.signal(signal.SIGALRM, _on_timeout)
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        exec(code, g)
+    finally:
+        if use_alarm:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
+    return {k: v for k, v in g.items() if k not in injected and not k.startswith("_")}
+
+
+def _script_free_vars(src):
+    """The script's free variables = names read before assignment, minus builtins and
+    the pre-bound module names. These are the script's INPUTS (bound by name to record
+    fields). A best-effort over/under-approximation that drives the builder + binding."""
+    import ast
+    try:
+        tree = ast.parse(src or "")
+    except SyntaxError:
+        return []
+    bound, loaded = set(), []
+    builtin_names = set(dir(__import__("builtins")))
+    premod = {"np", "numpy", "pd", "pandas", "math", "statistics", "datetime", "json", "re"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (bound.add(node.id) if isinstance(node.ctx, ast.Store) else loaded.append(node.id))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                bound.add(a.asname or a.name.split(".")[0])
+    seen, out = set(), []
+    for n in loaded:
+        if n not in bound and n not in builtin_names and n not in premod and n not in seen:
+            seen.add(n); out.append(n)
+    return out
+
+
+def _script_jsonify(v):
+    """Coerce a script output (numpy/pandas/datetime/...) into a JSON-storable value."""
+    try:
+        import numpy as _np
+        if isinstance(v, _np.generic):
+            v = v.item()
+        elif isinstance(v, _np.ndarray):
+            return [_script_jsonify(x) for x in v.tolist()]
+    except Exception:
+        pass
+    try:
+        import pandas as _pd
+        if isinstance(v, _pd.Series):
+            return [_script_jsonify(x) for x in v.tolist()]
+        if isinstance(v, _pd.DataFrame):
+            return [{str(k): _script_jsonify(x) for k, x in row.items()}
+                    for row in v.to_dict(orient="records")]
+        if isinstance(v, _pd.Timestamp):
+            return v.isoformat()
+    except Exception:
+        pass
+    import datetime as _dt
+    if isinstance(v, (_dt.date, _dt.datetime)):
+        return v.isoformat()
+    if isinstance(v, float):
+        import math as _m
+        return None if (_m.isnan(v) or _m.isinf(v)) else v
+    if v is None or isinstance(v, (int, str, bool)):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [_script_jsonify(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _script_jsonify(x) for k, x in v.items()}
+    return str(v)
+
+
+def _coerce_script_output(value, ftype):
+    """JSON-ify a script output and coerce by its declared field type."""
+    v = _script_jsonify(value)
+    ft = (ftype or "").lower()
+    if ft in ("number", "float", "int", "integer"):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return v
+    if ft in ("text", "string", "date"):
+        return v if (v is None or isinstance(v, str)) else str(v)
+    return v   # time-series / table / other -> the json-ified structure
+
+
+def _compute_scripts(field_schema, attrs):
+    """Run every Python-script field (x-field == 'script') and store its declared
+    outputs in ``attrs``. Inputs bind by NAME from the record's other fields. A script
+    that errors records ``_<key>_error`` (reserved, hidden from the API) and stores no
+    outputs — it never blocks the save. Runs after _compute_formulas."""
+    scripts = [(k, p) for k, p in _ordered_props(field_schema)
+               if (p or {}).get("x-field") == "script"]
+    if not scripts:
+        return attrs
+    for key, prop in scripts:
+        src = (prop.get("x-script") or "").strip()
+        errkey = "_%s_error" % key
+        if not src:
+            attrs.pop(errkey, None)
+            continue
+        inputs = {v: attrs.get(v) for v in _script_free_vars(src) if v in attrs}
+        try:
+            out = _run_python_script(src, inputs)
+        except Exception as exc:
+            attrs[errkey] = ("%s: %s" % (type(exc).__name__, exc))[:240]
+            continue
+        attrs.pop(errkey, None)
+        for o in (prop.get("x-script-outputs") or []):
+            if not isinstance(o, dict):
+                continue
+            name = (o.get("name") or "").strip()
+            if name and name in out:
+                attrs[name] = _coerce_script_output(out[name],
+                                                    o.get("field_type") or o.get("type"))
+    return attrs
+
+
 def _parse_point(post):
     """Parse and range-check Longitude/Latitude from POST -> (WKTElement, None)
     or (None, message). Axis order is POINT(lon lat), srid 4326 to match the
@@ -4850,6 +5094,7 @@ def hydrotype_new(request, slug="monitoring_station"):
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
+            _compute_scripts(field_schema, attributes)    # run sandboxed script fields
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
@@ -4924,8 +5169,8 @@ def _importable_fields(field_schema):
         prop = prop or {}
         if prop.get("x-layout") or prop.get("x-api-connector") or prop.get("x-child-type"):
             continue
-        if prop.get("x-field") == "formula":   # computed, never user-provided
-            continue
+        if prop.get("x-field") in ("formula", "script") or prop.get("x-computed"):
+            continue                              # computed, never user-provided
         if prop.get("type") == "array" and prop.get("x-widget") == "table":
             continue
         out.append((key, prop, prop.get("title") or key.replace("_", " ").title()))
@@ -5031,6 +5276,7 @@ def import_records(request, slug="monitoring_station"):
                     f"{k} {v}" for k, v in coerce_errors.items())})
                 continue
             _compute_formulas(field_schema, attributes)   # fill computed fields
+            _compute_scripts(field_schema, attributes)    # run sandboxed script fields
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 row_errors.append({"row": i, "msg": vmsg})
@@ -5105,6 +5351,7 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
+            _compute_scripts(field_schema, attributes)    # run sandboxed script fields
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
