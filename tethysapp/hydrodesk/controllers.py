@@ -2363,6 +2363,12 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
     try:
         for name, prop in _ordered_props(schema):  # honor x-order (JSONB scrambles)
             prop = prop or {}
+            if prop.get("x-layout") == "tab":
+                # Layout-only widget: starts a new top-level TAB on the form. Everything
+                # until the next tab break belongs to this tab (JS builds the tab bar).
+                fields.append({"widget": "tab", "name": name,
+                               "label": prop.get("title") or "Tab"})
+                continue
             if prop.get("x-layout") == "section":
                 # Layout-only widget: starts a new titled section on the form.
                 fields.append({"widget": "section", "name": name,
@@ -3586,6 +3592,10 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
     seen = set()
     for name, prop in _ordered_props(schema):  # honor x-order (JSONB scrambles)
         prop = prop or {}
+        if prop.get("x-layout") == "tab":
+            fields.append({"is_tab": True, "tab": prop.get("title") or "Tab"})
+            seen.add(name)
+            continue
         if prop.get("x-layout") == "section":
             fields.append({"is_section": True, "section": prop.get("title") or ""})
             seen.add(name)
@@ -3767,6 +3777,10 @@ def _schema_for(field_type, options):
         # LAYOUT-ONLY: a Column Break. Splits the current section into side-by-side
         # columns on the form (its label, if any, is an optional column heading).
         return {"x-layout": "column"}
+    if ft == "tab":
+        # LAYOUT-ONLY: a Tab Break. Starts a new top-level TAB (its label is the tab
+        # title); the form/detail render a tab bar and show one tab at a time.
+        return {"x-layout": "tab"}
     if ft == "number":
         return {"type": "number"}
     if ft == "checkbox":
@@ -3905,6 +3919,8 @@ def _builder_type_for(prop):
     builder 'Type' select value (text/number/select/checkbox/date/textarea/email/
     url/link/api/table/tags). Used to pre-fill the builder when EDITING a type."""
     prop = prop or {}
+    if prop.get("x-layout") == "tab":
+        return "tab"
     if prop.get("x-layout") == "section":
         return "section"
     if prop.get("x-layout") == "column":
@@ -4185,7 +4201,7 @@ def _assemble_type_spec(post, force_slug=None):
     for idx, row in enumerate(rows):
         label = row["label"]
         rtype = (row["type"] or "text").strip().lower()
-        is_layout = rtype in ("section", "column")
+        is_layout = rtype in ("section", "column", "tab")
         if not label and not is_layout:
             continue  # a blank non-layout row => skip it entirely
         if is_layout:

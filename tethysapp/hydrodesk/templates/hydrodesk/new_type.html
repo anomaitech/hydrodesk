@@ -129,6 +129,7 @@
               <option value="api"      {% if r.type == 'api' %}selected{% endif %}>API</option>
               <option value="table"    {% if r.type == 'table' %}selected{% endif %}>Table</option>
               <option value="tags"     {% if r.type == 'tags' %}selected{% endif %}>Tags</option>
+              <option value="tab"      {% if r.type == 'tab' %}selected{% endif %}>&mdash; Tab Break &mdash;</option>
               <option value="section"  {% if r.type == 'section' %}selected{% endif %}>&mdash; Section Break &mdash;</option>
               <option value="column"   {% if r.type == 'column' %}selected{% endif %}>&mdash; Column Break &mdash;</option>
             </select>
@@ -189,6 +190,7 @@
               <option value="api">API</option>
               <option value="table">Table</option>
               <option value="tags">Tags</option>
+              <option value="tab">&mdash; Tab Break &mdash;</option>
               <option value="section">&mdash; Section Break &mdash;</option>
               <option value="column">&mdash; Column Break &mdash;</option>
             </select>
@@ -570,7 +572,7 @@
     // Field options: default value + conditional display), plus type-specific
     // config. Only a Section Break (layout-only) has nothing to configure.
     function typeNeedsConfig(t) {
-      return t !== 'section' && t !== 'column';
+      return t !== 'section' && t !== 'column' && t !== 'tab';
     }
     function refreshRow(wrap) {
       var p = rowParts(wrap);
@@ -649,7 +651,7 @@
       applyBtn.style.display = '';
       // Common per-field options (default value + conditional display) for every
       // DATA field. Section/Column breaks are layout-only -> no options.
-      var isLayout = (t === 'section' || t === 'column');
+      var isLayout = (t === 'section' || t === 'column' || t === 'tab');
       if (!isLayout) buildCommonOptions(wrap);
       if (t === 'select')      buildSelectUI(wrap);
       else if (t === 'link')   buildLinkUI(wrap);
@@ -699,7 +701,7 @@
         var t2 = w2.querySelector('select[name^="field_type_"]');
         var lab = l2 ? (l2.value || '').trim() : '';
         var ty = t2 ? t2.value : 'text';
-        if (!lab || ty === 'section' || ty === 'table' || ty === 'api') return;
+        if (!lab || ty === 'section' || ty === 'tab' || ty === 'table' || ty === 'api') return;
         var sl = lab.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
         if (sl) opts.push('<option value="' + sl + '">' + lab.replace(/</g, '&lt;') + '</option>');
       });
@@ -1287,7 +1289,7 @@
       var typEl = wrap.querySelector('select[name^="field_type_"]');
       var lab = labEl ? (labEl.value || '').trim() : '';
       var t = typEl ? typEl.value : 'text';
-      if (!lab || t === 'section' || t === 'table' || t === 'api') return;
+      if (!lab || t === 'section' || t === 'tab' || t === 'table' || t === 'api') return;
       var slug = slugify(lab);
       if (!slug) return;
       opts.push('<option value="' + slug + '">' + lab.replace(/</g, '&lt;') + '</option>');

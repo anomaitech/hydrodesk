@@ -510,6 +510,15 @@
     .frappe-section-cols { display:flex; gap:28px; align-items:flex-start; }
     .frappe-section-col { flex:1 1 0; min-width:0; }
     @media (max-width:680px) { .frappe-section-cols { flex-direction:column; gap:0; } }
+    /* Tab Break: a Frappe-style tab bar above the form/detail sections. */
+    .hd-tabs-nav { display:flex; gap:2px; flex-wrap:wrap; margin:0 0 16px;
+                   border-bottom:1px solid var(--fr-border-color,#d1d8dd); }
+    .hd-tab-btn { background:none; border:none; border-bottom:2px solid transparent;
+                  padding:8px 14px; margin-bottom:-1px; font-size:13px; font-weight:600;
+                  color:var(--fr-text-muted,#8d99a6); cursor:pointer; }
+    .hd-tab-btn:hover { color:var(--fr-text,#1f272e); }
+    .hd-tab-btn.active { color:var(--fr-primary,#2490ef);
+                         border-bottom-color:var(--fr-primary,#2490ef); }
     .frappe-section-head {
       font-size:var(--fr-text-md);
       font-weight:600;

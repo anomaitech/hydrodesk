@@ -60,13 +60,19 @@
       <input type="hidden" name="parent_link_field" value="{{ parent_link_field }}">
     {% endif %}
 
-    <div class="frappe-form-section">
+    <div class="frappe-form-section"{% if widgets.0.widget == "tab" %} data-tab-break="1" data-tab-label="{{ widgets.0.label }}"{% endif %}>
       {% if widgets.0.widget == "section" %}{% if widgets.0.label %}<div class="frappe-section-head">{{ widgets.0.label }}</div>{% endif %}
+      {% elif widgets.0.widget == "tab" %}{# leading tab: its label shows in the tab bar, not as a section head #}
       {% else %}<div class="frappe-section-head">Details</div>{% endif %}
       <div class="frappe-section-cols"><div class="frappe-section-col">
 
       {% for w in widgets %}
-        {% if forloop.first and w.widget == "section" %}{# leading section already used as the first heading above #}
+        {% if forloop.first and w.widget == "tab" %}{# leading tab already opened the first (tab-tagged) section above #}
+        {% elif forloop.first and w.widget == "section" %}{# leading section already used as the first heading above #}
+        {% elif w.widget == "tab" %}
+          {# Tab Break: close col+cols+section, open a new TAB-tagged section (JS builds the bar). #}
+          </div></div></div><div class="frappe-form-section" data-tab-break="1" data-tab-label="{{ w.label }}">
+          <div class="frappe-section-cols"><div class="frappe-section-col">
         {% elif w.widget == "section" %}
           {# Section Break: close col+cols+section, open a new titled section. #}
           </div></div></div><div class="frappe-form-section">
@@ -333,6 +339,45 @@
     if (el) { el.addEventListener('change', evalAll); el.addEventListener('input', evalAll); }
   });
   evalAll();
+})();
+</script>
+
+<script>
+// ---- Tab Break: partition the form's top-level sections into tabs + a tab bar. ----
+(function () {
+  var card = document.querySelector('form.frappe-form-card');
+  if (!card) return;
+  var sections = Array.prototype.slice.call(card.children).filter(function (el) {
+    return el.classList && el.classList.contains('frappe-form-section');
+  });
+  if (!sections.length) return;
+  var tabs = [], cur = null;
+  sections.forEach(function (sec, i) {
+    if (i === 0 || sec.hasAttribute('data-tab-break')) {
+      cur = { label: sec.getAttribute('data-tab-label') || (i === 0 ? 'Details' : 'Tab ' + (tabs.length + 1)), sections: [] };
+      tabs.push(cur);
+    }
+    cur.sections.push(sec);
+  });
+  if (tabs.length < 2) return;   // no real tab breaks -> leave the form as one page
+  var nav = document.createElement('div');
+  nav.className = 'hd-tabs-nav';
+  function activate(ti) {
+    tabs.forEach(function (t, i) {
+      t.sections.forEach(function (s) { s.style.display = (i === ti) ? '' : 'none'; });
+    });
+    Array.prototype.forEach.call(nav.children, function (b, i) { b.classList.toggle('active', i === ti); });
+  }
+  tabs.forEach(function (t, ti) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'hd-tab-btn';
+    btn.textContent = t.label;
+    btn.addEventListener('click', function () { activate(ti); });
+    nav.appendChild(btn);
+  });
+  card.insertBefore(nav, sections[0]);
+  activate(0);
 })();
 </script>
 {% endblock %}

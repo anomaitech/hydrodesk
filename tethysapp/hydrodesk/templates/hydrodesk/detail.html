@@ -55,11 +55,16 @@
     </div>
   {% else %}
   <div class="frappe-form-card">
-    <div class="frappe-form-section">
+    <div class="frappe-form-section"{% if fields.0.is_tab %} data-tab-break="1" data-tab-label="{{ fields.0.tab }}"{% endif %}>
       {% if fields.0.is_section and fields.0.section %}<div class="frappe-section-head">{{ fields.0.section }}</div>{% endif %}
       <dl class="frappe-dl">
         {% for f in fields %}
-          {% if forloop.first and f.is_section %}{# leading section already used as the first heading above #}
+          {% if forloop.first and f.is_tab %}{# leading tab already opened the first (tab-tagged) section above #}
+          {% elif forloop.first and f.is_section %}{# leading section already used as the first heading above #}
+          {% elif f.is_tab %}
+            {# Tab Break: close this group and start a new TAB-tagged section (JS builds the bar). #}
+            </dl></div><div class="frappe-form-section" data-tab-break="1" data-tab-label="{{ f.tab }}">
+            <dl class="frappe-dl">
           {% elif f.is_section %}
             {# Section Break: close this group and start a new titled section. #}
             </dl></div><div class="frappe-form-section">
@@ -94,4 +99,43 @@
   {% endif %}
 
 </div>
+
+<script>
+// ---- Tab Break: partition the detail's top-level sections into tabs + a tab bar. ----
+(function () {
+  var card = document.querySelector('.frappe-form-card');
+  if (!card) return;
+  var sections = Array.prototype.slice.call(card.children).filter(function (el) {
+    return el.classList && el.classList.contains('frappe-form-section');
+  });
+  if (!sections.length) return;
+  var tabs = [], cur = null;
+  sections.forEach(function (sec, i) {
+    if (i === 0 || sec.hasAttribute('data-tab-break')) {
+      cur = { label: sec.getAttribute('data-tab-label') || (i === 0 ? 'Details' : 'Tab ' + (tabs.length + 1)), sections: [] };
+      tabs.push(cur);
+    }
+    cur.sections.push(sec);
+  });
+  if (tabs.length < 2) return;
+  var nav = document.createElement('div');
+  nav.className = 'hd-tabs-nav';
+  function activate(ti) {
+    tabs.forEach(function (t, i) {
+      t.sections.forEach(function (s) { s.style.display = (i === ti) ? '' : 'none'; });
+    });
+    Array.prototype.forEach.call(nav.children, function (b, i) { b.classList.toggle('active', i === ti); });
+  }
+  tabs.forEach(function (t, ti) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'hd-tab-btn';
+    btn.textContent = t.label;
+    btn.addEventListener('click', function () { activate(ti); });
+    nav.appendChild(btn);
+  });
+  card.insertBefore(nav, sections[0]);
+  activate(0);
+})();
+</script>
 {% endblock %}
