@@ -4,9 +4,13 @@
 {% block title %}Data API - {{ block.super }}{% endblock %}
 {% block desk_content %}
 <style>
+  /* The form-card has no padding of its own (the theme expects a .frappe-form-section
+     wrapper); on this page content sits directly in the card, so give every card here
+     internal breathing room. */
+  .frappe-page .frappe-form-card { padding:20px 22px; }
   .hd-api-grid { display:grid; grid-template-columns:320px 1fr; gap:20px; align-items:start; }
   @media (max-width:900px){ .hd-api-grid{ grid-template-columns:1fr; } }
-  .hd-sec { padding-top:16px; margin-top:16px; border-top:1px solid var(--fr-border,#e6e9ee); }
+  .hd-sec { padding-top:18px; margin-top:18px; border-top:1px solid var(--fr-border-color,#e6e9ee); }
   .hd-sec:first-child { padding-top:0; margin-top:0; border-top:0; }
   .hd-subhead { font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
                 color:var(--fr-text-muted,#6b7280); margin-bottom:10px; display:flex; align-items:center; gap:8px; }
