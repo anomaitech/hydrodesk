@@ -4879,9 +4879,15 @@ def _coerce_script_output(value, ftype):
         except (TypeError, ValueError):
             return v
     if ft in ("time-series", "table", "series"):
-        # A table is a list of row dicts. A single dict -> a one-row table (its keys
-        # become the columns). A bare scalar -> one row {value}.
+        # A table is a list of row dicts. A dict of SCALARS -> key/value rows
+        # ([{key,value}, ...]); a dict with nested values -> a single (one-row) table;
+        # a list passes through; a bare scalar -> one row {value}.
         if isinstance(v, dict):
+            if not v:
+                return []
+            if all(val is None or isinstance(val, (int, float, str, bool))
+                   for val in v.values()):
+                return [{"key": k, "value": val} for k, val in v.items()]
             return [v]
         if isinstance(v, list):
             return v
