@@ -726,31 +726,45 @@ def _netcdf_coord_values(cvar):
     return [str(v) for v in _netcdf_to_list(vals)]
 
 
-def _nearest_index(coord_var, target):
-    """Index of the value nearest ``target`` in a 1-D coordinate variable, or None."""
+def _nearest_index(coord_var, target, circular=False):
+    """Index of the value nearest ``target`` in a 1-D coordinate variable, or None.
+    ``circular`` (for LONGITUDE) uses wrap-around distance mod 360, so a target in any
+    convention (−180…180 or 0…360) matches the right cell regardless of the dataset's
+    convention — e.g. a record's −160°W finds the dataset's 200°E."""
     import numpy as np
     try:
         vals = np.ma.asarray(coord_var[:]).astype("float64")
         if vals.ndim != 1 or not vals.size:
             return None
-        return int(np.argmin(np.abs(vals - float(target))))
+        if circular:
+            diff = np.abs(((vals - float(target) + 180.0) % 360.0) - 180.0)
+        else:
+            diff = np.abs(vals - float(target))
+        return int(np.argmin(diff))
     except Exception:
         return None
 
 
-def _range_slice(coord_var, lo, hi):
-    """A slice over a 1-D coord covering [lo, hi] (inclusive, order-agnostic), or
-    slice(None) when the bounds are missing/unparseable or nothing falls inside."""
+def _range_slice(coord_var, lo, hi, circular=False):
+    """A slice over a 1-D coord covering [lo, hi] (inclusive), or slice(None) when the
+    bounds are missing or nothing falls inside. ``circular`` (LONGITUDE) normalises the
+    bounds and coords mod 360 so a Pacific window matches whatever convention the
+    dataset uses (a window that wraps the 0/360 seam is approximated by min..max)."""
     import numpy as np
     try:
         lo, hi = float(lo), float(hi)
     except (TypeError, ValueError):
         return slice(None)
-    if lo > hi:
-        lo, hi = hi, lo
     try:
         vals = np.ma.asarray(coord_var[:]).astype("float64")
-        idx = np.where((vals >= lo) & (vals <= hi))[0]
+        if circular:
+            cn, lon, hin = vals % 360.0, lo % 360.0, hi % 360.0
+            mask = ((cn >= lon) & (cn <= hin)) if lon <= hin else ((cn >= lon) | (cn <= hin))
+        else:
+            if lo > hi:
+                lo, hi = hi, lo
+            mask = (vals >= lo) & (vals <= hi)
+        idx = np.where(mask)[0]
         if idx.size:
             return slice(int(idx.min()), int(idx.max()) + 1)
     except Exception:
@@ -792,13 +806,17 @@ def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
             index.append(slice(None))
         elif use_point and d in (lat_dim, lon_dim):
             coord = ds.variables.get(d)
-            ix = _nearest_index(coord, tlat if d == lat_dim else tlon) if coord is not None else None
+            is_lon = (d == lon_dim)
+            ix = (_nearest_index(coord, tlon if is_lon else tlat, circular=is_lon)
+                  if coord is not None else None)
             index.append(ix if ix is not None else v.shape[k] // 2)
         elif use_bbox and d in (lat_dim, lon_dim):
             coord = ds.variables.get(d)
-            lo, hi = ((cfg.get("lat_min"), cfg.get("lat_max")) if d == lat_dim
-                      else (cfg.get("lon_min"), cfg.get("lon_max")))
-            index.append(_range_slice(coord, lo, hi) if coord is not None else slice(None))
+            is_lon = (d == lon_dim)
+            lo, hi = ((cfg.get("lon_min"), cfg.get("lon_max")) if is_lon
+                      else (cfg.get("lat_min"), cfg.get("lat_max")))
+            index.append(_range_slice(coord, lo, hi, circular=is_lon)
+                         if coord is not None else slice(None))
         else:
             index.append(slice(None))
     sub = np.ma.asarray(v[tuple(index)])
