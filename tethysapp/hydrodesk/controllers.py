@@ -1624,6 +1624,8 @@ def _apply_time_range(result, cfg=None, attrs=None):
     end = _resolve_date(cfg.get("time_end"), attrs)
     if not start and not end:
         return result
+    if start and end and start > end:           # tolerate an inverted window
+        start, end = end, start
     tvals = cols[0].get("values") or []
     keep, any_parsed = [], False
     for tv in tvals:
@@ -5074,7 +5076,8 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
                 field_map=prop.get("x-api-map"),
                 api_outputs=prop.get("x-api-outputs"),
                 nc_map=prop.get("x-nc-map"))
-            if prop.get("x-nc-map"):     # edit-in-place params bar above the table
+            if (prop.get("x-nc-map") and connector       # edit-in-place params bar
+                    and (connector.config or {}).get("kind") == "netcdf"):
                 bar = _nc_params_bar(parent_slug, parent_id, name,
                                      prop.get("x-nc-map"), attrs)
                 if bar:
@@ -5133,19 +5136,24 @@ def api_params_update(request, slug=None, record_id=None, field=None):
             return _denied(request, "edit", _dn)
         prop = ((field_schema.get("properties") or {}).get(field)) or {}
         nc_map = prop.get("x-nc-map") or {}
+        # Only a real netcdf API field carries x-nc-map; refuse anything else.
+        if not (nc_map and prop.get("x-api-connector")):
+            return redirect(detail_url)
         rec = session.execute(
             select(m.HydroRecord)
             .where(m.HydroRecord.hydrotype_slug == slug)
             .where(m.HydroRecord.id == record_id)
         ).scalar_one_or_none()
-        if rec is None or not nc_map:
+        if rec is None:
             return redirect(detail_url)
         attrs = dict(rec.attributes or {})
         for key in ("start", "end"):
             fld = nc_map.get(key)
             if fld:
                 v = (request.POST.get("p_" + key) or "").strip()
-                if v:
+                # Store only a parseable date; ignore garbage so the window can't be
+                # silently disabled by an un-decodable value.
+                if v and _parse_date_loose(v) is not None:
                     attrs[fld] = v
         shp_fld = nc_map.get("shapefile")
         if shp_fld and request.FILES.get("p_shapefile") is not None:
@@ -5846,14 +5854,30 @@ def _assemble_type_spec(post, force_slug=None):
     valid_field_slugs = set(properties.keys())
     for row_no, prop_name, conn_name, raw_map, raw_outputs, raw_ncmap in api_rows:
         # x-nc-map: the netcdf per-record parameter mapping (shapefile/start/end ->
-        # field slugs). Validate the targets exist; unknown targets are dropped.
+        # field slugs). ONLY for a netcdf connector, and each target must be the right
+        # TYPE (shapefile param -> a Shapefile field; start/end -> a Date field) — the
+        # builder UI enforces this, but never trust the client POST.
         nc_map = {}
-        for _k in ("shapefile", "start", "end"):
-            _sel = (raw_ncmap.get(_k) or "").strip()
-            if not _sel:
-                continue
-            _slug = _sel if _sel in valid_field_slugs else _slugify_underscore(_sel)
-            if _slug in valid_field_slugs:
+        _nc_cfg = _connector_config_by_name(conn_name) or {}
+        if (_nc_cfg.get("kind") or "").lower() == "netcdf":
+            for _k in ("shapefile", "start", "end"):
+                _sel = (raw_ncmap.get(_k) or "").strip()
+                if not _sel:
+                    continue
+                _slug = _sel if _sel in valid_field_slugs else _slugify_underscore(_sel)
+                if _slug not in valid_field_slugs:
+                    continue
+                _tp = properties.get(_slug) or {}
+                if _k == "shapefile" and _tp.get("x-field") != "shapefile":
+                    form_errors.append(
+                        f"Row {row_no}: API field '{prop_name}' shapefile parameter "
+                        f"must map to a Shapefile field.")
+                    continue
+                if _k in ("start", "end") and _tp.get("format") != "date":
+                    form_errors.append(
+                        f"Row {row_no}: API field '{prop_name}' {_k} parameter "
+                        f"must map to a Date field.")
+                    continue
                 nc_map[_k] = _slug
         if nc_map:
             properties[prop_name]["x-nc-map"] = nc_map
