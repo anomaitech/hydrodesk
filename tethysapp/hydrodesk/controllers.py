@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid as uuidlib
 
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, cast, Float, Text, or_
 from sqlalchemy.orm import Session
 from geoalchemy2 import WKTElement
 
@@ -3454,6 +3454,208 @@ def _format_cell(value):
     if isinstance(value, bool):
         return "Yes" if value else "No"
     return str(value)
+
+
+# ===========================================================================
+# OUTBOUND DATA API — exposes EVERY doctype's records as JSON/GeoJSON so other
+# apps (e.g. TethysDash) can build dashboards. Metadata-driven: one endpoint
+# serves any slug, with attribute filters, bbox, paging, ordering, and field
+# selection to keep payloads small. Read access = a logged-in user with the
+# doctype's read permission OR a valid read token (the 'api_read_token'
+# credential), so external consumers can pull with ?token=/X-API-Token.
+# ===========================================================================
+_API_RESERVED = {"limit", "offset", "order", "fields", "format", "bbox", "q", "token"}
+_API_OPS = {"gt", "lt", "gte", "lte", "ne", "contains", "in"}
+
+
+def _api_read_token(request):
+    """The read token presented on the request (?token= or X-API-Token), or ''."""
+    return (request.GET.get("token")
+            or request.headers.get("X-API-Token")
+            or request.headers.get("Authorization", "").replace("Bearer ", "")
+            or "").strip()
+
+
+def _api_authorized(request, field_schema):
+    """True if the caller may read this doctype over the API: a logged-in user with
+    read permission, OR a request token matching the stored 'api_read_token' secret
+    (the explicit publish token for external consumers like TethysDash)."""
+    if _user_can(request, field_schema, "read"):
+        return True
+    tok = _api_read_token(request)
+    if not tok:
+        return False
+    try:
+        with Session(App.get_persistent_store_database("hydro_db")) as session:
+            secret = _resolve_secret(session, "api_read_token")
+        return bool(secret) and tok == secret
+    except Exception:
+        return False
+
+
+def _api_apply_filters(stmt, params):
+    """Apply attribute filters / bbox / order to a HydroRecord SELECT from the query
+    params. Any param that isn't reserved is an attribute filter; 'key__op' selects an
+    operator (gt/lt/gte/lte/ne/contains/in). Returns (stmt, errors)."""
+    errors = []
+    attrs = m.HydroRecord.attributes
+    for key, val in params.items():
+        if key in _API_RESERVED:
+            continue
+        field, _, op = key.partition("__")
+        op = op or "eq"
+        if op not in _API_OPS and op != "eq":
+            errors.append("unknown operator '%s'" % op)
+            continue
+        col = attrs[field].astext
+        try:
+            if op == "eq":
+                stmt = stmt.where(col == val)
+            elif op == "ne":
+                stmt = stmt.where(col != val)
+            elif op == "contains":
+                stmt = stmt.where(col.ilike("%%%s%%" % val))
+            elif op == "in":
+                stmt = stmt.where(col.in_([v.strip() for v in val.split(",") if v.strip()]))
+            else:  # numeric range
+                num = cast(col, Float)
+                stmt = stmt.where({"gt": num > float(val), "lt": num < float(val),
+                                   "gte": num >= float(val), "lte": num <= float(val)}[op])
+        except (ValueError, TypeError):
+            errors.append("bad value for '%s'" % key)
+    bbox = (params.get("bbox") or "").strip()
+    if bbox:
+        try:
+            x0, y0, x1, y1 = [float(v) for v in bbox.split(",")]
+            stmt = stmt.where(func.ST_Intersects(
+                m.HydroRecord.geom, func.ST_MakeEnvelope(x0, y0, x1, y1, 4326)))
+        except (ValueError, TypeError):
+            errors.append("bbox must be minlon,minlat,maxlon,maxlat")
+    q = (params.get("q") or "").strip()
+    if q:  # free-text across all attributes (the whole JSONB blob cast to text)
+        stmt = stmt.where(cast(m.HydroRecord.attributes, Text).ilike("%%%s%%" % q))
+    order = (params.get("order") or "").strip()
+    if order:
+        desc = order.startswith("-")
+        ofield = order.lstrip("-")
+        ocol = attrs[ofield].astext
+        stmt = stmt.order_by(ocol.desc() if desc else ocol.asc())
+    return stmt, errors
+
+
+@controller(name="api_records", url="api/{slug}/records", title="Records API",
+            login_required=False)
+def api_records(request, slug=None):
+    """Outbound JSON/GeoJSON of a doctype's records (any slug). Query params: attribute
+    filters (field / field__gt/lt/gte/lte/ne/contains/in), bbox=, q=, order=, fields=,
+    limit= (<=1000), offset=, format=json|geojson, token=. Read-gated by permission/token."""
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return JsonResponse({"ok": False, "error": "unknown doctype '%s'" % slug}, status=404)
+        display_name, field_schema, geometry_kind = meta
+        if not _api_authorized(request, field_schema):
+            return JsonResponse({"ok": False, "error": "read access denied (login or a valid token required)"}, status=401)
+        try:
+            limit = max(1, min(1000, int(request.GET.get("limit") or 100)))
+        except (TypeError, ValueError):
+            limit = 100
+        try:
+            offset = max(0, int(request.GET.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        fmt = (request.GET.get("format") or "json").strip().lower()
+        want_fields = [f.strip() for f in (request.GET.get("fields") or "").split(",") if f.strip()]
+
+        base = select(m.HydroRecord.id, m.HydroRecord.attributes,
+                      func.ST_AsGeoJSON(m.HydroRecord.geom)).where(
+                          m.HydroRecord.hydrotype_slug == slug)
+        filtered, ferr = _api_apply_filters(base, request.GET)
+        if ferr:
+            return JsonResponse({"ok": False, "error": "; ".join(ferr)}, status=400)
+        total = session.execute(
+            select(func.count()).select_from(filtered.subquery())).scalar() or 0
+        try:
+            rows = session.execute(filtered.limit(limit).offset(offset)).all()
+        except Exception as exc:
+            return JsonResponse({"ok": False, "error": "query failed: %s" % str(exc)[:160]}, status=400)
+
+    def _project(attrs):
+        a = dict(attrs or {})
+        a = {k: v for k, v in a.items() if not k.startswith("_")}      # hide reserved keys
+        if want_fields:
+            a = {k: v for k, v in a.items() if k in want_fields}
+        return a
+
+    if fmt == "geojson":
+        feats = []
+        for rid, attrs, geom in rows:
+            props = _project(attrs)
+            props["id"] = str(rid)
+            feats.append({"type": "Feature", "properties": props,
+                          "geometry": json.loads(geom) if geom else None})
+        return JsonResponse({"type": "FeatureCollection", "features": feats,
+                             "numberReturned": len(feats), "numberMatched": total})
+    records = []
+    for rid, attrs, geom in rows:
+        rec = {"id": str(rid)}
+        rec.update(_project(attrs))
+        if geom and not want_fields:
+            rec["geometry"] = json.loads(geom)
+        records.append(rec)
+    return JsonResponse({"ok": True, "doctype": slug, "display_name": display_name,
+                         "count": len(records), "matched": total,
+                         "limit": limit, "offset": offset, "records": records})
+
+
+@controller(name="api_catalog", url="api/catalog", title="API catalog",
+            login_required=False)
+def api_catalog(request):
+    """A machine-readable catalog of every doctype's API endpoint + its fields, so a
+    consumer (or the Explorer UI) can discover what's available. Read-gated overall by
+    login OR the api_read_token; per-doctype read permission still applies on /records."""
+    engine = App.get_persistent_store_database("hydro_db")
+    base = request.build_absolute_uri("/apps/hydrodesk/api/").rstrip("/")
+    out = []
+    with Session(engine) as session:
+        rows = session.execute(select(
+            m.HydroType.slug, m.HydroType.display_name, m.HydroType.geometry_kind,
+            m.HydroType.field_schema).order_by(m.HydroType.display_name)).all()
+        for sl, dn, gk, fs in rows:
+            if not _api_authorized(request, fs or {}):
+                continue
+            count = session.execute(
+                select(func.count()).select_from(m.HydroRecord)
+                .where(m.HydroRecord.hydrotype_slug == sl)).scalar() or 0
+            fields = [{"key": k, "title": (p or {}).get("title") or k,
+                       "type": (p or {}).get("type", "string")}
+                      for k, p in _ordered_props(fs or {})
+                      if not (p or {}).get("x-layout")]
+            out.append({"doctype": sl, "display_name": dn, "geometry": gk,
+                        "count": count, "fields": fields,
+                        "records_url": "%s/%s/records" % (base, sl),
+                        "geojson_url": "%s/%s/records?format=geojson" % (base, sl)})
+    return JsonResponse({"ok": True, "collections": out})
+
+
+@controller(name="api_explorer", url="api", title="Data API")
+def api_explorer(request):
+    """The 'API development' UI: browse every doctype as a data endpoint, build a
+    filtered query, preview the JSON, and copy the ready URL (with the read token) to
+    paste into another app (e.g. TethysDash). Gated to builders."""
+    if not _can_build(request):
+        return _denied(request, "manage", "Data API")
+    with Session(App.get_persistent_store_database("hydro_db")) as session:
+        token = _resolve_secret(session, "api_read_token")
+    base = request.build_absolute_uri(reverse("hydrodesk:api_catalog")).rsplit("/", 1)[0]
+    return render(request, "hydrodesk/api_explorer.html", {
+        "api_base": base,
+        "catalog_url": reverse("hydrodesk:api_catalog"),
+        "has_token": bool(token),
+        "token": token or "",
+        "credentials_url": reverse("hydrodesk:credentials"),
+    })
 
 
 @controller(name="list", url="list/{slug}", title="Records")

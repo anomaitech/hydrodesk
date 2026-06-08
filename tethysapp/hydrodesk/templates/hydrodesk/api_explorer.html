@@ -1,0 +1,190 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Data API explorer: browse every doctype as an endpoint, build a filtered query,
+   preview the JSON, and copy a ready URL (with token) for another app / TethysDash. #}
+{% block title %}Data API - {{ block.super }}{% endblock %}
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">
+    <div>
+      <h1 class="frappe-title">Data API</h1>
+      <div class="frappe-muted">Expose any doctype's records as JSON / GeoJSON so other apps (e.g. TethysDash) can build dashboards. Metadata-driven — every doctype is an endpoint.</div>
+    </div>
+  </div>
+
+  {# ---- Access token ---- #}
+  <div class="frappe-form-card" style="margin-bottom:16px;">
+    <div class="frappe-section-head">Access</div>
+    {% if has_token %}
+      <div class="frappe-help">External consumers authenticate with a read <strong>token</strong> (<code>?token=</code> or the <code>X-API-Token</code> header). Logged-in users with read permission don't need it.</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <input class="form-control" id="hd-token" type="text" readonly value="{{ token }}" style="max-width:320px;font-family:monospace;">
+        <button class="btn btn-secondary btn-sm" type="button" onclick="navigator.clipboard.writeText(document.getElementById('hd-token').value)">Copy token</button>
+        <a class="btn btn-link btn-sm" href="{{ credentials_url }}">Manage</a>
+      </div>
+    {% else %}
+      <div class="frappe-help">No read token set, so the API is open only to logged-in users with read permission. To let an external app pull data, create a credential named <code>api_read_token</code> under <a href="{{ credentials_url }}">Credentials</a> — its secret becomes the API token.</div>
+    {% endif %}
+  </div>
+
+  <div style="display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start;">
+    {# ---- Endpoint list ---- #}
+    <div class="frappe-form-card">
+      <div class="frappe-section-head">Doctypes <span class="frappe-muted frappe-text-sm" id="hd-count"></span></div>
+      <input class="form-control form-control-sm" id="hd-filter" placeholder="filter…" style="margin-bottom:8px;">
+      <div id="hd-doctypes" style="max-height:460px;overflow:auto;"></div>
+    </div>
+
+    {# ---- Query builder + preview ---- #}
+    <div class="frappe-form-card">
+      <div class="frappe-section-head" id="hd-builder-title">Query builder</div>
+      <div id="hd-builder" class="frappe-muted">Pick a doctype on the left to build a query.</div>
+      <div id="hd-builder-body" style="display:none;">
+        <div id="hd-filters"></div>
+        <button class="btn btn-link btn-sm" type="button" id="hd-add-filter" style="padding:0;">+ Add filter</button>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px;">
+          <div class="frappe-form-group"><label class="frappe-label">Format</label>
+            <select class="form-select form-select-sm" id="hd-format"><option value="json">JSON</option><option value="geojson">GeoJSON</option></select></div>
+          <div class="frappe-form-group"><label class="frappe-label">Limit</label>
+            <input class="form-control form-control-sm" id="hd-limit" value="50"></div>
+          <div class="frappe-form-group"><label class="frappe-label">Offset</label>
+            <input class="form-control form-control-sm" id="hd-offset" value="0"></div>
+          <div class="frappe-form-group"><label class="frappe-label">Order by</label>
+            <input class="form-control form-control-sm" id="hd-order" placeholder="field or -field"></div>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label">Endpoint URL</label>
+          <div style="display:flex;gap:8px;">
+            <input class="form-control" id="hd-url" readonly style="font-family:monospace;font-size:12px;">
+            <button class="btn btn-secondary btn-sm" type="button" id="hd-copy">Copy</button>
+            <button class="btn btn-primary btn-sm" type="button" id="hd-run">Run</button>
+          </div>
+          <div class="frappe-help">Append <code>&amp;token=…</code> for external apps (added automatically when a token is set).</div>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label">Preview <span class="frappe-muted frappe-text-sm" id="hd-preview-meta"></span></label>
+          <pre id="hd-preview" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;max-height:360px;overflow:auto;font-size:12px;">—</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var API_BASE = "{{ api_base }}";           // …/apps/hydrodesk/api
+  var CATALOG  = "{{ catalog_url }}";
+  var TOKEN    = "{{ token|escapejs }}";
+  var OPS = [["", "="], ["__ne", "≠"], ["__gt", ">"], ["__lt", "<"],
+            ["__gte", "≥"], ["__lte", "≤"], ["__contains", "contains"], ["__in", "in (a,b)"]];
+  var collections = [], active = null;
+  var listEl = document.getElementById("hd-doctypes");
+  var bodyEl = document.getElementById("hd-builder-body");
+  var introEl = document.getElementById("hd-builder");
+  var filtersEl = document.getElementById("hd-filters");
+
+  function esc(s) { return (s || "").toString().replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  fetch(CATALOG, { headers: { "Accept": "application/json" } })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      collections = (d && d.collections) || [];
+      document.getElementById("hd-count").textContent = "(" + collections.length + ")";
+      renderList("");
+    })
+    .catch(function () { listEl.innerHTML = '<div class="frappe-help">Could not load the catalog.</div>'; });
+
+  document.getElementById("hd-filter").addEventListener("input", function (e) { renderList(e.target.value); });
+
+  function renderList(q) {
+    q = (q || "").toLowerCase();
+    listEl.innerHTML = "";
+    collections.filter(function (c) {
+      return !q || (c.doctype + " " + c.display_name).toLowerCase().indexOf(q) >= 0;
+    }).forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "hd-dt-row";
+      row.style.cssText = "padding:7px 8px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;";
+      row.onmouseover = function () { row.style.background = "var(--fr-control-bg,#f3f5f7)"; };
+      row.onmouseout = function () { row.style.background = (active === c) ? "var(--fr-control-bg,#eef1f4)" : ""; };
+      row.innerHTML = '<span><strong>' + esc(c.display_name) + '</strong>'
+        + '<div class="frappe-muted frappe-text-sm"><code>' + esc(c.doctype) + '</code>'
+        + (c.geometry ? ' · ' + esc(c.geometry) : '') + '</div></span>'
+        + '<span class="frappe-muted">' + (c.count || 0) + '</span>';
+      row.onclick = function () { active = c; select(c); renderList(q); };
+      if (active === c) row.style.background = "var(--fr-control-bg,#eef1f4)";
+      listEl.appendChild(row);
+    });
+  }
+
+  function select(c) {
+    introEl.style.display = "none";
+    bodyEl.style.display = "";
+    document.getElementById("hd-builder-title").textContent = "Query: " + c.display_name;
+    filtersEl.innerHTML = "";
+    addFilter();
+    buildUrl();
+  }
+
+  function addFilter() {
+    if (!active) return;
+    var row = document.createElement("div");
+    row.className = "hd-filter-row";
+    row.style.cssText = "display:grid;grid-template-columns:1fr 110px 1fr 28px;gap:8px;margin-bottom:6px;";
+    var fopts = '<option value="">— field —</option>' + active.fields.map(function (f) {
+      return '<option value="' + esc(f.key) + '">' + esc(f.title) + '</option>'; }).join("");
+    var oopts = OPS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join("");
+    row.innerHTML = '<select class="form-select form-select-sm hd-f-field">' + fopts + '</select>'
+      + '<select class="form-select form-select-sm hd-f-op">' + oopts + '</select>'
+      + '<input class="form-control form-control-sm hd-f-val" placeholder="value">'
+      + '<button class="btn btn-link btn-sm hd-f-x" type="button" style="padding:0;color:#c00;">×</button>';
+    row.querySelector(".hd-f-x").onclick = function () { row.remove(); buildUrl(); };
+    row.querySelectorAll("select,input").forEach(function (el) { el.addEventListener("input", buildUrl); });
+    filtersEl.appendChild(row);
+  }
+  document.getElementById("hd-add-filter").onclick = function () { addFilter(); };
+  ["hd-format", "hd-limit", "hd-offset", "hd-order"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", buildUrl);
+  });
+
+  function buildUrl() {
+    if (!active) return "";
+    var params = [];
+    filtersEl.querySelectorAll(".hd-filter-row").forEach(function (row) {
+      var f = row.querySelector(".hd-f-field").value;
+      var op = row.querySelector(".hd-f-op").value;
+      var v = row.querySelector(".hd-f-val").value;
+      if (f && v !== "") params.push(encodeURIComponent(f + op) + "=" + encodeURIComponent(v));
+    });
+    var fmt = document.getElementById("hd-format").value;
+    if (fmt && fmt !== "json") params.push("format=" + fmt);
+    var lim = document.getElementById("hd-limit").value; if (lim) params.push("limit=" + encodeURIComponent(lim));
+    var off = document.getElementById("hd-offset").value; if (off && off !== "0") params.push("offset=" + encodeURIComponent(off));
+    var ord = document.getElementById("hd-order").value; if (ord) params.push("order=" + encodeURIComponent(ord));
+    var displayUrl = API_BASE + "/" + active.doctype + "/records/" + (params.length ? "?" + params.join("&") : "");
+    var p2 = params.slice(); if (TOKEN) p2.push("token=" + encodeURIComponent(TOKEN));
+    var copyUrl = API_BASE + "/" + active.doctype + "/records/" + (p2.length ? "?" + p2.join("&") : "");
+    document.getElementById("hd-url").value = copyUrl;
+    return displayUrl;
+  }
+
+  document.getElementById("hd-copy").onclick = function () {
+    navigator.clipboard.writeText(document.getElementById("hd-url").value);
+  };
+  document.getElementById("hd-run").onclick = function () {
+    var url = buildUrl();
+    var pre = document.getElementById("hd-preview");
+    pre.textContent = "Loading…";
+    fetch(url, { headers: { "Accept": "application/json" } })
+      .then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }); })
+      .then(function (res) {
+        var j = res.j;
+        var meta = (j.matched != null) ? (j.numberReturned != null ? j.numberReturned : j.count) + " of " + (j.matched != null ? j.matched : j.numberMatched) + " records" : "";
+        document.getElementById("hd-preview-meta").textContent = meta + " · HTTP " + res.s;
+        pre.textContent = JSON.stringify(j, null, 2).slice(0, 12000);
+      })
+      .catch(function (e) { pre.textContent = "Error: " + e; });
+  };
+})();
+</script>
+{% endblock %}
