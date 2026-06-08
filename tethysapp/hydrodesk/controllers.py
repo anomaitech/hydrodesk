@@ -4683,7 +4683,11 @@ _SCRIPT_DENY_ATTRS = {
     "eval", "query", "to_pickle", "to_csv", "to_excel", "to_hdf", "to_sql",
     "to_parquet", "to_feather", "to_clipboard", "to_stata", "to_gbq", "to_xml",
     "to_latex", "to_markdown", "to_html", "to_json", "to_string", "tofile",
-    "dump", "dumps", "load", "loads", "open", "system", "popen",
+    "dump", "load", "open", "system", "popen",
+    # NOTE: json.loads / json.dumps (string <-> JSON) are SAFE and allowed — pickle/
+    # marshal are not importable and numpy's load/save aren't on the proxy, so 'loads'/
+    # 'dumps' can only ever resolve to json's (no code-exec path). file 'load'/'dump'
+    # stay blocked (they'd need a file object the sandbox can't obtain anyway).
     "ctypes", "data_as", "getfield", "setfield", "setflags", "newbyteorder",
 }
 _SCRIPT_NP_FUNCS = (
