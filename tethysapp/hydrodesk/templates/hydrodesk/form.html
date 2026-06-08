@@ -50,7 +50,7 @@
     </div>
   {% endif %}
 
-  <form method="post" action="{{ form_action }}" class="frappe-form-card" novalidate>
+  <form method="post" action="{{ form_action }}" class="frappe-form-card" enctype="multipart/form-data" novalidate>
     {% csrf_token %}
     {% if parent_id %}
       {# Linked child: carry the parent context so the new record links back to it. #}
@@ -145,6 +145,13 @@
               <input class="form-control" type="color" style="max-width:80px;height:34px;padding:2px;"
                      id="id_{{ w.name }}" name="{{ w.name }}"
                      value="{{ w.value|default:'#000000' }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "shapefile" %}
+              <input class="form-control" type="file" accept=".zip,.shp,application/zip"
+                     id="id_{{ w.name }}" name="{{ w.name }}"{% if w.required and not w.has_value %} required{% endif %}>
+              <div class="frappe-help">
+                Upload a zipped shapefile (<code>.shp</code>+<code>.shx</code>+<code>.dbf</code>) or a bare <code>.shp</code> — stored as inline GeoJSON for this record.
+                {% if w.has_value %}<strong>{{ w.zone_count }}</strong> polygon{{ w.zone_count|pluralize }} stored; upload a new file to replace.{% endif %}
+              </div>
             {% elif w.widget == "formula" %}
               {# Computed: READ-ONLY. Filled on save from the other fields. #}
               <div class="frappe-muted frappe-text-sm"

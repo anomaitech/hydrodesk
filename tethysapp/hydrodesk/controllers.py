@@ -1122,40 +1122,73 @@ def _zone_polygons(cfg, attrs=None):
     rings = _parse_polygon_text(cfg.get("polygon"))     # WKT single polygon
     if rings:
         return [(_ring_centroid_label(rings), rings)]
-    sp = (cfg.get("shapefile") or "").strip()
-    if sp:
+    return _zones_from_shapefile_path(cfg.get("shapefile"), label_field)
+
+
+def _zones_from_shapefile_path(sp, label_field=None):
+    """Read a server-side .shp PATH into per-zone ``[(label, rings), ...]`` (pyshp).
+    None when the path is blank/unreadable or holds no polygons."""
+    sp = (sp or "").strip()
+    if not sp:
+        return None
+    try:
+        import shapefile
+        reader = shapefile.Reader(sp)
+        fields = [f[0] for f in reader.fields[1:]] if reader.fields else []
+        zones = []
         try:
-            import shapefile
-            reader = shapefile.Reader(sp)
-            fields = [f[0] for f in reader.fields[1:]] if reader.fields else []
-            zones = []
-            try:
-                recs = list(reader.shapeRecords())
-            except Exception:
-                recs = None
-            if recs:
-                for i, sr in enumerate(recs):
-                    rings = _geom_rings(getattr(sr.shape, "__geo_interface__", {}) or {})
-                    if not rings:
-                        continue
-                    try:
-                        props = dict(sr.record.as_dict())
-                    except Exception:
-                        try:
-                            props = dict(zip(fields, list(sr.record)))
-                        except Exception:
-                            props = {}
-                    zones.append((_zone_label_from_props(props, label_field, i, rings), rings))
-            else:
-                for i, shp in enumerate(reader.iterShapes()):
-                    rings = _geom_rings(getattr(shp, "__geo_interface__", {}) or {})
-                    if rings:
-                        zones.append((_ring_centroid_label(rings), rings))
-            if zones:
-                return zones
+            recs = list(reader.shapeRecords())
         except Exception:
-            pass
-    return None
+            recs = None
+        if recs:
+            for i, sr in enumerate(recs):
+                rings = _geom_rings(getattr(sr.shape, "__geo_interface__", {}) or {})
+                if not rings:
+                    continue
+                try:
+                    props = dict(sr.record.as_dict())
+                except Exception:
+                    try:
+                        props = dict(zip(fields, list(sr.record)))
+                    except Exception:
+                        props = {}
+                zones.append((_zone_label_from_props(props, label_field, i, rings), rings))
+        else:
+            for i, shp in enumerate(reader.iterShapes()):
+                rings = _geom_rings(getattr(shp, "__geo_interface__", {}) or {})
+                if rings:
+                    zones.append((_ring_centroid_label(rings), rings))
+        return zones or None
+    except Exception:
+        return None
+
+
+def _shapefile_zones(cfg, attrs=None):
+    """Resolve the SHAPEFILE spatial filter's polygons as ``[(label, rings), ...]``.
+    Source priority: the record's uploaded Shapefile field (``attrs['_shapefile']``) ->
+    the record's geometry (``attrs['_geojson']``) -> a pasted/inline ``zones``/``polygon``
+    on the connector (the Test panel) -> a server ``shapefile`` path. None if none usable."""
+    cfg, attrs = cfg or {}, attrs or {}
+    label_field = (cfg.get("zone_label") or "").strip() or None
+    for src in (attrs.get("_shapefile"), attrs.get("_geojson"),
+                cfg.get("zones"), cfg.get("polygon")):
+        z = _zones_from_geojson(src, label_field)
+        if z:
+            return z
+    rings = _parse_polygon_text(cfg.get("polygon"))
+    if rings:
+        return [(_ring_centroid_label(rings), rings)]
+    return _zones_from_shapefile_path(cfg.get("shapefile"), label_field)
+
+
+def _shapefile_union_rings(cfg, attrs):
+    """All polygons of the resolved shapefile flattened into one rings list — the
+    region as a whole (the even-odd ray-cast unions disjoint parts). None if empty."""
+    zones = _shapefile_zones(cfg, attrs)
+    if not zones:
+        return None
+    rings = [r for _label, zrings in zones for r in zrings]
+    return rings or None
 
 
 def _points_in_polygon(lon2d, lat2d, rings):
@@ -1362,6 +1395,63 @@ def _netcdf_zones_columns(ds, v, x_dim, cfg=None, attrs=None, max_zones=60):
     return [{"name": xd or "index", "values": xs}] + cols
 
 
+def _netcdf_shapefile_cells(ds, v, x_dim, cfg=None, attrs=None, max_cells=200):
+    """ALL CELLS inside the shapefile, NO aggregation: every grid cell whose centre
+    falls inside the resolved shapefile region becomes its OWN column ('lat,lon'),
+    the variable's series at that cell. Caps to ``max_cells`` evenly-spaced inside
+    cells. Returns [{name,values}] (x_dim first) or None."""
+    import numpy as np
+    cfg, attrs = cfg or {}, attrs or {}
+    dims = list(v.dimensions)
+    xd = x_dim if x_dim in dims else (dims[0] if dims else "")
+    lat_dim = (cfg.get("lat_dim") or "").strip()
+    lon_dim = (cfg.get("lon_dim") or "").strip()
+    if lat_dim not in dims or lon_dim not in dims:
+        return None
+    latc, lonc = ds.variables.get(lat_dim), ds.variables.get(lon_dim)
+    if latc is None or lonc is None:
+        return None
+    rings = _shapefile_union_rings(cfg, attrs)
+    if not rings:
+        return None
+    allx = [p[0] for r in rings for p in r]
+    ally = [p[1] for r in rings for p in r]
+    lat_sl = _range_slice(latc, min(ally), max(ally), circular=False)
+    lon_sl = _range_slice(lonc, min(allx), max(allx), circular=True)
+    lat_sub = np.asarray(latc[:], dtype="float64")[lat_sl]
+    lon_sub = np.asarray(lonc[:], dtype="float64")[lon_sl]
+    if not lat_sub.size or not lon_sub.size:
+        return None
+    LON, LAT = np.meshgrid(lon_sub, lat_sub)               # (nlat, nlon)
+    mask = _points_in_polygon(LON, LAT, rings)
+    ii, jj = np.where(mask)
+    if not len(ii):
+        return None
+    if len(ii) > max(1, int(max_cells or 200)):            # cap: evenly-spaced inside cells
+        sel = np.unique(np.linspace(0, len(ii) - 1, int(max_cells)).round().astype(int))
+        ii, jj = ii[sel], jj[sel]
+    index = [lat_sl if d == lat_dim else lon_sl if d == lon_dim else slice(None)
+             for d in dims]
+    sub = np.ma.asarray(v[tuple(index)])
+    lat_ax, lon_ax = dims.index(lat_dim), dims.index(lon_dim)
+    sub = np.moveaxis(sub, [lat_ax, lon_ax], [-2, -1])     # (leading..., nlat, nlon)
+    remaining = [d for d in dims if d not in (lat_dim, lon_dim)]
+    if xd in remaining:
+        xpos = remaining.index(xd)
+        other = tuple(i for i in range(len(remaining)) if i != xpos)
+        if other:
+            sub = np.ma.mean(sub, axis=other)
+        if xpos != 0 and sub.ndim >= 3:
+            sub = np.moveaxis(sub, xpos, 0)
+    cvar = ds.variables.get(xd)
+    xs = _netcdf_coord_values(cvar) if cvar is not None else [str(i) for i in range(sub.shape[0])]
+    cols = [{"name": xd or "index", "values": xs}]
+    for i, j in zip(ii, jj):
+        cols.append({"name": "%.2f,%.2f" % (float(lat_sub[i]), float(lon_sub[j])),
+                     "values": _netcdf_to_list(sub[:, int(i), int(j)])})
+    return cols
+
+
 def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
     """Reduce a variable to a 1-D series along ``x_dim``, applying the connector's
     SPATIAL FILTER to the lat/lon axes before averaging any remaining non-x axes:
@@ -1484,6 +1574,78 @@ def _netcdf_multivar_columns(ds, var_names, x_dim, derived=None, cfg=None, attrs
     return cols
 
 
+def _parse_date_loose(val):
+    """A time-coordinate / field value -> a ``datetime.date`` (None if unparseable).
+    Accepts date/datetime objects and ISO-ish strings ('2020-01-15', with or without a
+    'T'/space time part); cftime/num2date values stringify to this shape."""
+    import datetime as _dt
+    if val is None:
+        return None
+    if isinstance(val, _dt.datetime):
+        return val.date()
+    if isinstance(val, _dt.date):
+        return val
+    m = re.match(r"\s*(\d{4})-(\d{1,2})-(\d{1,2})", str(val))
+    if not m:
+        return None
+    try:
+        return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _resolve_date(spec, attrs):
+    """A ``time_start``/``time_end`` spec -> a ``datetime.date``. A ``{field}`` token
+    resolves from the record ``attrs`` (so each record sets its own window); otherwise
+    the spec is a literal date. None when blank/unresolved."""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    m = re.fullmatch(r"\{(.+)\}", spec)
+    if m:
+        spec = str((attrs or {}).get(m.group(1).strip()) or "").strip()
+    return _parse_date_loose(spec)
+
+
+def _apply_time_range(result, cfg=None, attrs=None):
+    """Filter a SERIES result's rows to the date window [time_start, time_end] (resolved
+    per-record) when ``time_source == 'range'``. Mode-agnostic — keeps only timesteps
+    whose x_dim (time) value parses to a date inside the window; an undecodable time
+    axis is left untouched (graceful, never raises)."""
+    cfg, attrs = cfg or {}, attrs or {}
+    if not result or result.get("kind") != "series":
+        return result
+    if (cfg.get("time_source") or "").strip().lower() != "range":
+        return result
+    cols = result.get("columns") or []
+    if not cols:
+        return result
+    start = _resolve_date(cfg.get("time_start"), attrs)
+    end = _resolve_date(cfg.get("time_end"), attrs)
+    if not start and not end:
+        return result
+    tvals = cols[0].get("values") or []
+    keep, any_parsed = [], False
+    for tv in tvals:
+        d = _parse_date_loose(tv)
+        if d is None:
+            keep.append(True)
+            continue
+        any_parsed = True
+        keep.append((start is None or d >= start) and (end is None or d <= end))
+    if not any_parsed or all(keep):
+        return result
+    new_cols = [{"name": c.get("name"),
+                 "values": [val for k, val in zip(keep, c.get("values") or []) if k]}
+                for c in cols]
+    n = len(new_cols[0]["values"]) if new_cols else 0
+    out = dict(result)
+    out.update({"columns": new_cols, "n": n,
+                "x": new_cols[0]["values"] if new_cols else [],
+                "y": new_cols[1]["values"] if len(new_cols) > 1 else []})
+    return out
+
+
 def _netcdf_extract(ds, out_entry, cfg=None, attrs=None):
     """Extract ONE output from an open netCDF4 Dataset. A 'table' output (carrying a
     ``vars`` list) -> one multi-column series (x_dim + each variable); a 'series'
@@ -1510,6 +1672,38 @@ def _netcdf_extract(ds, out_entry, cfg=None, attrs=None):
     if x_dim not in dims:
         x_dim = dims[0] if dims else ""
     is_series = (out_entry.get("kind") or "value").lower() == "series"
+    # SHAPEFILE filter (the two record-driven modes): 'mean' = the masked mean inside
+    # the resolved shapefile (a series, or its last point for a value output); 'cells'
+    # = every grid cell inside the shapefile as its own column (no aggregation). The
+    # region comes from THIS record's uploaded Shapefile field (_shapefile) / geometry.
+    if (cfg or {}).get("spatial") == "shapefile":
+        agg = ((cfg or {}).get("shapefile_agg") or "mean").lower()
+        lat_dim = (cfg or {}).get("lat_dim") or ""
+        lon_dim = (cfg or {}).get("lon_dim") or ""
+        if agg == "cells" and is_series:
+            cols = _netcdf_shapefile_cells(ds, v, x_dim, cfg, attrs,
+                                           int((cfg or {}).get("cells_max") or 200))
+            if cols:
+                n = max((len(c["values"]) for c in cols), default=0)
+                return {"kind": "series", "columns": cols, "n": n,
+                        "x": cols[0]["values"], "y": cols[1]["values"] if len(cols) > 1 else []}
+            return {"kind": "series", "n": 0, "x": [], "y": [],
+                    "columns": [{"name": x_dim or "index", "values": []}]}
+        rings = _shapefile_union_rings(cfg, attrs)
+        ys = (_netcdf_polygon_ys(ds, v, x_dim, lat_dim, lon_dim, rings)
+              if (rings and lat_dim in dims and lon_dim in dims) else None)
+        if is_series:
+            if ys is None:
+                return {"kind": "series", "n": 0, "x": [], "y": [],
+                        "columns": [{"name": x_dim or "index", "values": []}]}
+            cvar = ds.variables.get(x_dim)
+            xs = _netcdf_coord_values(cvar) if cvar is not None else [str(i) for i in range(len(ys))]
+            xs = xs[:len(ys)]
+            return {"kind": "series",
+                    "columns": [{"name": x_dim or "index", "values": xs},
+                                {"name": var_name, "values": ys}],
+                    "n": len(ys), "x": xs, "y": ys}
+        return {"kind": "value", "value": (ys[-1] if ys else None)}
     # PER-CELL / PER-ZONE: a SERIES output becomes one column per grid cell / per polygon
     # (NOT the mean). When the columns can't be built (e.g. all zones fall outside the
     # grid, or no zones are configured) return a soft-EMPTY series rather than falling
@@ -1690,8 +1884,21 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
             _zsrc = (cfg.get("zones") or cfg.get("polygon") or cfg.get("shapefile") or "")
         _zh = hashlib.md5(_zsrc.encode("utf-8", "replace")).hexdigest()[:12]
         _sig += "|zones:%s,%s,%s" % (_zh, cfg.get("zone_label") or "", cfg.get("zones_max"))
+    elif _sp == "shapefile":
+        import hashlib
+        # The region is per-record (the uploaded shapefile / geometry), so key on a
+        # digest of the RESOLVED shapefile source + the aggregation mode.
+        _ssrc = str(attrs.get("_shapefile") or attrs.get("_geojson")
+                    or cfg.get("zones") or cfg.get("polygon") or cfg.get("shapefile") or "")
+        _sh = hashlib.md5(_ssrc.encode("utf-8", "replace")).hexdigest()[:12]
+        _sig += "|shp:%s,%s,%s" % (_sh, (cfg.get("shapefile_agg") or "mean"), cfg.get("cells_max"))
     else:
         _sig += "|mean"
+    # A per-record DATE RANGE subsets the time axis -> two records differ; fold the
+    # resolved window into the key so they don't share a cached series.
+    if (cfg.get("time_source") or "").strip().lower() == "range":
+        _sig += "|t:%s,%s" % (_resolve_date(cfg.get("time_start"), attrs),
+                              _resolve_date(cfg.get("time_end"), attrs))
     cache_key = (connector_name,
                  url + "::" + (out_entry.get("name") or "") + "::" + _sig)
     now = time.time()
@@ -1707,6 +1914,7 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
         ds = netCDF4.Dataset(url)
         try:
             extracted = _netcdf_extract(ds, out_entry, cfg, attrs)
+            extracted = _apply_time_range(extracted, cfg, attrs)   # per-record date window
         finally:
             ds.close()
     except Exception:
@@ -2875,6 +3083,7 @@ def _derive_columns(field_schema):
             if not (p or {}).get("x-api-connector")
             and not (p or {}).get("x-child-type")
             and not (p or {}).get("x-layout")
+            and not (p or {}).get("x-field") == "shapefile"  # big GeoJSON blob, not a cell
             and not ((p or {}).get("type") == "array"
                      and (p or {}).get("x-widget") == "table")]
     pmap = dict(cols)
@@ -3276,6 +3485,13 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 f["widget"] = "phone"
             elif t == "string" and prop.get("x-field") == "color":
                 f["widget"] = "color"
+            elif prop.get("x-field") == "shapefile":
+                # Per-record shapefile UPLOAD: a file input. Show how many polygons are
+                # already stored (a file input can't pre-fill, so this is the cue that
+                # a re-upload would replace an existing one).
+                f["widget"] = "shapefile"
+                f["zone_count"] = _geojson_feature_count(values.get(name) or "")
+                f["has_value"] = f["zone_count"] > 0
             elif prop.get("x-field") == "formula":
                 # Computed field: READ-ONLY on the form (filled on save from the other
                 # fields); just shows its expression so it's visible but inert.
@@ -3358,6 +3574,8 @@ def _coerce_attributes(field_schema, post):
         t = prop.get("type")
         if prop.get("x-layout") or prop.get("x-child-type"):
             continue  # layout marker (no data) / LINKED table (separate records)
+        if prop.get("x-field") == "shapefile":
+            continue  # uploaded file -> handled from request.FILES, not POST text
         if t == "boolean":
             out[key] = key in post
             continue
@@ -3419,6 +3637,54 @@ def _coerce_attributes(field_schema, post):
         else:  # string (+ enum) stays a string
             out[key] = raw
     return out, errors
+
+
+def _shapefile_fields(field_schema):
+    """The keys of all Shapefile-type (x-field=='shapefile') properties, in order."""
+    return [k for k, p in _ordered_props(field_schema or {})
+            if (p or {}).get("x-field") == "shapefile"]
+
+
+def _geojson_feature_count(s):
+    """How many polygons a stored shapefile-field GeoJSON string holds (0 if none /
+    unparseable) — a FeatureCollection's features, a MultiPolygon's parts, else 1."""
+    s = (s or "").strip()
+    if not s.startswith("{"):
+        return 0
+    try:
+        g = json.loads(s)
+    except (ValueError, TypeError):
+        return 0
+    t = (g.get("type") or "").lower()
+    if t == "featurecollection":
+        return len(g.get("features") or [])
+    if t == "multipolygon":
+        return len(g.get("coordinates") or [])
+    if t in ("polygon", "feature"):
+        return 1
+    return 0
+
+
+def _apply_shapefile_uploads(field_schema, files, attributes, existing=None):
+    """Fold per-record SHAPEFILE uploads into ``attributes``. For each Shapefile field:
+    a newly uploaded file (request.FILES) is converted to an inline GeoJSON
+    FeatureCollection and stored under the field key; with no new upload the prior
+    value is preserved (edit). Returns a list of error strings (bad uploads)."""
+    files = files or {}
+    existing = existing or {}
+    errors = []
+    for key in _shapefile_fields(field_schema):
+        up = files.get(key)
+        if up is not None:
+            gj = _shapefile_to_featurecollection(up)
+            if gj:
+                attributes[key] = gj
+            else:
+                errors.append("%s: could not read a shapefile (expected a .zip bundle "
+                              "of .shp/.shx/.dbf, or a .shp)." % key)
+        elif existing.get(key):
+            attributes[key] = existing[key]            # keep the stored geometry on edit
+    return errors
 
 
 # --- Formula fields: a SAFE arithmetic evaluator (no eval/exec). Only numbers, the
@@ -3696,6 +3962,8 @@ def hydrotype_new(request, slug="monitoring_station"):
         attributes, coerce_errors = _coerce_attributes(field_schema, post)
         for key, msg in coerce_errors.items():
             errors.append(f"{key} {msg}.")
+        # Per-record SHAPEFILE uploads (request.FILES) -> inline GeoJSON in attributes.
+        errors.extend(_apply_shapefile_uploads(field_schema, request.FILES, attributes))
 
         validated = attributes
         if not coerce_errors:
@@ -3939,9 +4207,19 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
     if request.method == "POST":
         post = request.POST.dict()
         errors = []
+        # Current stored attributes (to preserve an uploaded shapefile when this edit
+        # doesn't re-upload one — a file input never pre-fills).
+        with Session(engine) as session:
+            existing_attrs = session.execute(
+                select(m.HydroRecord.attributes)
+                .where(m.HydroRecord.hydrotype_slug == slug)
+                .where(m.HydroRecord.id == record_id)
+            ).scalar_one_or_none() or {}
         attributes, coerce_errors = _coerce_attributes(field_schema, post)
         for key, msg in coerce_errors.items():
             errors.append(f"{key} {msg}.")
+        errors.extend(_apply_shapefile_uploads(field_schema, request.FILES, attributes,
+                                               existing=existing_attrs))
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
@@ -4089,6 +4367,11 @@ def _format_typed_cell(prop, value, session=None):
             str(value), str(value))
     if xfield == "rating":
         return _fmt_rating(value, prop.get("maximum") or 5)
+    if xfield == "shapefile":
+        n = _geojson_feature_count(value)
+        return format_html('<span class="frappe-muted"><i class="bi bi-bounding-box"></i> '
+                           'shapefile &mdash; {} polygon{}</span>',
+                           n, "" if n == 1 else "s")
     return _format_cell(value)
 
 
@@ -4820,6 +5103,17 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
             if geom_geojson:
                 attributes = dict(attributes or {})
                 attributes.setdefault("_geojson", geom_geojson)
+            # A per-record SHAPEFILE field -> expose its GeoJSON as the reserved
+            # _shapefile key (the shapefile spatial-filter source) and, when the record
+            # has no PostGIS geometry, draw it on the detail map.
+            for _sfk in _shapefile_fields(field_schema):
+                _sfv = (attributes or {}).get(_sfk)
+                if _sfv:
+                    attributes = dict(attributes or {})
+                    attributes.setdefault("_shapefile", _sfv)
+                    if not geom_geojson:
+                        geom_geojson = _sfv
+                    break
             # A '?refresh=<field>' request busts the API cache for that field's
             # connector before the synchronous fetch in _detail_fields, so the
             # Refresh link forces a fresh pull (then degrades gracefully if the
@@ -4940,6 +5234,11 @@ def _schema_for(field_type, options):
         return {"type": "string", "x-field": "phone"}
     if ft == "color":
         return {"type": "string", "x-field": "color"}
+    if ft == "shapefile":  # per-record uploaded shapefile -> stored as inline GeoJSON
+        # The record form shows a file input (.zip/.shp); on save it is converted to a
+        # GeoJSON FeatureCollection string in attributes. A connector with
+        # spatial='shapefile' reduces the NetCDF over THIS record's uploaded region.
+        return {"type": "string", "x-field": "shapefile"}
     if ft == "rating":  # integer 0..5, shown as stars
         return {"type": "integer", "x-field": "rating", "minimum": 0, "maximum": 5}
     if ft == "formula":  # computed from other fields; Options column = the expression
@@ -5065,7 +5364,7 @@ def _builder_type_for(prop):
     if prop.get("x-child-type"):
         return "table"
     if prop.get("x-field") in ("currency", "percent", "duration", "phone",
-                               "color", "rating", "formula"):
+                               "color", "rating", "formula", "shapefile"):
         return prop.get("x-field")  # formatted/computed types round-trip by x-field
     t = prop.get("type")
     if t == "array":
@@ -6274,10 +6573,22 @@ def _connector_config_from_post(post, files=None):
         # 'point' (nearest cell to lon/lat — blank lon/lat uses the record geometry),
         # 'bbox' (mean over a window — fixed, or DYNAMIC = the record's point ± buffer),
         # or 'polygon' (mean over the cells inside a shapefile/WKT region).
-        spatial = (post.get("nc_spatial") or "mean").strip().lower()
-        if spatial not in ("mean", "point", "bbox", "polygon", "cells", "zones"):
-            spatial = "mean"
+        # The builder offers two shapefile modes encoded in nc_spatial; split them into
+        # spatial='shapefile' + shapefile_agg. Legacy modes (point/bbox/cells/zones) are
+        # still accepted so a previously-saved connector edits/round-trips cleanly.
+        spatial = (post.get("nc_spatial") or "shapefile_mean").strip().lower()
+        if spatial in ("shapefile_mean", "shapefile_cells"):
+            config["shapefile_agg"] = "cells" if spatial == "shapefile_cells" else "mean"
+            spatial = "shapefile"
+        else:
+            config["shapefile_agg"] = (post.get("nc_shapefile_agg") or "mean").strip().lower()
+        if spatial not in ("mean", "point", "bbox", "polygon", "cells", "zones", "shapefile"):
+            spatial = "shapefile"
         config["spatial"] = spatial
+        # Time filter: a date range (start/end may be literals or {field} tokens).
+        config["time_source"] = (post.get("nc_time_source") or "none").strip().lower()
+        config["time_start"] = (post.get("nc_time_start") or "").strip()
+        config["time_end"] = (post.get("nc_time_end") or "").strip()
         config["lat_dim"] = (post.get("nc_lat_dim") or "").strip()
         config["lon_dim"] = (post.get("nc_lon_dim") or "").strip()
         try:
@@ -6326,8 +6637,8 @@ def _connector_config_from_post(post, files=None):
                 else:
                     errors.append("Could not read a polygon from the uploaded shapefile "
                                   "(expected a .zip bundle of .shp/.shx/.dbf, or a .shp).")
-        if spatial in ("point", "bbox", "polygon", "cells", "zones") and not (config["lat_dim"] and config["lon_dim"]):
-            errors.append("A point/bbox/polygon/cells/zones spatial filter needs the Lat dim and Lon dim names.")
+        if spatial in ("point", "bbox", "polygon", "cells", "zones", "shapefile") and not (config["lat_dim"] and config["lon_dim"]):
+            errors.append("A shapefile spatial filter needs the Lat dim and Lon dim names.")
         if spatial == "polygon" and not (config["polygon"] or config["shapefile"]):
             errors.append("A polygon spatial filter needs a WKT/GeoJSON polygon, "
                           "an uploaded shapefile, or a shapefile path.")
@@ -6463,6 +6774,19 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         form_action = reverse("hydrodesk:connector_edit", kwargs={"conn_id": conn_id})
     else:
         form_action = reverse("hydrodesk:connectors")
+    # Map the stored spatial mode to the simplified builder select. spatial='shapefile'
+    # -> one of the two shapefile options; any other stored mode renders as a 'legacy'
+    # option so editing an older connector preserves it.
+    _sp_raw = (config or {}).get("spatial", "")
+    if _sp_raw == "shapefile":
+        _sp_select = "shapefile_cells" if (config or {}).get("shapefile_agg") == "cells" else "shapefile_mean"
+        _sp_legacy = ""
+    elif _sp_raw in ("", "shapefile_mean", "shapefile_cells"):
+        _sp_select = _sp_raw or "shapefile_mean"
+        _sp_legacy = ""
+    else:
+        _sp_select = _sp_raw
+        _sp_legacy = _sp_raw
     return {
         "mode": mode,
         "conn_id": conn_id,
@@ -6479,7 +6803,11 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
             (d.get("name", "") + " = " + d.get("formula", ""))
             for d in ((config or {}).get("derived") or [])
             if isinstance(d, dict)),
-        "nc_spatial": (config or {}).get("spatial", "mean"),
+        "nc_spatial": _sp_select,
+        "nc_spatial_legacy": _sp_legacy,
+        "nc_time_source": (config or {}).get("time_source", "none"),
+        "nc_time_start": (config or {}).get("time_start", ""),
+        "nc_time_end": (config or {}).get("time_end", ""),
         "nc_lat_dim": (config or {}).get("lat_dim", ""),
         "nc_lon_dim": (config or {}).get("lon_dim", ""),
         "nc_lat": (config or {}).get("lat", "") if (config or {}).get("spatial") == "point" else "",

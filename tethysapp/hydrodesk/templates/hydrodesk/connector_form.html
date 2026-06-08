@@ -140,16 +140,35 @@
 
         {# ---- Spatial filter (how the lat/lon axes are reduced) ---- #}
         <div class="frappe-form-group" style="margin-top:10px;">
-          <label class="frappe-label" for="id_nc_spatial">Spatial filter</label>
+          <label class="frappe-label" for="id_nc_spatial">Shapefile reduction</label>
           <select class="form-select" id="id_nc_spatial" name="nc_spatial">
-            <option value="mean"    {% if nc_spatial == 'mean' or not nc_spatial %}selected{% endif %}>Whole-grid mean (default)</option>
-            <option value="point"   {% if nc_spatial == 'point' %}selected{% endif %}>Nearest point (a single grid cell)</option>
-            <option value="bbox"    {% if nc_spatial == 'bbox' %}selected{% endif %}>Bounding box (mean over a window)</option>
-            <option value="polygon" {% if nc_spatial == 'polygon' %}selected{% endif %}>Polygon / shapefile (mean inside a region)</option>
-            <option value="cells"   {% if nc_spatial == 'cells' %}selected{% endif %}>Per-cell (every cell in a box as its own column)</option>
-            <option value="zones"   {% if nc_spatial == 'zones' %}selected{% endif %}>Per-zone (each polygon in a grid/shapefile a column)</option>
+            <option value="shapefile_mean"  {% if nc_spatial == 'shapefile_mean' %}selected{% endif %}>Mean inside the shapefile (one series)</option>
+            <option value="shapefile_cells" {% if nc_spatial == 'shapefile_cells' %}selected{% endif %}>All cells inside the shapefile (no aggregation)</option>
+            {% if nc_spatial_legacy %}<option value="{{ nc_spatial_legacy }}" selected>(legacy: {{ nc_spatial_legacy }})</option>{% endif %}
           </select>
-          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average inside a lat/lon window (leave the bounds blank to centre it on the record ± buffer). Polygon = average the cells inside a shapefile/WKT region. Per-cell = NO averaging — each grid cell in the box is its own column. Per-zone = import a MULTI-polygon shapefile (a grid/cells/subbasins layer) and get the mean inside EACH polygon as its own column.</div>
+          <div class="frappe-help">The region comes from each record's uploaded <strong>Shapefile</strong> field (or its geometry). <strong>Mean</strong> = average the grid cells inside the shapefile → one series. <strong>All cells</strong> = every cell inside the shapefile becomes its own <code>lat,lon</code> column, no averaging. (For the Test panel, paste a polygon in the Polygon box below as a stand-in.)</div>
+        </div>
+
+        {# ---- Time filter (date range, optionally per-record) ---- #}
+        <div class="frappe-form-group" style="margin-top:10px;">
+          <label class="frappe-label" for="id_nc_time_source">Time filter</label>
+          <select class="form-select" id="id_nc_time_source" name="nc_time_source">
+            <option value="none"  {% if nc_time_source != 'range' %}selected{% endif %}>All timesteps</option>
+            <option value="range" {% if nc_time_source == 'range' %}selected{% endif %}>Date range (start&ndash;end)</option>
+          </select>
+        </div>
+        <div class="hd-nc-timerange" style="display:none;grid-template-columns:1fr 1fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_nc_time_start">Start</label>
+            <input class="form-control" type="text" id="id_nc_time_start" name="nc_time_start"
+                   value="{{ nc_time_start }}" placeholder="{start_date} or 2020-01-01">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_nc_time_end">End</label>
+            <input class="form-control" type="text" id="id_nc_time_end" name="nc_time_end"
+                   value="{{ nc_time_end }}" placeholder="{end_date} or 2020-03-01">
+          </div>
+          <div class="frappe-help" style="grid-column:1/-1;">Keeps only timesteps within the window. Use <code>{field}</code> to read a record's date field (so each record sets its own range), or type a literal date. Left blank = open-ended on that side.</div>
         </div>
         <div class="hd-nc-spatial" style="display:none;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -874,29 +893,22 @@
   (function () {
     var sp = document.getElementById('id_nc_spatial');
     function applySpatial() {
-      var m = sp ? sp.value : 'mean';
+      var m = sp ? sp.value : 'shapefile_mean';
+      var shp = (m === 'shapefile_mean' || m === 'shapefile_cells');
       var wrap = document.querySelector('.hd-nc-spatial');
       var pt = document.querySelector('.hd-nc-point');
       var bx = document.querySelector('.hd-nc-bbox');
       var pg = document.querySelector('.hd-nc-polygon');
       var cl = document.querySelector('.hd-nc-cells');
       var zn = document.querySelector('.hd-nc-zones');
-      if (wrap) wrap.style.display = (m !== 'mean') ? '' : 'none';
-      if (pt) pt.style.display = (m === 'point') ? 'grid' : 'none';
-      // per-cell reuses the bbox bounds to define the region.
-      if (bx) bx.style.display = (m === 'bbox' || m === 'cells') ? 'grid' : 'none';
-      // polygon block holds the shapefile upload — shared by polygon + per-zone.
-      if (pg) pg.style.display = (m === 'polygon' || m === 'zones') ? '' : 'none';
-      if (cl) cl.style.display = (m === 'cells') ? '' : 'none';
-      if (zn) zn.style.display = (m === 'zones') ? '' : 'none';
-      // Dynamic zones come from each record's geometry; the polygon box above stays
-      // visible only as a Test-panel stand-in geometry. The fixed-zones controls
-      // (label field / max / FC status) are hidden in dynamic mode.
-      var dyn = (zsrc && zsrc.value === 'record');
-      var df = document.querySelector('.hd-zones-dynamic');
-      var fx = document.querySelector('.hd-zones-fixed');
-      if (df) df.style.display = (m === 'zones' && dyn) ? '' : 'none';
-      if (fx) fx.style.display = (m === 'zones' && !dyn) ? '' : 'none';
+      // The simplified UI only offers the two shapefile modes; the lat/lon dims + the
+      // polygon box (a Test stand-in) always show, and Max-cells shows for 'all cells'.
+      if (wrap) wrap.style.display = shp ? '' : 'none';
+      if (pt) pt.style.display = 'none';
+      if (bx) bx.style.display = 'none';
+      if (pg) pg.style.display = shp ? '' : 'none';
+      if (cl) cl.style.display = (m === 'shapefile_cells') ? '' : 'none';
+      if (zn) zn.style.display = 'none';
       updateZonesStatus();
     }
     var zsrc = document.getElementById('id_nc_zones_source');
@@ -919,6 +931,14 @@
     if (sp) sp.addEventListener('change', applySpatial);
     if (zsrc) zsrc.addEventListener('change', applySpatial);
     applySpatial();
+    // Time filter (date range) toggle.
+    var tsrc = document.getElementById('id_nc_time_source');
+    function applyTime() {
+      var tr = document.querySelector('.hd-nc-timerange');
+      if (tr) tr.style.display = (tsrc && tsrc.value === 'range') ? 'grid' : 'none';
+    }
+    if (tsrc) tsrc.addEventListener('change', applyTime);
+    applyTime();
   })();
 
   // ---- Inputs editor: add/remove rows + (re)build from a list. ----
@@ -1219,7 +1239,13 @@
         var n = l.slice(0, i).trim(), f = l.slice(i + 1).trim();
         return (n && f) ? { name: n, formula: f } : null;
       }).filter(Boolean),
-      spatial: val('id_nc_spatial') || 'mean',
+      // The builder offers two shapefile modes (shapefile_mean / shapefile_cells);
+      // translate to the backend's spatial + shapefile_agg. A legacy value passes through.
+      spatial: (function () { var v = val('id_nc_spatial') || 'shapefile_mean';
+        return (v === 'shapefile_mean' || v === 'shapefile_cells') ? 'shapefile' : v; })(),
+      shapefile_agg: (val('id_nc_spatial') === 'shapefile_cells') ? 'cells' : 'mean',
+      time_source: val('id_nc_time_source') || 'none',
+      time_start: val('id_nc_time_start'), time_end: val('id_nc_time_end'),
       lat_dim: val('id_nc_lat_dim'),
       lon_dim: val('id_nc_lon_dim'),
       lat: numOrUndef('id_nc_lat'), lon: numOrUndef('id_nc_lon'),

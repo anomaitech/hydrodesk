@@ -80,19 +80,21 @@
       </dl>
     </div>
 
-    {% if has_geom %}
+    {% if has_geom or geom_geojson %}
     <div class="frappe-form-section">
       <div class="frappe-section-head">Location &amp; geometry</div>
       {% if geom_geojson %}
         <div id="hd-geom-map" style="height:320px;border-radius:8px;border:1px solid var(--fr-border,#e2e6ea);margin-bottom:12px;"></div>
         <script type="application/json" id="hd-geom-data">{{ geom_geojson|safe }}</script>
       {% endif %}
+      {% if has_geom %}
       <dl class="frappe-dl">
         <div class="frappe-dl-row">
           <dt class="frappe-dl-term">Location <span class="frappe-muted frappe-text-sm">(lon, lat)</span></dt>
           <dd class="frappe-dl-desc">{{ longitude }}, {{ latitude }}</dd>
         </div>
       </dl>
+      {% endif %}
     </div>
     {% endif %}
   </div>
