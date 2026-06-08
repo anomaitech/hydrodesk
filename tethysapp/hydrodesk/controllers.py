@@ -4998,22 +4998,69 @@ def _infer_script_output_field_type(value):
     return ("Text", "string")
 
 
-def _compute_scripts(field_schema, attrs):
-    """Run every Python-script field (x-field == 'script') and store its declared
-    outputs in ``attrs``. Inputs bind by NAME from the record's other fields. A script
-    that errors records ``_<key>_error`` (reserved, hidden from the API) and stores no
-    outputs — it never blocks the save. Runs after _compute_formulas."""
+def _materialize_connector_for_script(session, prop, attrs, cache):
+    """A connector-output field's value as a SCRIPT INPUT: the fetched series (a list of
+    row dicts) for a Time-Series output, else the scalar value. None if unresolvable.
+
+    The fetch runs HERE, in trusted app code (the same connector path the detail view
+    uses) — the sandboxed script only ever receives the already-fetched plain data, never
+    network access. Reuses _materialize_connector_series + fetch_api (TTL-cached)."""
+    rows = _materialize_connector_series(session, prop, attrs, cache)
+    if rows is not None:
+        return rows
+    connector_name = (prop or {}).get("x-api-connector")
+    if not connector_name:
+        return None
+    connector = cache.get(connector_name)
+    if connector is None and connector_name not in cache:
+        connector = _load_connector(session, connector_name)
+        cache[connector_name] = connector
+    if connector is None:
+        return None
+    cfg, mapped = _apply_nc_map(connector.config or {}, attrs, prop.get("x-nc-map"))
+    for entry in (prop.get("x-api-outputs") or [{}]):
+        oname = ((entry.get("output") or "").strip() or None) if isinstance(entry, dict) else None
+        try:
+            result = fetch_api(cfg, mapped, connector_name=connector_name,
+                               field_map=prop.get("x-api-map"), output=oname)
+        except Exception:
+            continue
+        if (result or {}).get("kind") == "value":
+            return _script_jsonify(result.get("value"))
+    return None
+
+
+def _compute_scripts(field_schema, attrs, session=None):
+    """Run every Python-script field (x-field == 'script') and store its declared outputs
+    in ``attrs``. Runs after _compute_formulas.
+
+    Inputs bind by NAME from the record's other fields. A free var that names a LIVE
+    connector-output field (x-api-connector) is MATERIALIZED via the connector layer (the
+    same fetch the detail view uses) and bound as its fetched series — so the sandboxed
+    script can compute over live NetCDF/REST/THREDDS/etc. data at save time WITHOUT itself
+    touching the network (it receives the already-fetched plain data). ``session`` is
+    required for that fetch; without it, connector free vars bind to None (e.g. a unit
+    test). A script that errors records ``_<key>_error`` (reserved) and never blocks the
+    save."""
     scripts = [(k, p) for k, p in _ordered_props(field_schema)
                if (p or {}).get("x-field") == "script"]
     if not scripts:
         return attrs
+    conn_fields = _connector_output_fields(field_schema) if session is not None else {}
+    conn_cache = {}
     for key, prop in scripts:
         src = (prop.get("x-script") or "").strip()
         errkey = "_%s_error" % key
         if not src:
             attrs.pop(errkey, None)
             continue
-        inputs = {v: attrs.get(v) for v in _script_free_vars(src) if v in attrs}
+        inputs = {}
+        for v in _script_free_vars(src):
+            if v in conn_fields:                        # a LIVE connector-output field
+                inputs[v] = _materialize_connector_for_script(
+                    session, conn_fields[v], attrs, conn_cache)
+            elif v in attrs:
+                inputs[v] = attrs.get(v)
         try:
             out = _run_python_script(src, inputs)
         except Exception as exc:
@@ -5221,7 +5268,7 @@ def hydrotype_new(request, slug="monitoring_station"):
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
-            _compute_scripts(field_schema, attributes)    # run sandboxed script fields
+            _compute_scripts(field_schema, attributes, session)  # sandboxed scripts (+ live connector inputs)
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
@@ -5403,7 +5450,7 @@ def import_records(request, slug="monitoring_station"):
                     f"{k} {v}" for k, v in coerce_errors.items())})
                 continue
             _compute_formulas(field_schema, attributes)   # fill computed fields
-            _compute_scripts(field_schema, attributes)    # run sandboxed script fields
+            _compute_scripts(field_schema, attributes, session)  # sandboxed scripts (+ live connector inputs)
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 row_errors.append({"row": i, "msg": vmsg})
@@ -5478,7 +5525,7 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
-            _compute_scripts(field_schema, attributes)    # run sandboxed script fields
+            _compute_scripts(field_schema, attributes, session)  # sandboxed scripts (+ live connector inputs)
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
