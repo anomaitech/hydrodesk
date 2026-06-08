@@ -710,6 +710,14 @@
   .hd-tree-key { color:#1366ae; }
   .hd-tree-leaf { color:var(--gray-700); }
   .hd-tree-children { margin-left:16px; border-left:1px dotted var(--gray-300); padding-left:8px; }
+  /* NetCDF Test variable picker: click a discovered variable to add it. */
+  .hd-nc-picker { margin-bottom:10px; padding-bottom:10px; border-bottom:1px dashed var(--gray-300); }
+  .hd-nc-chip { border:1px solid var(--fr-border-color,#d1d8dd); background:#fff;
+                border-radius:12px; padding:2px 10px; font-size:12px; cursor:pointer; }
+  .hd-nc-chip:hover { border-color:var(--fr-primary,#2490ef); }
+  .hd-nc-chip.on { background:var(--fr-primary,#2490ef); color:#fff;
+                   border-color:var(--fr-primary,#2490ef); }
+  .hd-nc-chip.coord { color:var(--fr-text-muted,#8d99a6); }
 </style>
 
 <script>
@@ -1134,6 +1142,100 @@
     }
     return 'output';
   }
+
+  // ---- NetCDF Test: clickable chips for the dataset's discovered variables. ----
+  // A data variable chip toggles itself in the comma-separated Variable(s) field;
+  // a coordinate (a variable that is also a dimension, e.g. TIME) sets the Time dim.
+  function renderNcVariablePicker(raw) {
+    var vars = raw.variables || {};
+    var dims = raw.dimensions || {};
+    var names = Object.keys(vars);
+    if (!names.length) return null;
+    function isCoord(vn) {
+      var vd = (vars[vn] || {}).dimensions || [];
+      return (vn in dims) || (vd.length === 1 && vd[0] === vn);
+    }
+    var dataVars = names.filter(function (n) { return !isCoord(n); });
+    var coordVars = names.filter(isCoord);
+    var varField = document.getElementById('id_variable');
+
+    function selected() {
+      return (varField.value || '').split(',')
+        .map(function (s) { return s.trim(); }).filter(Boolean);
+    }
+    var chips = {};
+    function refresh() {
+      var sel = selected();
+      dataVars.forEach(function (vn) {
+        chips[vn].classList.toggle('on', sel.indexOf(vn) >= 0);
+      });
+    }
+    function setVars(arr) { varField.value = arr.join(', '); refresh(); }
+
+    var box = document.createElement('div');
+    box.className = 'hd-nc-picker';
+    var head = document.createElement('div');
+    head.className = 'frappe-help';
+    head.style.margin = '0 0 6px';
+    head.innerHTML = 'Found <strong>' + dataVars.length + '</strong> variable'
+      + (dataVars.length === 1 ? '' : 's') + ' — click to add to <strong>Variable(s)</strong>'
+      + (coordVars.length ? '; click a coordinate to set the Time dim.' : '.');
+    box.appendChild(head);
+
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;';
+    dataVars.forEach(function (vn) {
+      var info = vars[vn] || {};
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'hd-nc-chip';
+      chip.title = (info.long_name || vn) + '  [' + (info.dimensions || []).join(', ') + ']'
+        + (info.units ? ('  ·  ' + info.units) : '');
+      chip.textContent = vn + (info.units ? ' (' + info.units + ')' : '');
+      chip.addEventListener('click', function () {
+        var sel = selected(); var i = sel.indexOf(vn);
+        if (i >= 0) sel.splice(i, 1); else sel.push(vn);
+        setVars(sel);
+      });
+      chips[vn] = chip;
+      row.appendChild(chip);
+    });
+    box.appendChild(row);
+
+    if (dataVars.length > 1) {
+      var all = document.createElement('button');
+      all.type = 'button';
+      all.className = 'btn btn-link btn-sm';
+      all.style.cssText = 'padding:4px 0 0;';
+      all.textContent = '+ Add all ' + dataVars.length + ' variables';
+      all.addEventListener('click', function () { setVars(dataVars.slice()); });
+      box.appendChild(all);
+    }
+
+    if (coordVars.length) {
+      var crow = document.createElement('div');
+      crow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;';
+      var clab = document.createElement('span');
+      clab.className = 'frappe-muted frappe-text-sm';
+      clab.textContent = 'Coordinates:';
+      crow.appendChild(clab);
+      coordVars.forEach(function (vn) {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'hd-nc-chip coord';
+        chip.title = 'set as the Time dim  [' + ((vars[vn] || {}).dimensions || []).join(', ') + ']';
+        chip.textContent = vn;
+        chip.addEventListener('click', function () {
+          var x = document.getElementById('id_x_dim'); if (x) x.value = vn;
+        });
+        crow.appendChild(chip);
+      });
+      box.appendChild(crow);
+    }
+    refresh();
+    return box;
+  }
+
   function renderTree(obj, path) {
     var wrap = document.createElement('div');
     if (obj !== null && typeof obj === 'object') {
@@ -1227,6 +1329,14 @@
         setBanner('');
         tree.innerHTML = '';
         if (d.raw !== null && typeof d.raw === 'object') {
+          // NetCDF/THREDDS: the describe lists the dataset's variables — render them
+          // as clickable chips so a variable can be ADDED to Variable(s) with one
+          // click (a coordinate sets the Time dim). The full tree still shows below.
+          var k = (document.getElementById('id_kind') || {}).value;
+          if ((k === 'netcdf' || k === 'thredds') && d.raw.variables) {
+            var picker = renderNcVariablePicker(d.raw);
+            if (picker) tree.appendChild(picker);
+          }
           tree.appendChild(renderTree(d.raw, ''));
           tree.style.display = '';
           target.style.display = '';
