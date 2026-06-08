@@ -1564,8 +1564,21 @@ def _gee_describe(cfg, attrs):
     out["earth_engine_ready"] = ee is not None
     if ee is None:
         out["status"] = reason
-    else:
-        out["status"] = "Earth Engine initialised; ready to sample the asset."
+        return out
+    out["status"] = "Earth Engine initialised; ready to sample the asset."
+    # Discover the asset's BAND names so the Test panel can offer them as clickable
+    # chips (an Image's bands, or the first image of a collection). Best-effort.
+    asset = (cfg.get("gee_asset") or "").strip()
+    if asset:
+        try:
+            try:
+                bands = ee.Image(asset).bandNames().getInfo()
+            except Exception:
+                bands = ee.ImageCollection(asset).first().bandNames().getInfo()
+            if isinstance(bands, list):
+                out["bands"] = [str(b) for b in bands]
+        except Exception:
+            pass
     return out
 
 

@@ -1236,6 +1236,60 @@
     return box;
   }
 
+  // ---- Generic single/multi chip picker (WCS coverages, GEE bands, …). ----
+  // Renders ``items`` as chips that set ``targetId``'s value: multi -> a comma list
+  // (toggle), single -> one value (click to set/clear). Selected chips highlight.
+  function renderSimplePicker(headHtml, items, targetId, multi) {
+    items = (items || []).filter(Boolean).map(String);
+    var field = document.getElementById(targetId);
+    if (!items.length || !field) return null;
+    function selected() {
+      if (multi) return (field.value || '').split(',')
+        .map(function (s) { return s.trim(); }).filter(Boolean);
+      return field.value.trim() ? [field.value.trim()] : [];
+    }
+    var chips = {};
+    function refresh() {
+      var sel = selected();
+      items.forEach(function (it) { chips[it].classList.toggle('on', sel.indexOf(it) >= 0); });
+    }
+    function setIt(arr) {
+      field.value = multi ? arr.join(', ') : (arr[0] || '');
+      refresh();
+    }
+    var box = document.createElement('div');
+    box.className = 'hd-nc-picker';
+    var h = document.createElement('div');
+    h.className = 'frappe-help';
+    h.style.margin = '0 0 6px';
+    h.innerHTML = headHtml;
+    box.appendChild(h);
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;';
+    items.forEach(function (it) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'hd-nc-chip';
+      chip.textContent = it;
+      chip.title = it;
+      chip.addEventListener('click', function () {
+        var sel = selected();
+        if (multi) {
+          var i = sel.indexOf(it);
+          if (i >= 0) sel.splice(i, 1); else sel.push(it);
+          setIt(sel);
+        } else {
+          setIt(sel.indexOf(it) >= 0 ? [] : [it]);   // toggle / replace
+        }
+      });
+      chips[it] = chip;
+      row.appendChild(chip);
+    });
+    box.appendChild(row);
+    refresh();
+    return box;
+  }
+
   function renderTree(obj, path) {
     var wrap = document.createElement('div');
     if (obj !== null && typeof obj === 'object') {
@@ -1333,10 +1387,23 @@
           // as clickable chips so a variable can be ADDED to Variable(s) with one
           // click (a coordinate sets the Time dim). The full tree still shows below.
           var k = (document.getElementById('id_kind') || {}).value;
+          var picker = null;
           if ((k === 'netcdf' || k === 'thredds') && d.raw.variables) {
-            var picker = renderNcVariablePicker(d.raw);
-            if (picker) tree.appendChild(picker);
+            picker = renderNcVariablePicker(d.raw);
+          } else if (k === 'wcs' && d.raw.coverages) {
+            picker = renderSimplePicker(
+              'Found <strong>' + d.raw.coverages.length + '</strong> coverage'
+              + (d.raw.coverages.length === 1 ? '' : 's')
+              + ' — click to set the <strong>Coverage ID</strong>.',
+              d.raw.coverages, 'id_coverage', false);
+          } else if (k === 'gee' && d.raw.bands) {
+            picker = renderSimplePicker(
+              'Found <strong>' + d.raw.bands.length + '</strong> band'
+              + (d.raw.bands.length === 1 ? '' : 's')
+              + ' — click to set the <strong>Band</strong>.',
+              d.raw.bands, 'id_gee_band', false);
           }
+          if (picker) tree.appendChild(picker);
           tree.appendChild(renderTree(d.raw, ''));
           tree.style.display = '';
           target.style.display = '';
