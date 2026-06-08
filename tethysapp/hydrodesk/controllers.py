@@ -306,6 +306,9 @@ def _array_path_from_vars(variables):
 # 'series' output FORCES 'Time-Series' (it can't render as a scalar); value outputs
 # never offer 'Time-Series'.
 _OUTPUT_FIELD_TYPES = ("Number", "Text", "Date", "Time-Series", "Image")
+# A Python-script output can also be stored as raw JSON (an object/array kept as-is) —
+# the alternative to "Table" for a dict output.
+_SCRIPT_OUTPUT_FIELD_TYPES = ("Number", "Text", "Date", "Time-Series", "JSON")
 _OUTPUT_TYPE_TO_FIELD = {
     "number": "Number",
     "string": "Text",
@@ -4929,6 +4932,8 @@ def _coerce_script_output(value, ftype):
             return float(v) if v is not None else None
         except (TypeError, ValueError):
             return v
+    if ft in ("json", "object"):
+        return v                            # store the JSON value as-is (object/array/scalar)
     if ft in ("time-series", "table", "series"):
         # A table is a list of row dicts. A dict of SCALARS -> key/value rows
         # ([{key,value}, ...]); a dict with nested values -> a single (one-row) table;
@@ -4955,7 +4960,8 @@ def _coerce_script_output(value, ftype):
 def _script_output_json_type(field_type):
     """The JSON-Schema 'type' for a computed-output property, from its UI field type."""
     return {"Number": "number", "Text": "string", "Date": "string",
-            "Time-Series": "array", "Image": "string"}.get(field_type, "string")
+            "Time-Series": "array", "Image": "string",
+            "JSON": "object"}.get(field_type, "string")
 
 
 def _infer_script_output_field_type(value):
@@ -7310,7 +7316,7 @@ def _assemble_type_spec(post, force_slug=None):
             if not oname:
                 continue
             ft = (o.get("field_type") or "Text").strip()
-            if ft not in _OUTPUT_FIELD_TYPES:
+            if ft not in _SCRIPT_OUTPUT_FIELD_TYPES:
                 ft = "Text"
             label = (o.get("label") or oname.replace("_", " ").title()).strip()
             x_outputs.append({"name": oname, "label": label, "field_type": ft})

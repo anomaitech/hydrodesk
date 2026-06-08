@@ -1085,8 +1085,18 @@
       var seeded = {};                              // previously-picked outputs (edit mode)
       rowOutputsSeed(wrap).forEach(function (o) { if (o && o.output) seeded[o.output] = o; });
       var samples = {};                             // free-var -> sample value text
-      var FT = ['Number', 'Text', 'Date', 'Time-Series'];
       var outRows = {};
+      // Type choices for an output by its detected KIND (from the Test-run response):
+      //  series  -> always a Table (locked);  table (dict) -> Table OR JSON (your call);
+      //  number/date/string -> scalar types;  unknown (seeded, not re-tested) -> all.
+      function ftOptionsFor(kind) {
+        if (kind === 'series')  return { opts: ['Time-Series'], locked: true };
+        if (kind === 'table')   return { opts: ['Time-Series', 'JSON'], locked: false };
+        if (kind === 'number')  return { opts: ['Number', 'Text'], locked: false };
+        if (kind === 'date')    return { opts: ['Date', 'Text'], locked: false };
+        if (kind === 'string' || kind === 'boolean') return { opts: ['Text', 'Number', 'Date'], locked: false };
+        return { opts: ['Number', 'Text', 'Date', 'Time-Series', 'JSON'], locked: false };
+      }
 
       var lbl = document.createElement('label');
       lbl.className = 'frappe-label'; lbl.textContent = 'Python script';
@@ -1178,13 +1188,19 @@
           labelIn.style.width = '140px'; labelIn.placeholder = 'Label';
           labelIn.value = (sv && sv.label) || nm.replace(/_/g, ' ').replace(/\b\w/g,
             function (c) { return c.toUpperCase(); });
+          // Type options depend on the variable's KIND: a time-series (array / Series /
+          // DataFrame) is ALWAYS a Table (locked); a dict can be a Table OR raw JSON;
+          // a scalar offers Number/Text/Date. Unknown kind (seeded, not re-tested) -> all.
+          var pick = ftOptionsFor(v.kind);
           var ft = document.createElement('select');
           ft.className = 'form-select form-select-sm'; ft.style.width = 'auto';
-          FT.forEach(function (t) {
+          pick.opts.forEach(function (t) {
             var op = document.createElement('option');
             op.value = t; op.textContent = (t === 'Time-Series' ? 'Table' : t); ft.appendChild(op);
           });
-          ft.value = (sv && sv.field_type) || v.field_type || 'Text';
+          var want = (sv && sv.field_type) || v.field_type || pick.opts[0];
+          ft.value = (pick.opts.indexOf(want) >= 0) ? want : pick.opts[0];
+          if (pick.locked) { ft.disabled = true; ft.title = 'A time-series is always stored as a table'; }
           outRows[nm] = { cb: cb, labelInput: labelIn, ftSelect: ft };
           item.appendChild(cb); item.appendChild(lab); item.appendChild(labelIn); item.appendChild(ft);
           if (v.preview != null) {
