@@ -86,8 +86,10 @@
           <option value="rest"    {% if kind == 'rest' %}selected{% endif %}>REST / JSON API</option>
           <option value="netcdf"  {% if kind == 'netcdf' %}selected{% endif %}>NetCDF / OPeNDAP</option>
           <option value="thredds" {% if kind == 'thredds' %}selected{% endif %}>THREDDS catalog</option>
+          <option value="csv"     {% if kind == 'csv' %}selected{% endif %}>CSV / tabular file</option>
+          <option value="wms"     {% if kind == 'wms' %}selected{% endif %}>WMS map service</option>
         </select>
-        <div class="frappe-help">REST = a URL returning JSON. NetCDF/THREDDS = a gridded dataset (a variable becomes a time series + latest value).</div>
+        <div class="frappe-help">REST = a URL returning JSON. NetCDF/THREDDS = a gridded dataset (a variable becomes a time series + latest value). CSV = a tabular file (the whole table becomes one series). WMS = a map service (a GetMap image centred on the record's point).</div>
       </div>
 
       {# ---- NetCDF / THREDDS source ---- #}
@@ -127,6 +129,107 @@
           </div>
         </div>
         <div class="frappe-help">Click <strong>Test</strong> below to list the dataset's variables. The variable is averaged over its non-time dimensions to make one series + a latest value.</div>
+      </div>
+
+      {# ---- CSV source ---- #}
+      <div class="hd-kind-csv">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_csv_url">CSV URL or path<span class="req">*</span></label>
+          <input class="form-control" type="text" id="id_csv_url" name="csv_url"
+                 value="{{ csv_url }}"
+                 placeholder="https://example.com/data.csv  &mdash; {field} placeholders ok">
+          <div class="frappe-help">A remote <code>http(s)</code> CSV or a local file path. <code>{field}</code> placeholders are filled from the record. The whole table becomes one series (each column a variable).</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_delimiter">Delimiter</label>
+            <input class="form-control" type="text" id="id_delimiter" name="delimiter"
+                   value="{{ delimiter|default:',' }}" placeholder=",">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_has_header">Header row</label>
+            <select class="form-select" id="id_has_header" name="has_header">
+              <option value="true"  {% if has_header %}selected{% endif %}>Yes</option>
+              <option value="false" {% if not has_header %}selected{% endif %}>No</option>
+            </select>
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_value_column">Value column <span class="frappe-muted frappe-text-sm">(for "latest")</span></label>
+            <input class="form-control" type="text" id="id_value_column" name="value_column"
+                   value="{{ value_column }}" placeholder="blank = last column">
+          </div>
+        </div>
+        <div class="frappe-help">Click <strong>Test</strong> below to preview the columns. The "latest" value comes from the Value column's last non-empty row.</div>
+      </div>
+
+      {# ---- WMS source ---- #}
+      <div class="hd-kind-wms">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_wms_url">WMS service URL<span class="req">*</span></label>
+          <input class="form-control" type="text" id="id_wms_url" name="wms_url"
+                 value="{{ wms_url }}"
+                 placeholder="https://.../MapServer/WMSServer  &mdash; GetCapabilities endpoint">
+          <div class="frappe-help">The base WMS endpoint. A GetMap image centred on the record's point (longitude/latitude) is shown on the detail. Click <strong>Test</strong> to list the service's layers.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.4fr 0.8fr 0.8fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_layers">Layer(s)<span class="req">*</span></label>
+            <input class="form-control" type="text" id="id_layers" name="layers"
+                   value="{{ layers }}" placeholder="comma-separated layer names">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_wms_version">Version</label>
+            <select class="form-select" id="id_wms_version" name="wms_version">
+              <option value="1.3.0" {% if wms_version == '1.3.0' %}selected{% endif %}>1.3.0</option>
+              <option value="1.1.1" {% if wms_version == '1.1.1' %}selected{% endif %}>1.1.1</option>
+            </select>
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_image_format">Format</label>
+            <input class="form-control" type="text" id="id_image_format" name="image_format"
+                   value="{{ image_format|default:'image/png' }}" placeholder="image/png">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 0.8fr 0.8fr 1fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_crs">CRS</label>
+            <input class="form-control" type="text" id="id_crs" name="crs"
+                   value="{{ crs|default:'EPSG:4326' }}" placeholder="EPSG:4326">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_bbox_buffer">BBox ± (deg)</label>
+            <input class="form-control" type="text" id="id_bbox_buffer" name="bbox_buffer"
+                   value="{{ bbox_buffer|default:'0.5' }}" placeholder="0.5">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_wms_width">Width</label>
+            <input class="form-control" type="text" id="id_wms_width" name="wms_width"
+                   value="{{ wms_width|default:'512' }}" placeholder="512">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_wms_height">Height</label>
+            <input class="form-control" type="text" id="id_wms_height" name="wms_height"
+                   value="{{ wms_height|default:'384' }}" placeholder="384">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_styles">Styles</label>
+            <input class="form-control" type="text" id="id_styles" name="styles"
+                   value="{{ styles }}" placeholder="optional">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_default_lon">Default centre lon <span class="frappe-muted frappe-text-sm">(non-spatial types)</span></label>
+            <input class="form-control" type="text" id="id_default_lon" name="default_lon"
+                   value="{{ default_lon }}" placeholder="optional, e.g. -111.65">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_default_lat">Default centre lat</label>
+            <input class="form-control" type="text" id="id_default_lat" name="default_lat"
+                   value="{{ default_lat }}" placeholder="optional, e.g. 40.23">
+          </div>
+        </div>
+        <div class="frappe-help">The map centres on the record's geometry (a point type) or its <code>longitude</code>/<code>latitude</code> fields. The default centre is the fallback for non-spatial doctypes. A best-effort GetFeatureInfo value at that point is also available as a second output.</div>
       </div>
 
       {# ---- REST URL + method ---- #}
@@ -504,16 +607,22 @@
     return v;
   }
 
-  // ---- Kind toggle: REST vs NetCDF/THREDDS sections. ----
+  // ---- Kind toggle: show only the active kind's source section. ----
   (function () {
     var kindSel = document.getElementById('id_kind');
+    function show(sel, on) {
+      document.querySelectorAll(sel).forEach(function (e) { e.style.display = on ? '' : 'none'; });
+    }
     function applyKind() {
       var k = kindSel ? kindSel.value : 'rest';
-      var isNc = (k === 'netcdf' || k === 'thredds');
-      document.querySelectorAll('.hd-kind-rest').forEach(function (e) { e.style.display = isNc ? 'none' : ''; });
-      document.querySelectorAll('.hd-kind-netcdf').forEach(function (e) { e.style.display = isNc ? '' : 'none'; });
-      document.querySelectorAll('.hd-thredds-only').forEach(function (e) { e.style.display = (k === 'thredds') ? '' : 'none'; });
-      document.querySelectorAll('.hd-netcdf-only').forEach(function (e) { e.style.display = (k === 'netcdf') ? '' : 'none'; });
+      // REST sections (URL/method + headers/query + inputs/outputs editors) show
+      // only for REST; each non-REST kind shows its own source block.
+      show('.hd-kind-rest', k === 'rest');
+      show('.hd-kind-netcdf', k === 'netcdf' || k === 'thredds');
+      show('.hd-thredds-only', k === 'thredds');
+      show('.hd-netcdf-only', k === 'netcdf');
+      show('.hd-kind-csv', k === 'csv');
+      show('.hd-kind-wms', k === 'wms');
     }
     if (kindSel) kindSel.addEventListener('change', applyKind);
     applyKind();
@@ -738,6 +847,21 @@
       setVal('id_nc_unit', cfg.unit);
       setVal('id_catalog_url', cfg.catalog_url);
       setVal('id_dataset', cfg.dataset);
+      setVal('id_csv_url', cfg.csv_url);
+      setVal('id_delimiter', cfg.delimiter);
+      setVal('id_has_header', (cfg.has_header === false) ? 'false' : 'true');
+      setVal('id_value_column', cfg.value_column);
+      setVal('id_wms_url', cfg.wms_url);
+      setVal('id_layers', cfg.layers);
+      setVal('id_wms_version', cfg.wms_version);
+      setVal('id_image_format', cfg.image_format);
+      setVal('id_styles', cfg.styles);
+      setVal('id_crs', cfg.crs);
+      setVal('id_bbox_buffer', cfg.bbox_buffer);
+      setVal('id_wms_width', cfg.width);
+      setVal('id_wms_height', cfg.height);
+      setVal('id_default_lon', cfg.default_lon);
+      setVal('id_default_lat', cfg.default_lat);
       var kindSel = document.getElementById('id_kind');
       if (kindSel) kindSel.dispatchEvent(new Event('change'));   // toggle sections
       setVal('id_url_template', cfg.url_template);
@@ -776,6 +900,21 @@
       unit: val('id_nc_unit'),
       catalog_url: val('id_catalog_url'),
       dataset: val('id_dataset'),
+      csv_url: val('id_csv_url'),
+      delimiter: val('id_delimiter') || ',',
+      has_header: (val('id_has_header') || 'true') === 'true',
+      value_column: val('id_value_column'),
+      wms_url: val('id_wms_url'),
+      layers: val('id_layers'),
+      wms_version: val('id_wms_version') || '1.3.0',
+      image_format: val('id_image_format') || 'image/png',
+      styles: val('id_styles'),
+      crs: val('id_crs') || 'EPSG:4326',
+      bbox_buffer: parseFloat(val('id_bbox_buffer') || '0.5'),
+      width: parseInt(val('id_wms_width') || '512', 10),
+      height: parseInt(val('id_wms_height') || '384', 10),
+      default_lon: val('id_default_lon'),
+      default_lat: val('id_default_lat'),
       url_template: document.getElementById('id_url_template').value,
       method: document.getElementById('id_method').value,
       inputs: currentInputs(),

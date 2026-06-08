@@ -292,13 +292,14 @@ def _array_path_from_vars(variables):
 # The doctype-side render modes a ticked output can use, keyed by output.type. A
 # 'series' output FORCES 'Time-Series' (it can't render as a scalar); value outputs
 # never offer 'Time-Series'.
-_OUTPUT_FIELD_TYPES = ("Number", "Text", "Date", "Time-Series")
+_OUTPUT_FIELD_TYPES = ("Number", "Text", "Date", "Time-Series", "Image")
 _OUTPUT_TYPE_TO_FIELD = {
     "number": "Number",
     "string": "Text",
     "text": "Text",
     "date": "Date",
     "series": "Time-Series",
+    "image": "Image",
 }
 
 
@@ -328,7 +329,8 @@ def _connector_outputs(cfg):
             return out
     # NetCDF / THREDDS connectors: synthesize a series (the variable along its time
     # dimension) + a latest value, keyed off the configured variable + x_dim.
-    if (cfg.get("kind") or "rest").lower() in ("netcdf", "thredds"):
+    knd = (cfg.get("kind") or "rest").lower()
+    if knd in ("netcdf", "thredds"):
         var = (cfg.get("variable") or "").strip()
         if not var:
             return []
@@ -339,6 +341,22 @@ def _connector_outputs(cfg):
              "var": var, "x_dim": x_dim, "unit": unit},
             {"name": "latest", "kind": "value", "type": "number",
              "var": var, "unit": unit},
+        ]
+    if knd == "csv":
+        # CSV: the whole table is ONE series (every column becomes a variable, so it
+        # reuses the existing multi-column table render); plus a 'latest' value of
+        # the chosen value column. The columns are discovered at fetch time.
+        return [
+            {"name": "table", "kind": "series", "type": "series", "primary": True},
+            {"name": "latest", "kind": "value", "type": "number",
+             "value_column": (cfg.get("value_column") or "").strip()},
+        ]
+    if knd == "wms":
+        # WMS: a GetMap image centred on the record's point (the primary output),
+        # plus a best-effort GetFeatureInfo scalar at that point.
+        return [
+            {"name": "map", "kind": "image", "type": "image", "primary": True},
+            {"name": "featureinfo", "kind": "value", "type": "string"},
         ]
     result_kind = (cfg.get("result_kind") or "value").lower()
     if result_kind == "series":
@@ -856,6 +874,308 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
     return res
 
 
+# --- CSV connector (a tabular file -> one multi-column series + a latest value) ---
+def _csv_coerce(raw):
+    """Parse a CSV cell: numeric strings -> int/float (nicer table + sparkline),
+    blanks -> None, everything else kept as the trimmed string."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s == "":
+        return None
+    try:
+        f = float(s)
+    except ValueError:
+        return s
+    return int(f) if (f.is_integer() and abs(f) < 1e15) else round(f, 6)
+
+
+def _read_csv_columns(url, delimiter=",", has_header=True, timeout=15, max_rows=5000):
+    """Fetch (http/https) or open (local path) a CSV; return (columns, n_rows) where
+    columns=[{name, values}] aligned by row. Reads at most ``max_rows`` data rows so
+    a huge file can't exhaust memory. Numeric cells are coerced to numbers."""
+    import csv as _csvmod
+    import io
+    if re.match(r"^https?://", url, re.I):
+        req = urllib.request.Request(url, headers={"User-Agent": "HydroDesk/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", "replace")
+    else:
+        with open(url, "r", encoding="utf-8", errors="replace", newline="") as fh:
+            text = fh.read()
+    reader = _csvmod.reader(io.StringIO(text), delimiter=(delimiter or ","),
+                            skipinitialspace=True)
+    rows = []
+    limit = max_rows + (1 if has_header else 0)
+    for row in reader:
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    if not rows:
+        return [], 0
+    if has_header:
+        names = [(str(h).strip() or ("col%d" % j)) for j, h in enumerate(rows[0])]
+        data = rows[1:]
+    else:
+        ncols0 = max((len(r) for r in rows), default=0)
+        names = ["col%d" % j for j in range(ncols0)]
+        data = rows
+    cols = [{"name": nm, "values": []} for nm in names]
+    for r in data:
+        for j in range(len(names)):
+            cols[j]["values"].append(_csv_coerce(r[j] if j < len(r) else None))
+    return cols, len(data)
+
+
+def _fetch_csv(cfg, record_attrs, output=None, field_map=None,
+               connector_name="connector"):
+    """Fetch one output from a CSV connector. The whole table is ONE series (each
+    column a variable); a 'value' output returns the latest non-null of the chosen
+    value column (else the last column). {field} tokens in csv_url are filled from
+    the record. Caches the parsed table per (name, url). Never raises."""
+    cfg = cfg or {}
+    if cfg.get("inputs"):
+        attrs, missing_required = _resolve_inputs(cfg, record_attrs, field_map)
+    else:
+        attrs, missing_required = dict(record_attrs or {}), []
+    catalog = _connector_outputs(cfg)
+    out_entry = (output if isinstance(output, dict)
+                 else (_find_output(catalog, output) if output
+                       else _primary_output(catalog)))
+    out_kind = (out_entry.get("kind") if out_entry else "series")
+
+    def _empty(url, cached):
+        if out_kind == "value":
+            return {"kind": "value", "value": None, "url": url, "cached": cached}
+        return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+                "url": url, "cached": cached}
+
+    if missing_required:
+        return _empty("", False)
+    url = _render_template(cfg.get("csv_url") or "", attrs)
+    if not url or out_entry is None:
+        return _empty(url, False)
+
+    ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
+    timeout = int(cfg.get("timeout") or 15)
+    cache_key = (connector_name, "csv::" + url)
+    now = time.time()
+    hit = _API_CACHE.get(cache_key)
+    if hit and (now - hit[0]) < ttl:
+        cols, cached = hit[1], True
+    else:
+        try:
+            cols, _n = _read_csv_columns(
+                url, delimiter=cfg.get("delimiter") or ",",
+                has_header=cfg.get("has_header", True), timeout=timeout)
+        except Exception:
+            return _empty(url, False)
+        _API_CACHE[cache_key] = (now, cols)
+        cached = False
+
+    if (out_entry.get("kind") or "series").lower() == "value":
+        vcol = (out_entry.get("value_column") or "").strip()
+        col = next((c for c in cols if c["name"] == vcol), None) if vcol else None
+        if col is None and cols:
+            col = cols[-1]
+        vals = (col or {}).get("values") or []
+        latest = next((v for v in reversed(vals) if v is not None), None)
+        return {"kind": "value", "value": latest, "url": url, "cached": cached}
+
+    n = max((len(c["values"]) for c in cols), default=0)
+    xs = cols[0]["values"] if cols else []
+    yi = next((i for i, c in enumerate(cols)
+               if (c["name"] or "").lower() in ("value", "y")),
+              1 if len(cols) > 1 else 0)
+    ys = cols[yi]["values"] if cols else []
+    return {"kind": "series", "columns": cols, "n": n, "x": xs, "y": ys,
+            "url": url, "cached": cached}
+
+
+def _csv_describe(cfg, attrs):
+    """Test panel: resolve the CSV and return its columns + a small preview."""
+    try:
+        if cfg.get("inputs"):
+            rattrs, _ = _resolve_inputs(cfg, attrs, None)
+        else:
+            rattrs = dict(attrs or {})
+        url = _render_template(cfg.get("csv_url") or "", rattrs)
+        if not url:
+            return None
+        cols, n = _read_csv_columns(
+            url, delimiter=cfg.get("delimiter") or ",",
+            has_header=cfg.get("has_header", True),
+            timeout=int(cfg.get("timeout") or 15), max_rows=50)
+        return {"resolved_url": url, "columns": [c["name"] for c in cols],
+                "rows_in_preview": n,
+                "preview": {c["name"]: (c["values"][:5]) for c in cols}}
+    except Exception:
+        return None
+
+
+# --- WMS connector (a map service -> a GetMap image at the record's point) ---
+def _wms_num(*candidates):
+    """First candidate that parses as a float, else None."""
+    for c in candidates:
+        if c is None or c == "":
+            continue
+        try:
+            return float(c)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _wms_point(cfg, attrs):
+    """The map centre lon/lat: resolved inputs / geom-injected _lon/_lat / a
+    longitude|latitude field / a config default; (None, None) when unknown."""
+    lon = _wms_num(attrs.get("lon"), attrs.get("_lon"),
+                   attrs.get("longitude"), cfg.get("default_lon"))
+    lat = _wms_num(attrs.get("lat"), attrs.get("_lat"),
+                   attrs.get("latitude"), cfg.get("default_lat"))
+    return lon, lat
+
+
+def _wms_getmap_url(cfg, attrs):
+    """Build a deterministic WMS GetMap URL centred on the record's point (point ±
+    bbox_buffer degrees). Honors the 1.3.0 vs 1.1.1 axis-order + CRS/SRS param
+    difference. Returns (url, (width,height), (lon,lat)); ('', None, None) when the
+    service URL is missing."""
+    base = _render_template(cfg.get("wms_url") or "", attrs)
+    if not base:
+        return "", None, None
+    version = (cfg.get("wms_version") or "1.3.0").strip()
+    layers = (cfg.get("layers") or "").strip()
+    fmt = (cfg.get("image_format") or "image/png").strip()
+    styles = (cfg.get("styles") or "").strip()
+    crs = (cfg.get("crs") or "EPSG:4326").strip()
+    buf = _wms_num(cfg.get("bbox_buffer")) or 0.5
+    try:
+        width, height = int(cfg.get("width") or 512), int(cfg.get("height") or 384)
+    except (TypeError, ValueError):
+        width, height = 512, 384
+    lon, lat = _wms_point(cfg, attrs)
+    if lon is None or lat is None:
+        minx, miny, maxx, maxy = -180.0, -90.0, 180.0, 90.0
+    else:
+        minx, miny, maxx, maxy = lon - buf, lat - buf, lon + buf, lat + buf
+    if version.startswith("1.3"):
+        crs_param = "CRS"
+        # EPSG:4326 in WMS 1.3.0 uses lat,lon (y,x) BBOX axis order.
+        bbox = ("%s,%s,%s,%s" % (miny, minx, maxy, maxx)
+                if crs.upper() == "EPSG:4326"
+                else "%s,%s,%s,%s" % (minx, miny, maxx, maxy))
+    else:
+        crs_param = "SRS"
+        bbox = "%s,%s,%s,%s" % (minx, miny, maxx, maxy)
+    params = [
+        ("service", "WMS"), ("request", "GetMap"), ("version", version),
+        ("layers", layers), ("styles", styles), (crs_param, crs),
+        ("bbox", bbox), ("width", str(width)), ("height", str(height)),
+        ("format", fmt), ("transparent", "TRUE"),
+    ]
+    sep = "&" if "?" in base else "?"
+    return base + sep + urllib.parse.urlencode(params), (width, height), (lon, lat)
+
+
+def _fetch_wms(cfg, record_attrs, output=None, field_map=None,
+               connector_name="connector"):
+    """Fetch one output from a WMS connector. 'image' (primary) builds a GetMap URL
+    centred on the record's point — NO server fetch, the <img> loads it client-side.
+    'value' does a best-effort GetFeatureInfo at the centre pixel and pulls the first
+    numeric property. Never raises."""
+    cfg = cfg or {}
+    if cfg.get("inputs"):
+        attrs, missing_required = _resolve_inputs(cfg, record_attrs, field_map)
+    else:
+        attrs, missing_required = dict(record_attrs or {}), []
+    catalog = _connector_outputs(cfg)
+    out_entry = (output if isinstance(output, dict)
+                 else (_find_output(catalog, output) if output
+                       else _primary_output(catalog)))
+    out_kind = (out_entry.get("kind") if out_entry else "image")
+
+    getmap, dims, _pt = _wms_getmap_url(cfg, attrs)
+    if missing_required or not getmap or out_entry is None:
+        if out_kind == "value":
+            return {"kind": "value", "value": None, "url": getmap, "cached": False}
+        return {"kind": "image", "url": "", "cached": False}
+
+    if (out_entry.get("kind") or "image").lower() != "value":
+        return {"kind": "image", "url": getmap, "cached": False}
+
+    # GetFeatureInfo (value): query the centre pixel, parse JSON best-effort.
+    width, height = dims or (512, 384)
+    version = (cfg.get("wms_version") or "1.3.0").strip()
+    fi = getmap.replace("request=GetMap", "request=GetFeatureInfo")
+    extra = [("query_layers", (cfg.get("layers") or "").strip()),
+             ("info_format", "application/json")]
+    extra += ([("i", str(width // 2)), ("j", str(height // 2))]
+              if version.startswith("1.3")
+              else [("x", str(width // 2)), ("y", str(height // 2))])
+    fi_url = fi + "&" + urllib.parse.urlencode(extra)
+    ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
+    timeout = int(cfg.get("timeout") or 20)
+    cache_key = (connector_name, "wmsfi::" + fi_url)
+    now = time.time()
+    hit = _API_CACHE.get(cache_key)
+    if hit and (now - hit[0]) < ttl:
+        return {"kind": "value", "value": hit[1], "url": getmap, "cached": True}
+    val = None
+    try:
+        req = urllib.request.Request(fi_url, headers={"User-Agent": "HydroDesk/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.load(resp)
+        feats = (payload or {}).get("features") or []
+        if feats:
+            props = (feats[0] or {}).get("properties") or {}
+            for v in props.values():
+                try:
+                    val = float(v)
+                    break
+                except (TypeError, ValueError):
+                    if val is None and v not in (None, ""):
+                        val = v   # fall back to the first non-empty property
+    except Exception:
+        val = None
+    _API_CACHE[cache_key] = (now, val)
+    return {"kind": "value", "value": val, "url": getmap, "cached": False}
+
+
+def _wms_describe(cfg, attrs):
+    """Test panel: the sample GetMap URL + (best-effort) the service's layers via
+    owslib GetCapabilities, so the user can pick a layer and see its WGS84 bbox."""
+    out = {}
+    try:
+        if cfg.get("inputs"):
+            rattrs, _ = _resolve_inputs(cfg, attrs, None)
+        else:
+            rattrs = dict(attrs or {})
+        getmap, _dims, pt = _wms_getmap_url(cfg, rattrs)
+        out["sample_getmap_url"] = getmap
+        if pt and pt[0] is not None:
+            out["centre"] = {"lon": pt[0], "lat": pt[1]}
+    except Exception:
+        pass
+    try:
+        from owslib.wms import WebMapService
+        base = _render_template(cfg.get("wms_url") or "", attrs or {})
+        wms = WebMapService(base, version=(cfg.get("wms_version") or "1.3.0"))
+        try:
+            out["service_title"] = wms.identification.title
+        except Exception:
+            pass
+        layers = []
+        for nm in list(wms.contents)[:80]:
+            ly = wms[nm]
+            layers.append({"name": nm, "title": getattr(ly, "title", ""),
+                           "bbox_wgs84": list(getattr(ly, "boundingBoxWGS84", []) or [])})
+        out["layers"] = layers
+    except Exception as exc:
+        out["capabilities_error"] = str(exc)[:200]
+    return out or None
+
+
 def fetch_api(connector_config, record_attrs, connector_name="connector",
               field_map=None, output=None):
     """The generic API fetch — the centerpiece extractor.
@@ -889,10 +1209,17 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
     cfg = _connector_config(connector_config)
     name = connector_name or cfg.get("name") or "connector"
 
-    # NON-REST kinds dispatch to their own fetcher (same value/series result shape).
-    if (cfg.get("kind") or "rest").lower() in ("netcdf", "thredds"):
+    # NON-REST kinds dispatch to their own fetcher (same value/series/image shape).
+    knd = (cfg.get("kind") or "rest").lower()
+    if knd in ("netcdf", "thredds"):
         return _fetch_netcdf(cfg, record_attrs, output=output,
                              field_map=field_map, connector_name=name)
+    if knd == "csv":
+        return _fetch_csv(cfg, record_attrs, output=output,
+                          field_map=field_map, connector_name=name)
+    if knd == "wms":
+        return _fetch_wms(cfg, record_attrs, output=output,
+                          field_map=field_map, connector_name=name)
 
     # OUTPUT SELECTION (the multi-output model). Resolve the requested output to a
     # concrete outputs[] entry up front: an explicit dict is used verbatim; a name
@@ -1215,6 +1542,37 @@ CONNECTOR_PRESETS = {
             "x_dim": "time",
             "ttl_seconds": 900,
             "timeout": 40,
+        },
+    },
+    "csv_demo": {
+        "label": "CSV — remote table (example)",
+        "config": {
+            "kind": "csv",
+            "csv_url": "https://people.sc.fsu.edu/~jburkardt/data/csv/airtravel.csv",
+            "delimiter": ",",
+            "has_header": True,
+            "value_column": "",
+            "ttl_seconds": 900,
+            "timeout": 15,
+        },
+    },
+    "wms_usgs_topo": {
+        "label": "WMS — USGS National Map (Topo)",
+        "config": {
+            "kind": "wms",
+            "wms_url": "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WMSServer",
+            "layers": "0",
+            "wms_version": "1.3.0",
+            "image_format": "image/png",
+            "styles": "",
+            "crs": "EPSG:4326",
+            "bbox_buffer": 0.2,
+            "width": 512,
+            "height": 384,
+            "default_lon": -111.65,
+            "default_lat": 40.23,
+            "ttl_seconds": 900,
+            "timeout": 20,
         },
     },
 }
@@ -2452,6 +2810,24 @@ def _render_value_block(val, field_type="Text"):
     return str(format_html("<span style='font-weight:600;'>{}</span>", str(shown)))
 
 
+def _render_image_block(result, label="map"):
+    """Render an 'image' output (e.g. a WMS GetMap) as a lazy <img> linking to the
+    full image. The URL is built from connector config + record attrs; format_html
+    escapes it in both the href and src attributes (no injection)."""
+    url = (result or {}).get("url") or ""
+    if not url:
+        return mark_safe(
+            "<span class='frappe-muted frappe-text-sm'>no map (set a point / layer)</span>")
+    return format_html(
+        "<div class='hd-api-image'>"
+        "<a href='{}' target='_blank' rel='noopener'>"
+        "<img src='{}' alt='{}' loading='lazy' "
+        "style='max-width:100%;height:auto;display:block;"
+        "border:1px solid var(--fr-border-color,#d1d8dd);border-radius:6px;'>"
+        "</a></div>",
+        url, url, label or "map")
+
+
 def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
                       field_map=None, api_outputs=None):
     """Render an API field's LIVE result as safe HTML for the detail view.
@@ -2502,7 +2878,9 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
                 head_pill = ('<span class="indicator-pill gray">cached</span>'
                              if result.get("cached")
                              else '<span class="indicator-pill blue">live</span>')
-            if (result.get("kind") == "series") or ft == "Time-Series":
+            if (result.get("kind") == "image") or ft == "Image":
+                body = _render_image_block(result, label)
+            elif (result.get("kind") == "series") or ft == "Time-Series":
                 body = _render_columns_table(result)
             else:
                 body = _render_value_block(result.get("value"), ft)
@@ -2525,6 +2903,13 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
     cached = result.get("cached")
     pill = ('<span class="indicator-pill gray">cached</span>'
             if cached else '<span class="indicator-pill blue">live</span>')
+
+    if kind == "image":
+        body = _render_image_block(result)
+        return mark_safe(
+            "<div class='hd-api-field'>" + str(body) + " "
+            + str(mark_safe(pill)) + str(refresh)
+            + _api_source_note(result, connector) + "</div>")
 
     if kind == "series":
         body = _render_columns_table(result)
@@ -2704,6 +3089,13 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         if row is not None:
             record_found = True
             attributes, lon, lat = row[0], row[1], row[2]
+            # Expose the record's point to connectors (e.g. a WMS map centred here)
+            # under reserved _lon/_lat keys — hidden from the field list, available
+            # to fetch_api via input mapping or the WMS point resolver.
+            if lon is not None and lat is not None:
+                attributes = dict(attributes or {})
+                attributes.setdefault("_lon", lon)
+                attributes.setdefault("_lat", lat)
             # A '?refresh=<field>' request busts the API cache for that field's
             # connector before the synchronous fetch in _detail_fields, so the
             # Refresh link forces a fresh pull (then degrades gracefully if the
@@ -3336,10 +3728,13 @@ def _assemble_type_spec(post, force_slug=None):
             if ft not in _OUTPUT_FIELD_TYPES:
                 ft = default_ft
             # Guard the asymmetric type rule: a series output can ONLY render as a
-            # Time-Series chart; a value output can NEVER be a Time-Series.
+            # Time-Series chart; an image output can ONLY render as an Image; a value
+            # output can NEVER be a Time-Series or Image.
             if okind == "series":
                 ft = "Time-Series"
-            elif ft == "Time-Series":
+            elif okind == "image":
+                ft = "Image"
+            elif ft in ("Time-Series", "Image"):
                 ft = default_ft
             label = (entry.get("label") or "").strip() or oname
             x_outputs.append({"output": oname, "label": label, "field_type": ft})
@@ -4046,7 +4441,7 @@ def _connector_config_from_post(post):
         timeout = 15
 
     kind = (post.get("kind") or "rest").strip().lower()
-    if kind not in ("rest", "netcdf", "thredds"):
+    if kind not in ("rest", "netcdf", "thredds", "csv", "wms"):
         kind = "rest"
 
     inputs = _parse_inputs_rows(post)
@@ -4087,6 +4482,49 @@ def _connector_config_from_post(post):
             errors.append("A NetCDF connector needs a Dataset URL (.nc file or OPeNDAP/dodsC URL).")
         if kind == "thredds" and not config.get("catalog_url"):
             errors.append("A THREDDS connector needs a Catalog URL.")
+    elif kind == "csv":
+        # CSV source fields. The whole table is synthesized as one series + a latest
+        # value (of value_column); no outputs[] editor needed.
+        config["csv_url"] = (post.get("csv_url") or "").strip()
+        config["delimiter"] = (post.get("delimiter") or ",").strip() or ","
+        config["has_header"] = (post.get("has_header") or "true").strip().lower() != "false"
+        config["value_column"] = (post.get("value_column") or "").strip()
+        if not config["csv_url"]:
+            errors.append("A CSV connector needs a CSV URL or file path.")
+    elif kind == "wms":
+        # WMS source fields. A GetMap image (centred on the record's point) +
+        # a best-effort GetFeatureInfo value are synthesized.
+        config["wms_url"] = (post.get("wms_url") or "").strip()
+        config["layers"] = (post.get("layers") or "").strip()
+        config["wms_version"] = (post.get("wms_version") or "1.3.0").strip()
+        config["image_format"] = (post.get("image_format") or "image/png").strip()
+        config["styles"] = (post.get("styles") or "").strip()
+        config["crs"] = (post.get("crs") or "EPSG:4326").strip()
+        try:
+            config["bbox_buffer"] = float(post.get("bbox_buffer") or 0.5)
+        except (TypeError, ValueError):
+            config["bbox_buffer"] = 0.5
+        try:
+            config["width"] = int(post.get("wms_width") or 512)
+        except (TypeError, ValueError):
+            config["width"] = 512
+        try:
+            config["height"] = int(post.get("wms_height") or 384)
+        except (TypeError, ValueError):
+            config["height"] = 384
+        # Optional map-centre fallback for NON-spatial doctypes (a point type uses
+        # the record geom instead). Stored only when supplied so config stays clean.
+        for k, src in (("default_lon", "default_lon"), ("default_lat", "default_lat")):
+            raw = (post.get(src) or "").strip()
+            if raw:
+                try:
+                    config[k] = float(raw)
+                except ValueError:
+                    pass
+        if not config["wms_url"]:
+            errors.append("A WMS connector needs a WMS service URL.")
+        if not config["layers"]:
+            errors.append("A WMS connector needs at least one layer name.")
     else:
         if not config["url_template"]:
             errors.append("URL Template is required.")
@@ -4123,6 +4561,23 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "nc_unit": (config or {}).get("unit", ""),
         "catalog_url": (config or {}).get("catalog_url", ""),
         "dataset": (config or {}).get("dataset", ""),
+        # CSV
+        "csv_url": (config or {}).get("csv_url", ""),
+        "delimiter": (config or {}).get("delimiter", ","),
+        "has_header": (config or {}).get("has_header", True),
+        "value_column": (config or {}).get("value_column", ""),
+        # WMS
+        "wms_url": (config or {}).get("wms_url", ""),
+        "layers": (config or {}).get("layers", ""),
+        "wms_version": (config or {}).get("wms_version", "1.3.0"),
+        "image_format": (config or {}).get("image_format", "image/png"),
+        "styles": (config or {}).get("styles", ""),
+        "crs": (config or {}).get("crs", "EPSG:4326"),
+        "bbox_buffer": (config or {}).get("bbox_buffer", 0.5),
+        "wms_width": (config or {}).get("width", 512),
+        "wms_height": (config or {}).get("height", 384),
+        "default_lon": (config or {}).get("default_lon", ""),
+        "default_lat": (config or {}).get("default_lat", ""),
         "url_template": (config or {}).get("url_template", ""),
         "method": (config or {}).get("method", "GET"),
         "headers": json.dumps((config or {}).get("headers") or {}, indent=2),
@@ -4326,8 +4781,13 @@ def connector_test(request):
     # needs it to pick paths). NetCDF/THREDDS: describe the dataset (its variables +
     # dimensions) so the user can see what to put in the Variable field.
     raw = None
-    if (config.get("kind") or "rest").lower() in ("netcdf", "thredds"):
+    knd = (config.get("kind") or "rest").lower()
+    if knd in ("netcdf", "thredds"):
         raw = _netcdf_describe(config, attrs)
+    elif knd == "csv":
+        raw = _csv_describe(config, attrs)
+    elif knd == "wms":
+        raw = _wms_describe(config, attrs)
     else:
         try:
             cfg_json = dict(config)

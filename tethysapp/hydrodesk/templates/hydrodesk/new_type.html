@@ -1068,6 +1068,7 @@
             if (!name) return;
             var saved = seededFor(name);
             var isSeries = (o.kind === 'series');
+            var isImage = (o.kind === 'image');
             var colHint = null;
             var item = document.createElement('div');
             item.className = 'hd-out-item';
@@ -1107,6 +1108,13 @@
                 colHint.style.cssText = 'flex-basis:100%;margin-left:26px;';
                 colHint.textContent = 'table columns: ' + cols.join(', ');
               }
+            } else if (isImage) {
+              // Image (e.g. a WMS map) -> rendered as a picture; the type is locked.
+              var imo = document.createElement('option');
+              imo.value = 'Image'; imo.textContent = 'Map image';
+              ft.appendChild(imo);
+              ft.value = 'Image';
+              ft.disabled = true;
             } else {
               VALUE_FT.forEach(function (t) {
                 var op = document.createElement('option');
