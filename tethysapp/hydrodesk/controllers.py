@@ -1884,6 +1884,7 @@ def _form_context(slug, display_name, type_found, widgets, errors, mode,
         "parent_slug": parent.get("slug", ""),
         "parent_id": parent.get("id", ""),
         "parent_field": parent.get("field", ""),
+        "parent_link_field": parent.get("link_field", ""),
         "parent_detail_url": parent_detail_url,
     }
 
@@ -1897,6 +1898,9 @@ def _parent_ctx(request):
         "slug": (src.get("parent_slug") or "").strip(),
         "id": (src.get("parent_id") or "").strip(),
         "field": (src.get("parent_field") or "").strip(),
+        # Reverse-link mode: the child's OWN Link field that should be pre-filled
+        # with the parent id (instead of stamping a hidden _parent record).
+        "link_field": (src.get("parent_link_field") or "").strip(),
     }
 
 
@@ -1989,7 +1993,12 @@ def hydrotype_new(request, slug="monitoring_station"):
                 )
                 session.add(record)
                 session.commit()
-            if linked:  # back to the parent detail, where the new child now lists
+            # Reverse-link create (the child's own Link field carries the relation):
+            # return to the parent detail, where the child now appears in the
+            # reverse linked-table.
+            reverse_link = bool(parent.get("link_field") and parent.get("id")
+                                and parent.get("slug"))
+            if linked or reverse_link:  # back to the parent detail
                 return redirect(reverse("hydrodesk:detail",
                                         kwargs={"slug": parent["slug"], "record_id": parent["id"]}))
             return redirect(reverse("hydrodesk:list", kwargs={"slug": slug}))
@@ -2001,8 +2010,12 @@ def hydrotype_new(request, slug="monitoring_station"):
                       _form_context(slug, display_name, type_found, widgets, errors,
                                     "new", parent=parent))
 
-    # GET: blank form.
-    widgets = _build_widgets(field_schema, geometry_kind)
+    # GET: blank form. In reverse-link mode, pre-fill the child's own Link field
+    # with the parent record id so the new child already points back at it.
+    prefill = None
+    if parent.get("link_field") and parent.get("id"):
+        prefill = {parent["link_field"]: parent["id"]}
+    widgets = _build_widgets(field_schema, geometry_kind, values=prefill)
     return render(request, "hydrodesk/form.html",
                   _form_context(slug, display_name, type_found, widgets, [], "new",
                                 parent=parent))
@@ -2225,12 +2238,32 @@ def _child_records(session, child_slug, parent_id, field):
     ).scalars().all())
 
 
-def _render_linked_table(session, child_slug, parent_slug, parent_id, field):
-    """Render a LINKED Table field: the child records of ``child_slug`` that point
-    back to (parent_id, field), as a Frappe table whose columns are the child type's
-    fields. The first cell links to each child's OWN detail page; a '+ Add' button
-    creates a new child pre-linked to this parent. Children are full HydroRecords
-    (own list/map/detail), so this is a true one-to-many."""
+def _child_records_by_link(session, child_slug, link_field, parent_id):
+    """Return the records of ``child_slug`` whose LINK field ``link_field`` points at
+    ``parent_id`` (the REVERSE of a Link field — e.g. every Sales Invoice whose
+    'customer' equals this Customer). Oldest-first."""
+    if not (session and child_slug and link_field and parent_id):
+        return []
+    pid = str(parent_id)
+    return list(session.execute(
+        select(m.HydroRecord).where(
+            m.HydroRecord.hydrotype_slug == child_slug,
+            m.HydroRecord.attributes[link_field].astext == pid,
+        ).order_by(m.HydroRecord.created_at)
+    ).scalars().all())
+
+
+def _render_linked_table(session, child_slug, parent_slug, parent_id, field,
+                         child_link=None):
+    """Render a LINKED Table field as a Frappe table of child records (columns = the
+    child type's fields, first cell links to each child's detail).
+
+    Two relationship modes:
+      * ``child_link`` set -> REVERSE of a Link field: show records of ``child_slug``
+        whose Link field ``child_link`` equals this record (e.g. a Customer's
+        invoices). '+ Add' pre-selects that Link to this record.
+      * else -> the _parent-owned model: children created via '+ Add' carry a
+        ``_parent`` back-reference (a true private one-to-many)."""
     meta = _load_hydrotype(session, child_slug) if session else None
     if meta is None:
         return format_html("<span class='frappe-muted frappe-text-sm'>Linked type "
@@ -2239,15 +2272,20 @@ def _render_linked_table(session, child_slug, parent_slug, parent_id, field):
 
     add_btn = ""
     if parent_id:
-        q = urllib.parse.urlencode({"parent_slug": parent_slug or "",
-                                    "parent_id": str(parent_id),
-                                    "parent_field": field or ""})
-        add_url = reverse("hydrodesk:new", kwargs={"slug": child_slug}) + "?" + q
+        params = {"parent_slug": parent_slug or "", "parent_id": str(parent_id),
+                  "parent_field": field or ""}
+        if child_link:
+            params["parent_link_field"] = child_link
+        add_url = reverse("hydrodesk:new", kwargs={"slug": child_slug}) + "?" \
+            + urllib.parse.urlencode(params)
         add_btn = str(format_html(
             "<div style='margin-top:6px;'><a class='btn btn-default btn-sm' href='{}'>"
             "<i class='bi bi-plus-lg'></i> Add {}</a></div>", add_url, child_name))
 
-    children = _child_records(session, child_slug, parent_id, field)
+    if child_link:
+        children = _child_records_by_link(session, child_slug, child_link, parent_id)
+    else:
+        children = _child_records(session, child_slug, parent_id, field)
     cols = _derive_columns(child_schema)  # [(key, header)]
     if not children:
         return mark_safe(
@@ -2605,7 +2643,8 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
             fields.append({
                 "label": label,
                 "value": _render_linked_table(session, prop.get("x-child-type"),
-                                              parent_slug, parent_id, name),
+                                              parent_slug, parent_id, name,
+                                              child_link=prop.get("x-child-link")),
             })
             seen.add(name)
             continue
@@ -2779,11 +2818,16 @@ def _schema_for(field_type, options):
     if ft == "table":  # child grid OR linked records of another HydroType
         mode, payload = _parse_table_config(options)
         if mode == "link":
-            # LINKED table: rows are REAL records of another HydroType (one-to-many).
-            # The parent stores NO inline rows; children are separate HydroRecords
-            # linked back via their _parent key and queried at render time. The field
-            # is a (virtual) array whose shape lives in the child type's schema.
-            return {"type": "array", "x-widget": "table", "x-child-type": payload}
+            # LINKED table: rows are REAL records of another HydroType. The parent
+            # stores NO inline rows. ``x-child-link`` (optional) = the child's Link
+            # field pointing back (reverse-link mode, e.g. a Customer's invoices);
+            # absent = children carry a ``_parent`` back-reference (private one-to-many).
+            prop = {"type": "array", "x-widget": "table",
+                    "x-child-type": payload.get("child_type")}
+            child_link = _slugify_underscore(payload.get("child_link") or "")
+            if child_link:
+                prop["x-child-link"] = child_link
+            return prop
         # INLINE columns: a JSON ARRAY of row objects stored on the parent record's
         # attributes (the generic JSONB store holds the rows). Options carries
         # [{label,type,options}] -> the per-column item schema. Child cell types are
@@ -2821,8 +2865,10 @@ def _parse_table_config(options):
 
     The builder stores either:
       * a JSON LIST ``[{label,type,options}]`` -> ('columns', [cols])  (inline grid)
-      * a JSON OBJECT ``{"child_type": "<slug>"}`` -> ('link', '<slug>')  (records
-        of another HydroType, a true one-to-many).
+      * a JSON OBJECT ``{"child_type": "<slug>", "child_link": "<field>"?}`` ->
+        ('link', {child_type, child_link}). ``child_link`` (optional) names the
+        child's Link field that points back here (reverse-link / connections mode);
+        absent = the _parent-owned mode.
     A blank/invalid carrier degrades to ('columns', [])."""
     raw = (options or "").strip()
     if not raw:
@@ -2832,7 +2878,8 @@ def _parse_table_config(options):
     except (ValueError, TypeError):
         return ("columns", [])
     if isinstance(parsed, dict) and (parsed.get("child_type") or "").strip():
-        return ("link", parsed["child_type"].strip())
+        return ("link", {"child_type": parsed["child_type"].strip(),
+                         "child_link": (parsed.get("child_link") or "").strip()})
     if isinstance(parsed, list):
         return ("columns", [c for c in parsed
                             if isinstance(c, dict) and (c.get("label") or "").strip()])
@@ -2914,7 +2961,10 @@ def _builder_options_for(prop, builder_type):
         return prop.get("x-api-connector") or ""
     if builder_type == "table":
         if prop.get("x-child-type"):
-            return json.dumps({"child_type": prop.get("x-child-type")})
+            obj = {"child_type": prop.get("x-child-type")}
+            if prop.get("x-child-link"):
+                obj["child_link"] = prop.get("x-child-link")
+            return json.dumps(obj)
         cols = []
         for ck, cp in _table_item_columns(prop):
             cbt = _builder_type_for(cp)

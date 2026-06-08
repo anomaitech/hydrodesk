@@ -513,6 +513,10 @@
         try { tparsed = JSON.parse(val || 'null'); } catch (e) { tparsed = null; }
         if (tparsed && !Array.isArray(tparsed) && tparsed.child_type) {
           html = '&rarr; records of <code>' + escapeHtml(tparsed.child_type) + '</code>';
+          if (tparsed.child_link) {
+            html += ' <span class="frappe-muted">linked by <code>'
+              + escapeHtml(tparsed.child_link) + '</code></span>';
+          }
         } else {
           var tcols = Array.isArray(tparsed) ? tparsed : [];
           var nc = tcols.filter(function (c) { return c && (c.label || '').trim(); }).length;
@@ -804,6 +808,25 @@
       linkPanel.appendChild(linkLbl); linkPanel.appendChild(linkSel); linkPanel.appendChild(linkNote);
       linkNote.innerHTML = 'Each row becomes a real record of this type, with its own '
         + 'detail page &amp; list/map. Manage them on the saved record’s page.';
+
+      // Optional reverse-link: name a Link field ON the child type that points
+      // back at THIS type. When set, the table shows every child whose Link
+      // field references this record (reverse of a many-to-one), instead of
+      // the hidden-_parent attach mode.
+      var byLbl = document.createElement('label');
+      byLbl.className = 'frappe-label'; byLbl.style.marginTop = '12px';
+      byLbl.textContent = 'Linked by field (optional)';
+      var byInput = document.createElement('input');
+      byInput.className = 'form-control hd-tbl-link-by';
+      byInput.type = 'text';
+      byInput.placeholder = 'e.g. customer — the child’s Link field name';
+      byInput.value = (isLink && cur.child_link) ? cur.child_link : '';
+      var byNote = document.createElement('div');
+      byNote.className = 'hd-cfg-note';
+      byNote.innerHTML = 'Leave blank to manage rows that belong only to this record. '
+        + 'Set it to a child <strong>Link</strong> field to show existing records that '
+        + 'point back here (e.g. show a Customer’s Invoices).';
+      linkPanel.appendChild(byLbl); linkPanel.appendChild(byInput); linkPanel.appendChild(byNote);
       (function () {
         var blank = document.createElement('option');
         blank.value = ''; blank.textContent = '— choose a type —'; linkSel.appendChild(blank);
@@ -897,7 +920,10 @@
       applyFns.push(function () {
         if (mode === 'link') {
           var slug = (linkSel.value || '').trim();
-          if (p.opt) p.opt.value = slug ? JSON.stringify({ child_type: slug }) : '';
+          var by = (byInput.value || '').trim();
+          var carrier = slug ? { child_type: slug } : null;
+          if (carrier && by) carrier.child_link = by;
+          if (p.opt) p.opt.value = carrier ? JSON.stringify(carrier) : '';
           return;
         }
         var cols = [];
