@@ -213,6 +213,18 @@
           </div>
           <div class="hd-nc-zones" style="display:none;">
             <input type="hidden" id="id_nc_zones" name="nc_zones" value="{{ nc_zones }}">
+            <div class="frappe-form-group" style="max-width:360px;">
+              <label class="frappe-label" for="id_nc_zones_source">Zones from</label>
+              <select class="form-select" id="id_nc_zones_source" name="nc_zones_source">
+                <option value="shapefile" {% if nc_zones_source != 'record' %}selected{% endif %}>An imported shapefile (fixed, shared by all records)</option>
+                <option value="record"    {% if nc_zones_source == 'record' %}selected{% endif %}>Each record's own geometry (dynamic, per record)</option>
+              </select>
+              <div class="frappe-help">Fixed = upload one multi-polygon layer; every record reduces over the same zones. Dynamic = each record's <strong>own</strong> Polygon/MultiPolygon geometry IS its zone set — so a record drawn as 3 cells gets 3 columns from those exact cells.</div>
+            </div>
+            <div class="hd-zones-dynamic frappe-help" style="display:none;margin-bottom:10px;">
+              <strong>Dynamic zones:</strong> bind this connector to a doctype with a <strong>polygon</strong> geometry. Each record's MultiPolygon parts become the zone columns — no shapefile needed here. (Test uses whatever's pasted in the Polygon box as a stand-in record geometry.)
+            </div>
+            <div class="hd-zones-fixed" style="display:none;">
             <div class="frappe-help" id="hd-zones-status" style="margin-bottom:10px;"></div>
             <div style="display:grid;grid-template-columns:1fr 220px;gap:14px;">
               <div class="frappe-form-group">
@@ -229,6 +241,7 @@
               </div>
             </div>
             <div class="frappe-help">Per-zone imports a <strong>multi-polygon</strong> shapefile (above) — a grid, cells, or subbasins layer. Each polygon → one column = the variable's mean over the cells inside it. (You can also paste a GeoJSON <code>FeatureCollection</code>/<code>MultiPolygon</code> in the Polygon box.)</div>
+            </div>{# /hd-zones-fixed #}
           </div>
         </div>
       </div>
@@ -876,8 +889,16 @@
       if (pg) pg.style.display = (m === 'polygon' || m === 'zones') ? '' : 'none';
       if (cl) cl.style.display = (m === 'cells') ? '' : 'none';
       if (zn) zn.style.display = (m === 'zones') ? '' : 'none';
+      // Dynamic zones (record geometry) hide the shapefile upload; fixed zones show it.
+      var dyn = (zsrc && zsrc.value === 'record');
+      if (pg && m === 'zones') pg.style.display = dyn ? 'none' : '';
+      var df = document.querySelector('.hd-zones-dynamic');
+      var fx = document.querySelector('.hd-zones-fixed');
+      if (df) df.style.display = (m === 'zones' && dyn) ? '' : 'none';
+      if (fx) fx.style.display = (m === 'zones' && !dyn) ? '' : 'none';
       updateZonesStatus();
     }
+    var zsrc = document.getElementById('id_nc_zones_source');
     // Show how many zones are loaded (parse the hidden FeatureCollection carrier).
     function updateZonesStatus() {
       var el = document.getElementById('hd-zones-status');
@@ -895,6 +916,7 @@
                        : 'No zones loaded yet — upload a multi-polygon shapefile above (or paste a FeatureCollection in the Polygon box).';
     }
     if (sp) sp.addEventListener('change', applySpatial);
+    if (zsrc) zsrc.addEventListener('change', applySpatial);
     applySpatial();
   })();
 
@@ -1205,7 +1227,7 @@
       polygon: val('id_nc_polygon'), shapefile: val('id_nc_shapefile'),
       cells_max: numOrUndef('id_nc_cells_max'),
       zones: val('id_nc_zones'), zone_label: val('id_nc_zone_label'),
-      zones_max: numOrUndef('id_nc_zones_max'),
+      zones_max: numOrUndef('id_nc_zones_max'), zones_source: val('id_nc_zones_source') || 'shapefile',
       catalog_url: val('id_catalog_url'),
       dataset: val('id_dataset'),
       csv_url: val('id_csv_url'),

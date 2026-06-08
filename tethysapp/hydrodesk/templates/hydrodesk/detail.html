@@ -82,15 +82,15 @@
 
     {% if has_geom %}
     <div class="frappe-form-section">
-      <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">(point geometry)</span></div>
+      <div class="frappe-section-head">Location &amp; geometry</div>
+      {% if geom_geojson %}
+        <div id="hd-geom-map" style="height:320px;border-radius:8px;border:1px solid var(--fr-border,#e2e6ea);margin-bottom:12px;"></div>
+        <script type="application/json" id="hd-geom-data">{{ geom_geojson|safe }}</script>
+      {% endif %}
       <dl class="frappe-dl">
         <div class="frappe-dl-row">
-          <dt class="frappe-dl-term">Longitude</dt>
-          <dd class="frappe-dl-desc">{{ longitude }}</dd>
-        </div>
-        <div class="frappe-dl-row">
-          <dt class="frappe-dl-term">Latitude</dt>
-          <dd class="frappe-dl-desc">{{ latitude }}</dd>
+          <dt class="frappe-dl-term">Centroid</dt>
+          <dd class="frappe-dl-desc">{{ longitude }}, {{ latitude }}</dd>
         </div>
       </dl>
     </div>
@@ -136,6 +136,46 @@
   });
   card.insertBefore(nav, sections[0]);
   activate(0);
+})();
+
+// ---- Embedded geometry map: render the record's point/polygon/zones via Leaflet. ----
+(function () {
+  var holder = document.getElementById('hd-geom-map');
+  var data = document.getElementById('hd-geom-data');
+  if (!holder || !data) return;
+  var geom;
+  try { geom = JSON.parse(data.textContent || 'null'); } catch (e) { return; }
+  if (!geom) return;
+
+  function load(tag, attrs) {
+    return new Promise(function (res, rej) {
+      var el = document.createElement(tag);
+      Object.keys(attrs).forEach(function (k) { el[k] = attrs[k]; });
+      el.onload = res; el.onerror = rej;
+      document.head.appendChild(el);
+    });
+  }
+  function draw() {
+    var map = L.map(holder, { scrollWheelZoom: false });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { attribution: '&copy; OpenStreetMap', maxZoom: 18 }).addTo(map);
+    // Colour each polygon part distinctly so the zones read as separate cells.
+    var palette = ['#2490ef', '#28a745', '#e8590c', '#9c36b5', '#1098ad', '#f08c00', '#e03131', '#37b24d'];
+    var idx = 0;
+    var layer = L.geoJSON(geom, {
+      style: function () { return { color: palette[(idx++) % palette.length], weight: 2, fillOpacity: 0.28 }; },
+      pointToLayer: function (f, latlng) { return L.circleMarker(latlng, { radius: 7, color: '#2490ef', fillOpacity: 0.7 }); }
+    }).addTo(map);
+    try {
+      var b = layer.getBounds();
+      if (b.isValid()) map.fitBounds(b.pad(0.25)); else map.setView([0, 0], 2);
+    } catch (e) { map.setView([0, 0], 2); }
+  }
+  if (window.L) { draw(); return; }
+  load('link', { rel: 'stylesheet', href: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css' });
+  load('script', { src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js' })
+    .then(draw)
+    .catch(function () { holder.innerHTML = '<div class="frappe-help" style="padding:12px;">Map library could not be loaded (offline?). Geometry is still stored.</div>'; });
 })();
 </script>
 {% endblock %}

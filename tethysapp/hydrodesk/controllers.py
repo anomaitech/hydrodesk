@@ -1090,14 +1090,30 @@ def _zones_from_geojson(s, label_field=None):
     return zones or None
 
 
-def _zone_polygons(cfg):
+def _zone_polygons(cfg, attrs=None):
     """The connector's ZONES as ``[(label, rings), ...]`` — each entry is ONE polygon
-    (a cell/zone) with its exterior+hole rings. Source priority: an inline ``zones``
-    FeatureCollection (imported from a multi-polygon shapefile, or pasted) -> the
-    ``polygon`` text parsed as FeatureCollection/MultiPolygon/Polygon/WKT -> a server
-    ``shapefile`` path (every polygon in it). None when nothing usable is configured."""
-    cfg = cfg or {}
+    (a cell/zone) with its exterior+hole rings.
+
+    When ``zones_source == 'record'`` the zones are DYNAMIC: they come from the
+    triggering record's OWN geometry (a Polygon -> one zone; a MultiPolygon -> one
+    zone per part), injected as the GeoJSON ``attrs['_geojson']`` by the detail view —
+    so each record reduces over its own shape (the per-zone analog of the dynamic
+    bbox/point). Otherwise the zones are FIXED on the connector, source priority:
+    inline ``zones`` FeatureCollection (imported shapefile / pasted) -> ``polygon``
+    text (FeatureCollection/MultiPolygon/Polygon/WKT) -> a server ``shapefile`` path.
+    None when nothing usable is configured."""
+    cfg, attrs = cfg or {}, attrs or {}
     label_field = (cfg.get("zone_label") or "").strip() or None
+    if (cfg.get("zones_source") or "").strip().lower() == "record":
+        # DYNAMIC: the record's geometry is the zone set (no .dbf attrs -> centroid /
+        # 'zone_N' labels). _geojson is a bare GeoJSON geometry (Polygon/MultiPolygon).
+        z = _zones_from_geojson(attrs.get("_geojson"), label_field)
+        if z:
+            return z
+        # No record geometry (e.g. the connector Test panel) -> a pasted polygon/zones
+        # acts as a stand-in record geometry so Test still shows the per-zone shape.
+        return (_zones_from_geojson(cfg.get("zones"), label_field)
+                or _zones_from_geojson(cfg.get("polygon"), label_field))
     z = _zones_from_geojson(cfg.get("zones"), label_field)
     if z:
         return z
@@ -1277,7 +1293,7 @@ def _netcdf_zones_columns(ds, v, x_dim, cfg=None, attrs=None, max_zones=60):
     latc, lonc = ds.variables.get(lat_dim), ds.variables.get(lon_dim)
     if latc is None or lonc is None:
         return None
-    zones = _zone_polygons(cfg)
+    zones = _zone_polygons(cfg, attrs)
     if not zones:
         return None
     cap = max(1, int(max_zones or 60))
@@ -1666,7 +1682,13 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
             _rlon, _rlat, cfg.get("cells_max"))
     elif _sp == "zones":
         import hashlib
-        _zsrc = (cfg.get("zones") or cfg.get("polygon") or cfg.get("shapefile") or "")
+        # DYNAMIC zones key on the RECORD's geometry (each record differs); fixed zones
+        # key on the connector's zones source. Either way fold a digest in so distinct
+        # geometries never collide (the recurring per-record cache-collision trap).
+        if (cfg.get("zones_source") or "").strip().lower() == "record":
+            _zsrc = "rec:" + str(attrs.get("_geojson") or "")
+        else:
+            _zsrc = (cfg.get("zones") or cfg.get("polygon") or cfg.get("shapefile") or "")
         _zh = hashlib.md5(_zsrc.encode("utf-8", "replace")).hexdigest()[:12]
         _sig += "|zones:%s,%s,%s" % (_zh, cfg.get("zone_label") or "", cfg.get("zones_max"))
     else:
@@ -4757,6 +4779,7 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     fields = []
     record_found = False
     lon = lat = None
+    geom_geojson = None
 
     with Session(engine) as session:
         meta = _load_hydrotype(session, slug)
@@ -4769,8 +4792,12 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         row = session.execute(
             select(
                 m.HydroRecord.attributes,
-                func.ST_X(m.HydroRecord.geom),
-                func.ST_Y(m.HydroRecord.geom),
+                # Centroid (not ST_X/ST_Y on the raw geom — those raise on a
+                # polygon/line): the record's representative lon/lat for map centring
+                # and the dynamic point/bbox filters, valid for ANY geometry type.
+                func.ST_X(func.ST_Centroid(m.HydroRecord.geom)),
+                func.ST_Y(func.ST_Centroid(m.HydroRecord.geom)),
+                func.ST_AsGeoJSON(m.HydroRecord.geom),
             )
             .where(m.HydroRecord.hydrotype_slug == slug)
             .where(m.HydroRecord.id == record_id)
@@ -4778,14 +4805,18 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
 
         if row is not None:
             record_found = True
-            attributes, lon, lat = row[0], row[1], row[2]
-            # Expose the record's point to connectors (e.g. a WMS map centred here)
-            # under reserved _lon/_lat keys — hidden from the field list, available
-            # to fetch_api via input mapping or the WMS point resolver.
+            attributes, lon, lat, geom_geojson = row[0], row[1], row[2], row[3]
+            # Expose the record's geometry to connectors under reserved keys (hidden
+            # from the field list): _lon/_lat (the centroid — a WMS map centred here,
+            # the dynamic point/bbox filters) and _geojson (the FULL geometry — the
+            # DYNAMIC per-zone filter reduces over the record's own polygons).
             if lon is not None and lat is not None:
                 attributes = dict(attributes or {})
                 attributes.setdefault("_lon", lon)
                 attributes.setdefault("_lat", lat)
+            if geom_geojson:
+                attributes = dict(attributes or {})
+                attributes.setdefault("_geojson", geom_geojson)
             # A '?refresh=<field>' request busts the API cache for that field's
             # connector before the synchronous fetch in _detail_fields, so the
             # Refresh link forces a fresh pull (then degrades gracefully if the
@@ -4824,6 +4855,7 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         "has_geom": has_geom,
         "longitude": lon,
         "latitude": lat,
+        "geom_geojson": geom_geojson,
         "list_url": reverse("hydrodesk:list", kwargs={"slug": slug}),
         "edit_url": reverse("hydrodesk:edit", kwargs={"slug": slug, "record_id": record_id}),
         "delete_url": reverse("hydrodesk:delete", kwargs={"slug": slug, "record_id": record_id}),
@@ -6267,6 +6299,11 @@ def _connector_config_from_post(post, files=None):
         # keeps it, and so the Test button (JSON fetch) can read it back.
         config["zones"] = (post.get("nc_zones") or "").strip()
         config["zone_label"] = (post.get("nc_zone_label") or "").strip()  # .dbf attr to label by
+        # Where the zones come from: 'shapefile' (FIXED, imported/pasted/path) or
+        # 'record' (DYNAMIC — each record's own geometry, the dynamic-input mode).
+        config["zones_source"] = (post.get("nc_zones_source") or "shapefile").strip().lower()
+        if config["zones_source"] not in ("shapefile", "record"):
+            config["zones_source"] = "shapefile"
         # IMPORT an uploaded shapefile (zip or .shp). In 'zones' mode keep EVERY polygon
         # as a FeatureCollection (a grid/cell layer); otherwise keep the first polygon as
         # an inline GeoJSON region. Either way the connector stays a pure-JSON row.
@@ -6291,9 +6328,11 @@ def _connector_config_from_post(post, files=None):
         if spatial == "polygon" and not (config["polygon"] or config["shapefile"]):
             errors.append("A polygon spatial filter needs a WKT/GeoJSON polygon, "
                           "an uploaded shapefile, or a shapefile path.")
-        if spatial == "zones" and not (config["zones"] or config["polygon"] or config["shapefile"]):
+        if (spatial == "zones" and config["zones_source"] != "record"
+                and not (config["zones"] or config["polygon"] or config["shapefile"])):
             errors.append("A per-zone spatial filter needs an imported multi-polygon "
-                          "shapefile, a pasted FeatureCollection/MultiPolygon, or a shapefile path.")
+                          "shapefile, a pasted FeatureCollection/MultiPolygon, a shapefile "
+                          "path, or set Zones-from to the record's geometry.")
         if kind == "thredds":
             config["catalog_url"] = (post.get("catalog_url") or "").strip()
             config["dataset"] = (post.get("dataset") or "").strip()
@@ -6451,6 +6490,7 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "nc_zones": (config or {}).get("zones", ""),
         "nc_zone_label": (config or {}).get("zone_label", ""),
         "nc_zones_max": (config or {}).get("zones_max", 60),
+        "nc_zones_source": (config or {}).get("zones_source", "shapefile"),
         "nc_cells_max": (config or {}).get("cells_max", 24),
         "catalog_url": (config or {}).get("catalog_url", ""),
         "dataset": (config or {}).get("dataset", ""),
