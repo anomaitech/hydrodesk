@@ -146,8 +146,9 @@
             <option value="point"   {% if nc_spatial == 'point' %}selected{% endif %}>Nearest point (a single grid cell)</option>
             <option value="bbox"    {% if nc_spatial == 'bbox' %}selected{% endif %}>Bounding box (mean over a window)</option>
             <option value="polygon" {% if nc_spatial == 'polygon' %}selected{% endif %}>Polygon / shapefile (mean inside a region)</option>
+            <option value="cells"   {% if nc_spatial == 'cells' %}selected{% endif %}>Per-cell (every cell in a box as its own column)</option>
           </select>
-          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average inside a lat/lon window (leave the bounds blank to centre it on the record ± buffer). Polygon = average the cells inside a shapefile/WKT region.</div>
+          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average inside a lat/lon window (leave the bounds blank to centre it on the record ± buffer). Polygon = average the cells inside a shapefile/WKT region. Per-cell = NO averaging — each cell in the box becomes its own column.</div>
         </div>
         <div class="hd-nc-spatial" style="display:none;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -193,6 +194,14 @@
               <input class="form-control" type="text" id="id_nc_shapefile" name="nc_shapefile"
                      value="{{ nc_shapefile }}" placeholder="/path/to/region.shp">
               <div class="frappe-help">The grid cells inside the polygon's first ring (holes excluded) are averaged. Lon is normalised to −180…180; a polygon crossing the antimeridian isn't supported yet.</div>
+            </div>
+          </div>
+          <div class="hd-nc-cells" style="display:none;">
+            <div class="frappe-form-group" style="max-width:220px;">
+              <label class="frappe-label" for="id_nc_cells_max">Max cells</label>
+              <input class="form-control" type="text" id="id_nc_cells_max" name="nc_cells_max"
+                     value="{{ nc_cells_max|default:'24' }}" placeholder="24">
+              <div class="frappe-help">Per-cell uses the <strong>Bounding box</strong> bounds above to pick the region (or the record ± buffer when blank). Each cell becomes a column labelled <code>lat,lon</code>; if the box has more than this many cells, evenly-spaced ones are sampled.</div>
             </div>
           </div>
         </div>
@@ -831,10 +840,13 @@
       var pt = document.querySelector('.hd-nc-point');
       var bx = document.querySelector('.hd-nc-bbox');
       var pg = document.querySelector('.hd-nc-polygon');
-      if (wrap) wrap.style.display = (m === 'point' || m === 'bbox' || m === 'polygon') ? '' : 'none';
+      var cl = document.querySelector('.hd-nc-cells');
+      if (wrap) wrap.style.display = (m !== 'mean') ? '' : 'none';
       if (pt) pt.style.display = (m === 'point') ? 'grid' : 'none';
-      if (bx) bx.style.display = (m === 'bbox') ? 'grid' : 'none';
+      // per-cell reuses the bbox bounds to define the region.
+      if (bx) bx.style.display = (m === 'bbox' || m === 'cells') ? 'grid' : 'none';
       if (pg) pg.style.display = (m === 'polygon') ? '' : 'none';
+      if (cl) cl.style.display = (m === 'cells') ? '' : 'none';
     }
     if (sp) sp.addEventListener('change', applySpatial);
     applySpatial();
@@ -1145,6 +1157,7 @@
       lat_min: numOrUndef('id_nc_lat_min'), lat_max: numOrUndef('id_nc_lat_max'),
       lon_min: numOrUndef('id_nc_lon_min'), lon_max: numOrUndef('id_nc_lon_max'),
       polygon: val('id_nc_polygon'), shapefile: val('id_nc_shapefile'),
+      cells_max: numOrUndef('id_nc_cells_max'),
       catalog_url: val('id_catalog_url'),
       dataset: val('id_dataset'),
       csv_url: val('id_csv_url'),

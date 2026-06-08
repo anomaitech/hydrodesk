@@ -916,6 +916,61 @@ def _netcdf_polygon_ys(ds, v, xd, lat_dim, lon_dim, rings):
     return _netcdf_to_list(np.ma.mean(reduced, axis=other) if other else reduced)
 
 
+def _netcdf_cells_columns(ds, v, x_dim, cfg=None, attrs=None, max_cells=24):
+    """PER-CELL columns: each grid cell in the bbox region becomes its OWN column —
+    the variable's series at that cell, labelled 'lat,lon' — so you see every cell
+    instead of their mean. The region is the bbox (fixed bounds, or DYNAMIC = the
+    record's point ± buffer); if it holds more than ``max_cells`` cells, evenly-spaced
+    cells are sampled so a big region doesn't explode. Returns [{name,values}] columns
+    (x_dim first) or None when unavailable."""
+    import math
+    import numpy as np
+    cfg, attrs = cfg or {}, attrs or {}
+    dims = list(v.dimensions)
+    xd = x_dim if x_dim in dims else (dims[0] if dims else "")
+    lat_dim = (cfg.get("lat_dim") or "").strip()
+    lon_dim = (cfg.get("lon_dim") or "").strip()
+    if lat_dim not in dims or lon_dim not in dims:
+        return None
+    latc, lonc = ds.variables.get(lat_dim), ds.variables.get(lon_dim)
+    if latc is None or lonc is None:
+        return None
+    tlat = _wms_num(cfg.get("lat"), attrs.get("_lat"), attrs.get("latitude"), attrs.get("lat"))
+    tlon = _wms_num(cfg.get("lon"), attrs.get("_lon"), attrs.get("longitude"), attrs.get("lon"))
+    lat_lo, lat_hi = _bbox_bounds(cfg, False, tlat)
+    lon_lo, lon_hi = _bbox_bounds(cfg, True, tlon)
+    lat_sl = _range_slice(latc, lat_lo, lat_hi, False) if lat_lo is not None else slice(None)
+    lon_sl = _range_slice(lonc, lon_lo, lon_hi, True) if lon_lo is not None else slice(None)
+    lat_vals = np.asarray(latc[:], dtype="float64")[lat_sl]
+    lon_vals = np.asarray(lonc[:], dtype="float64")[lon_sl]
+    if not lat_vals.size or not lon_vals.size:
+        return None
+    # Cap: pick ~sqrt(max_cells) evenly-spaced indices on each axis.
+    per = max(1, int(math.sqrt(max(1, max_cells))))
+    li = np.unique(np.linspace(0, lat_vals.size - 1, min(lat_vals.size, per)).round().astype(int))
+    ji = np.unique(np.linspace(0, lon_vals.size - 1, min(lon_vals.size, per)).round().astype(int))
+    index = [lat_sl if d == lat_dim else lon_sl if d == lon_dim else slice(None) for d in dims]
+    sub = np.ma.asarray(v[tuple(index)])
+    lat_ax, lon_ax = dims.index(lat_dim), dims.index(lon_dim)
+    sub = np.moveaxis(sub, [lat_ax, lon_ax], [-2, -1])      # (leading..., nlat, nlon)
+    remaining = [d for d in dims if d not in (lat_dim, lon_dim)]
+    if xd in remaining:
+        xpos = remaining.index(xd)
+        other = tuple(i for i in range(len(remaining)) if i != xpos)
+        if other:
+            sub = np.ma.mean(sub, axis=other)              # collapse any non-x leading dims
+        if xpos != 0 and sub.ndim >= 3:
+            sub = np.moveaxis(sub, xpos, 0)
+    cvar = ds.variables.get(xd)
+    xs = _netcdf_coord_values(cvar) if cvar is not None else [str(i) for i in range(sub.shape[0])]
+    cols = [{"name": xd or "index", "values": xs}]
+    for i in li:
+        for j in ji:
+            cols.append({"name": "%.1f,%.1f" % (float(lat_vals[i]), float(lon_vals[j])),
+                         "values": _netcdf_to_list(sub[:, i, j])})
+    return cols
+
+
 def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
     """Reduce a variable to a 1-D series along ``x_dim``, applying the connector's
     SPATIAL FILTER to the lat/lon axes before averaging any remaining non-x axes:
@@ -1063,6 +1118,15 @@ def _netcdf_extract(ds, out_entry, cfg=None, attrs=None):
     x_dim = (out_entry.get("x_dim") or "").strip() or (dims[0] if dims else "")
     if x_dim not in dims:
         x_dim = dims[0] if dims else ""
+    # PER-CELL mode: a SERIES output becomes one column per grid cell (not the mean).
+    if (cfg or {}).get("spatial") == "cells" and \
+            (out_entry.get("kind") or "value").lower() == "series":
+        cols = _netcdf_cells_columns(ds, v, x_dim, cfg, attrs,
+                                     int((cfg or {}).get("cells_max") or 24))
+        if cols:
+            n = max((len(c["values"]) for c in cols), default=0)
+            return {"kind": "series", "columns": cols, "n": n,
+                    "x": cols[0]["values"], "y": cols[1]["values"] if len(cols) > 1 else []}
     xs, ys = _netcdf_series_xy(ds, v, x_dim, cfg, attrs)
     if (out_entry.get("kind") or "value").lower() == "series":
         return {"kind": "series",
@@ -1210,6 +1274,10 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
             _rlon, _rlat)
     elif _sp == "polygon":
         _sig += "|pg:%s|%s" % ((cfg.get("polygon") or "")[:120], cfg.get("shapefile") or "")
+    elif _sp == "cells":
+        _sig += "|cells:%s,%s,%s,%s|loc:%s,%s|%s" % (
+            cfg.get("lon_min"), cfg.get("lon_max"), cfg.get("lat_min"), cfg.get("lat_max"),
+            _rlon, _rlat, cfg.get("cells_max"))
     else:
         _sig += "|mean"
     cache_key = (connector_name,
@@ -5777,11 +5845,15 @@ def _connector_config_from_post(post):
         # 'bbox' (mean over a window — fixed, or DYNAMIC = the record's point ± buffer),
         # or 'polygon' (mean over the cells inside a shapefile/WKT region).
         spatial = (post.get("nc_spatial") or "mean").strip().lower()
-        if spatial not in ("mean", "point", "bbox", "polygon"):
+        if spatial not in ("mean", "point", "bbox", "polygon", "cells"):
             spatial = "mean"
         config["spatial"] = spatial
         config["lat_dim"] = (post.get("nc_lat_dim") or "").strip()
         config["lon_dim"] = (post.get("nc_lon_dim") or "").strip()
+        try:
+            config["cells_max"] = max(1, min(200, int(post.get("nc_cells_max") or 24)))
+        except (TypeError, ValueError):
+            config["cells_max"] = 24
         for k in ("lat", "lon", "lat_min", "lat_max", "lon_min", "lon_max"):
             raw = (post.get("nc_" + k) or "").strip()
             if raw:
@@ -5791,8 +5863,8 @@ def _connector_config_from_post(post):
                     pass
         config["polygon"] = (post.get("nc_polygon") or "").strip()      # WKT / GeoJSON
         config["shapefile"] = (post.get("nc_shapefile") or "").strip()  # server .shp path
-        if spatial in ("point", "bbox", "polygon") and not (config["lat_dim"] and config["lon_dim"]):
-            errors.append("A point/bbox/polygon spatial filter needs the Lat dim and Lon dim names.")
+        if spatial in ("point", "bbox", "polygon", "cells") and not (config["lat_dim"] and config["lon_dim"]):
+            errors.append("A point/bbox/polygon/cells spatial filter needs the Lat dim and Lon dim names.")
         if spatial == "polygon" and not (config["polygon"] or config["shapefile"]):
             errors.append("A polygon spatial filter needs a WKT/GeoJSON polygon or a shapefile path.")
         if kind == "thredds":
@@ -5949,6 +6021,7 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "nc_lon_max": (config or {}).get("lon_max", ""),
         "nc_polygon": (config or {}).get("polygon", ""),
         "nc_shapefile": (config or {}).get("shapefile", ""),
+        "nc_cells_max": (config or {}).get("cells_max", 24),
         "catalog_url": (config or {}).get("catalog_url", ""),
         "dataset": (config or {}).get("dataset", ""),
         # CSV
