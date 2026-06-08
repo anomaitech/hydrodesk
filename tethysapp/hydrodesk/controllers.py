@@ -2757,16 +2757,28 @@ def _compute_formulas(field_schema, attrs):
     """Fill every formula field (x-field == 'formula') by evaluating its x-formula
     expression over the record's other field values. Modifies ``attrs`` in place: a
     successful result is stored; an un-computable one is dropped (so a stale/forged
-    value never survives). Runs after coercion, before validation."""
-    props = (field_schema or {}).get("properties") or {}
-    for key, prop in props.items():
-        if (prop or {}).get("x-field") != "formula":
-            continue
-        val = _safe_eval((prop or {}).get("x-formula") or "", attrs)
-        if val is None:
-            attrs.pop(key, None)
-        else:
-            attrs[key] = val
+    value never survives). Runs after coercion, before validation.
+
+    Order-aware: evaluates in declaration (x-order) order and re-runs up to N passes
+    until stable, so a formula that depends on ANOTHER formula resolves regardless of
+    which is declared first (a small fixpoint; cycles simply settle/drop)."""
+    formulas = [(k, p) for k, p in _ordered_props(field_schema)
+                if (p or {}).get("x-field") == "formula"]
+    if not formulas:
+        return attrs
+    for _pass in range(len(formulas)):
+        changed = False
+        for key, prop in formulas:
+            val = _safe_eval(prop.get("x-formula") or "", attrs)
+            if val is None:
+                if key in attrs:
+                    attrs.pop(key, None)
+                    changed = True
+            elif attrs.get(key) != val:
+                attrs[key] = val
+                changed = True
+        if not changed:
+            break
     return attrs
 
 
