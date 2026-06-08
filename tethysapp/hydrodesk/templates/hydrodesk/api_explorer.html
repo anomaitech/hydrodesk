@@ -51,6 +51,11 @@
           <div class="frappe-form-group"><label class="frappe-label">Order by</label>
             <input class="form-control form-control-sm" id="hd-order" placeholder="field or -field"></div>
         </div>
+        <div style="margin-top:6px;">
+          <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal;">
+            <input type="checkbox" id="hd-tables" checked> Include inline table fields <span class="frappe-muted frappe-text-sm">(uncheck to omit large row arrays — <code>⊞</code> fields — and slim the payload)</span>
+          </label>
+        </div>
         <div class="frappe-form-group">
           <label class="frappe-label">Endpoint URL</label>
           <div style="display:flex;gap:8px;">
@@ -76,6 +81,7 @@
   var TOKEN    = "{{ token|escapejs }}";
   var OPS = [["", "="], ["__ne", "≠"], ["__gt", ">"], ["__lt", "<"],
             ["__gte", "≥"], ["__lte", "≤"], ["__contains", "contains"], ["__in", "in (a,b)"]];
+  var OPS_TABLE = [["__any", "row matches"]];
   var collections = [], active = null;
   var listEl = document.getElementById("hd-doctypes");
   var bodyEl = document.getElementById("hd-builder-body");
@@ -126,18 +132,42 @@
     buildUrl();
   }
 
+  function opOptions(list, sel) {
+    return list.map(function (o) {
+      return '<option value="' + o[0] + '"' + (o[0] === sel ? ' selected' : '') + '>' + o[1] + '</option>';
+    }).join("");
+  }
+  function fieldByKey(key) {
+    for (var i = 0; i < active.fields.length; i++) if (active.fields[i].key === key) return active.fields[i];
+    return null;
+  }
   function addFilter() {
     if (!active) return;
     var row = document.createElement("div");
     row.className = "hd-filter-row";
     row.style.cssText = "display:grid;grid-template-columns:1fr 110px 1fr 28px;gap:8px;margin-bottom:6px;";
     var fopts = '<option value="">— field —</option>' + active.fields.map(function (f) {
-      return '<option value="' + esc(f.key) + '">' + esc(f.title) + '</option>'; }).join("");
-    var oopts = OPS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join("");
+      return '<option value="' + esc(f.key) + '">' + esc(f.title) + (f.is_table ? ' ⊞' : '') + '</option>'; }).join("");
     row.innerHTML = '<select class="form-select form-select-sm hd-f-field">' + fopts + '</select>'
-      + '<select class="form-select form-select-sm hd-f-op">' + oopts + '</select>'
+      + '<select class="form-select form-select-sm hd-f-op">' + opOptions(OPS, "") + '</select>'
       + '<input class="form-control form-control-sm hd-f-val" placeholder="value">'
       + '<button class="btn btn-link btn-sm hd-f-x" type="button" style="padding:0;color:#c00;">×</button>';
+    var fieldEl = row.querySelector(".hd-f-field");
+    var opEl = row.querySelector(".hd-f-op");
+    var valEl = row.querySelector(".hd-f-val");
+    fieldEl.addEventListener("change", function () {
+      var f = fieldByKey(fieldEl.value);
+      if (f && f.is_table) {
+        opEl.innerHTML = opOptions(OPS_TABLE, "__any");
+        var cols = (f.columns || []);
+        valEl.placeholder = "col:value or col>value" + (cols.length ? " (e.g. " + cols[0] + ">100)" : "");
+        valEl.title = cols.length ? ("columns: " + cols.join(", ")) : "";
+      } else {
+        opEl.innerHTML = opOptions(OPS, "");
+        valEl.placeholder = "value"; valEl.title = "";
+      }
+      buildUrl();
+    });
     row.querySelector(".hd-f-x").onclick = function () { row.remove(); buildUrl(); };
     row.querySelectorAll("select,input").forEach(function (el) { el.addEventListener("input", buildUrl); });
     filtersEl.appendChild(row);
@@ -146,6 +176,7 @@
   ["hd-format", "hd-limit", "hd-offset", "hd-order"].forEach(function (id) {
     document.getElementById(id).addEventListener("input", buildUrl);
   });
+  document.getElementById("hd-tables").addEventListener("change", buildUrl);
 
   function buildUrl() {
     if (!active) return "";
@@ -161,6 +192,7 @@
     var lim = document.getElementById("hd-limit").value; if (lim) params.push("limit=" + encodeURIComponent(lim));
     var off = document.getElementById("hd-offset").value; if (off && off !== "0") params.push("offset=" + encodeURIComponent(off));
     var ord = document.getElementById("hd-order").value; if (ord) params.push("order=" + encodeURIComponent(ord));
+    if (!document.getElementById("hd-tables").checked) params.push("tables=false");
     var displayUrl = API_BASE + "/" + active.doctype + "/records/" + (params.length ? "?" + params.join("&") : "");
     var p2 = params.slice(); if (TOKEN) p2.push("token=" + encodeURIComponent(TOKEN));
     var copyUrl = API_BASE + "/" + active.doctype + "/records/" + (p2.length ? "?" + p2.join("&") : "");

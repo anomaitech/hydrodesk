@@ -3464,8 +3464,8 @@ def _format_cell(value):
 # doctype's read permission OR a valid read token (the 'api_read_token'
 # credential), so external consumers can pull with ?token=/X-API-Token.
 # ===========================================================================
-_API_RESERVED = {"limit", "offset", "order", "fields", "format", "bbox", "q", "token"}
-_API_OPS = {"gt", "lt", "gte", "lte", "ne", "contains", "in"}
+_API_RESERVED = {"limit", "offset", "order", "fields", "format", "bbox", "q", "token", "tables"}
+_API_OPS = {"gt", "lt", "gte", "lte", "ne", "contains", "in", "any"}
 
 
 def _api_read_token(request):
@@ -3518,6 +3518,25 @@ def _api_apply_filters(stmt, params):
                 stmt = stmt.where(col.ilike("%%%s%%" % val))
             elif op == "in":
                 stmt = stmt.where(col.in_([v.strip() for v in val.split(",") if v.strip()]))
+            elif op == "any":
+                # TABLE-aware filter: keep records whose inline-table field has ANY row
+                # matching a sub-condition. 'field__any=quality:Good' or 'discharge>100'.
+                me = re.match(r"^\s*([A-Za-z0-9_]+)\s*(>=|<=|!=|>|<|=|:)\s*(.+?)\s*$", str(val))
+                if not me:
+                    errors.append("table filter '%s' must be key:value or key>value" % key)
+                    continue
+                skey, sop, sval = me.group(1), me.group(2), me.group(3)
+                jop = {":": "==", "=": "==", "!=": "!=", ">": ">",
+                       "<": "<", ">=": ">=", "<=": "<="}[sop]
+                sfield = re.sub(r"[^A-Za-z0-9_]", "", field)
+                skey = re.sub(r"[^A-Za-z0-9_]", "", skey)
+                try:                                  # numeric literal vs quoted string
+                    float(sval)
+                    vlit = sval
+                except ValueError:
+                    vlit = '"%s"' % sval.replace("\\", "").replace('"', "")
+                jpath = '$.%s[*] ? (@.%s %s %s)' % (sfield, skey, jop, vlit)
+                stmt = stmt.where(func.jsonb_path_exists(m.HydroRecord.attributes, jpath))
             else:  # numeric range
                 num = cast(col, Float)
                 stmt = stmt.where({"gt": num > float(val), "lt": num < float(val),
@@ -3568,6 +3587,8 @@ def api_records(request, slug=None):
             offset = 0
         fmt = (request.GET.get("format") or "json").strip().lower()
         want_fields = [f.strip() for f in (request.GET.get("fields") or "").split(",") if f.strip()]
+        # tables=false / 0 -> drop inline-table (array) fields for a lean list payload.
+        drop_tables = (request.GET.get("tables") or "").strip().lower() in ("0", "false", "no")
 
         base = select(m.HydroRecord.id, m.HydroRecord.attributes,
                       func.ST_AsGeoJSON(m.HydroRecord.geom)).where(
@@ -3585,8 +3606,10 @@ def api_records(request, slug=None):
             return JsonResponse({"ok": False, "error": "query failed: %s" % str(exc)[:160]}, status=400)
 
     def _project(attrs):
-        a = dict(attrs or {})
-        a = {k: v for k, v in a.items() if not k.startswith("_")}      # hide reserved keys
+        a = {k: v for k, v in (attrs or {}).items() if not k.startswith("_")}  # hide reserved
+        if drop_tables:                                # lean payload: omit inline tables
+            a = {k: v for k, v in a.items() if not isinstance(v, list)
+                 or (v and not isinstance(v[0], dict))}
         if want_fields:
             a = {k: v for k, v in a.items() if k in want_fields}
         return a
@@ -3631,10 +3654,18 @@ def api_catalog(request):
             count = session.execute(
                 select(func.count()).select_from(m.HydroRecord)
                 .where(m.HydroRecord.hydrotype_slug == sl)).scalar() or 0
-            fields = [{"key": k, "title": (p or {}).get("title") or k,
-                       "type": (p or {}).get("type", "string")}
-                      for k, p in _ordered_props(fs or {})
-                      if not (p or {}).get("x-layout")]
+            fields = []
+            for k, p in _ordered_props(fs or {}):
+                p = p or {}
+                if p.get("x-layout"):
+                    continue
+                fd = {"key": k, "title": p.get("title") or k, "type": p.get("type", "string")}
+                if p.get("x-widget") == "table":   # an inline table / linked child-grid
+                    fd["is_table"] = True
+                    fd["columns"] = list(((p.get("items") or {}).get("properties") or {}).keys())
+                    if p.get("x-child-type"):
+                        fd["linked_to"] = p["x-child-type"]
+                fields.append(fd)
             out.append({"doctype": sl, "display_name": dn, "geometry": gk,
                         "count": count, "fields": fields,
                         "records_url": "%s/%s/records" % (base, sl),
