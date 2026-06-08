@@ -358,6 +358,26 @@ def _connector_outputs(cfg):
             {"name": "map", "kind": "image", "type": "image", "primary": True},
             {"name": "featureinfo", "kind": "value", "type": "string"},
         ]
+    if knd == "wcs":
+        # WCS: the coverage VALUE near the record's point (spatial mean of a small
+        # subset, the primary), plus a time series when the coverage has a time axis.
+        var = (cfg.get("variable") or "").strip()
+        unit = (cfg.get("unit") or "").strip()
+        return [
+            {"name": "value", "kind": "value", "type": "number", "primary": True,
+             "var": var, "unit": unit},
+            {"name": "series", "kind": "series", "type": "series",
+             "var": var, "unit": unit},
+        ]
+    if knd == "gee":
+        # Earth Engine: sample an Image at the record's point (value), or reduce an
+        # ImageCollection over a date range at the point (series).
+        unit = (cfg.get("unit") or "").strip()
+        return [
+            {"name": "value", "kind": "value", "type": "number", "primary": True,
+             "unit": unit},
+            {"name": "series", "kind": "series", "type": "series", "unit": unit},
+        ]
     result_kind = (cfg.get("result_kind") or "value").lower()
     if result_kind == "series":
         return [{
@@ -891,28 +911,32 @@ def _csv_coerce(raw):
 
 
 def _read_csv_columns(url, delimiter=",", has_header=True, timeout=15, max_rows=5000):
-    """Fetch (http/https) or open (local path) a CSV; return (columns, n_rows) where
-    columns=[{name, values}] aligned by row. Reads at most ``max_rows`` data rows so
-    a huge file can't exhaust memory. Numeric cells are coerced to numbers."""
+    """Fetch (http/https) or open (local path) a CSV; return (columns, n_rows,
+    truncated) where columns=[{name, values}] aligned by row. Reads at most
+    ``max_rows`` data rows so a huge file can't exhaust memory; ``truncated`` is True
+    when more rows existed than were read. Decoded utf-8-SIG so an Excel BOM never
+    sticks to the first header. Numeric cells are coerced to numbers."""
     import csv as _csvmod
     import io
     if re.match(r"^https?://", url, re.I):
         req = urllib.request.Request(url, headers={"User-Agent": "HydroDesk/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            text = resp.read().decode("utf-8", "replace")
+            text = resp.read().decode("utf-8-sig", "replace")
     else:
-        with open(url, "r", encoding="utf-8", errors="replace", newline="") as fh:
+        with open(url, "r", encoding="utf-8-sig", errors="replace", newline="") as fh:
             text = fh.read()
     reader = _csvmod.reader(io.StringIO(text), delimiter=(delimiter or ","),
                             skipinitialspace=True)
     rows = []
     limit = max_rows + (1 if has_header else 0)
+    truncated = False
     for row in reader:
-        rows.append(row)
         if len(rows) >= limit:
+            truncated = True   # at least one more row exists past the cap
             break
+        rows.append(row)
     if not rows:
-        return [], 0
+        return [], 0, False
     if has_header:
         names = [(str(h).strip() or ("col%d" % j)) for j, h in enumerate(rows[0])]
         data = rows[1:]
@@ -924,7 +948,7 @@ def _read_csv_columns(url, delimiter=",", has_header=True, timeout=15, max_rows=
     for r in data:
         for j in range(len(names)):
             cols[j]["values"].append(_csv_coerce(r[j] if j < len(r) else None))
-    return cols, len(data)
+    return cols, len(data), truncated
 
 
 def _fetch_csv(cfg, record_attrs, output=None, field_map=None,
@@ -962,15 +986,15 @@ def _fetch_csv(cfg, record_attrs, output=None, field_map=None,
     now = time.time()
     hit = _API_CACHE.get(cache_key)
     if hit and (now - hit[0]) < ttl:
-        cols, cached = hit[1], True
+        cols, truncated, cached = hit[1][0], hit[1][1], True
     else:
         try:
-            cols, _n = _read_csv_columns(
+            cols, _n, truncated = _read_csv_columns(
                 url, delimiter=cfg.get("delimiter") or ",",
                 has_header=cfg.get("has_header", True), timeout=timeout)
         except Exception:
             return _empty(url, False)
-        _API_CACHE[cache_key] = (now, cols)
+        _API_CACHE[cache_key] = (now, (cols, truncated))
         cached = False
 
     if (out_entry.get("kind") or "series").lower() == "value":
@@ -989,7 +1013,7 @@ def _fetch_csv(cfg, record_attrs, output=None, field_map=None,
               1 if len(cols) > 1 else 0)
     ys = cols[yi]["values"] if cols else []
     return {"kind": "series", "columns": cols, "n": n, "x": xs, "y": ys,
-            "url": url, "cached": cached}
+            "url": url, "cached": cached, "truncated": truncated}
 
 
 def _csv_describe(cfg, attrs):
@@ -1002,12 +1026,12 @@ def _csv_describe(cfg, attrs):
         url = _render_template(cfg.get("csv_url") or "", rattrs)
         if not url:
             return None
-        cols, n = _read_csv_columns(
+        cols, n, truncated = _read_csv_columns(
             url, delimiter=cfg.get("delimiter") or ",",
             has_header=cfg.get("has_header", True),
             timeout=int(cfg.get("timeout") or 15), max_rows=50)
         return {"resolved_url": url, "columns": [c["name"] for c in cols],
-                "rows_in_preview": n,
+                "rows_in_preview": n, "more_rows_exist": truncated,
                 "preview": {c["name"]: (c["values"][:5]) for c in cols}}
     except Exception:
         return None
@@ -1176,6 +1200,304 @@ def _wms_describe(cfg, attrs):
     return out or None
 
 
+# --- WCS connector (a coverage service -> the value at the record's point) ---
+def _wcs_getcoverage_url(cfg, attrs):
+    """Build a WCS 2.0.1 GetCoverage URL for a small Lat/Long subset around the
+    record's point, requesting NetCDF (read locally via netCDF4 — no raster lib
+    needed). Returns (url, (lon,lat)); ('', (lon,lat)) when the point or service is
+    missing. The subset axis labels default to Lat/Long but are configurable
+    (some coverages use E/N or x/y)."""
+    base = _render_template(cfg.get("wcs_url") or "", attrs)
+    cov = (cfg.get("coverage") or "").strip()
+    lon, lat = _wms_point(cfg, attrs)
+    if not base or not cov or lon is None or lat is None:
+        return "", (lon, lat)
+    version = (cfg.get("wcs_version") or "2.0.1").strip()
+    fmt = (cfg.get("wcs_format") or "application/netcdf").strip()
+    buf = _wms_num(cfg.get("bbox_buffer")) or 0.25
+    lon_axis = (cfg.get("lon_axis") or "Long").strip()
+    lat_axis = (cfg.get("lat_axis") or "Lat").strip()
+    params = [
+        ("service", "WCS"), ("version", version), ("request", "GetCoverage"),
+        ("coverageId", cov),
+        ("subset", "%s(%s,%s)" % (lat_axis, lat - buf, lat + buf)),
+        ("subset", "%s(%s,%s)" % (lon_axis, lon - buf, lon + buf)),
+        ("format", fmt),
+    ]
+    extra = (cfg.get("extra_subset") or "").strip()
+    if extra:  # e.g. ansi("2014-07-01") for a coverage with a time axis
+        params.append(("subset", extra))
+    sep = "&" if "?" in base else "?"
+    return base + sep + urllib.parse.urlencode(params), (lon, lat)
+
+
+def _wcs_extract(ds, out_entry):
+    """Extract one output from an open (in-memory) netCDF Dataset of a WCS coverage:
+    'value' -> the masked spatial MEAN of the data variable over the whole subset;
+    'series' -> that variable along a time-like dim (other dims averaged)."""
+    import numpy as np
+    var_name = (out_entry.get("var") or "").strip()
+    v = ds.variables.get(var_name) if var_name else None
+    if v is None:  # pick the first data variable (>=1 dim, not a coordinate)
+        for vn, vv in ds.variables.items():
+            if vn not in ds.dimensions and len(vv.dimensions) >= 1:
+                v, var_name = vv, vn
+                break
+    if v is None:
+        return None
+    dims = list(v.dimensions)
+    kind = (out_entry.get("kind") or "value").lower()
+    time_dim = next((d for d in dims
+                     if d.lower() in ("time", "ansi", "t", "date", "unix")), None)
+    if kind == "series" and time_dim:
+        xs, ys = _netcdf_series_xy(ds, v, time_dim)
+        return {"kind": "series",
+                "columns": [{"name": time_dim, "values": xs},
+                            {"name": var_name, "values": ys}],
+                "n": len(ys), "x": xs, "y": ys}
+    arr = np.ma.asarray(v[:])
+    m = float(np.ma.mean(arr)) if arr.size else None
+    if m is None or m != m:   # empty or NaN
+        return {"kind": "value", "value": None}
+    return {"kind": "value", "value": round(m, 4)}
+
+
+def _fetch_wcs(cfg, record_attrs, output=None, field_map=None,
+               connector_name="connector"):
+    """Fetch one output from a WCS connector: GetCoverage a small NetCDF subset
+    around the record's point, read it in-memory with netCDF4, and return the
+    coverage value (spatial mean) or a time series. Caches per (name, url). Never
+    raises — degrades to a soft-empty of the requested kind."""
+    cfg = cfg or {}
+    if cfg.get("inputs"):
+        attrs, missing_required = _resolve_inputs(cfg, record_attrs, field_map)
+    else:
+        attrs, missing_required = dict(record_attrs or {}), []
+    catalog = _connector_outputs(cfg)
+    out_entry = (output if isinstance(output, dict)
+                 else (_find_output(catalog, output) if output
+                       else _primary_output(catalog)))
+    out_kind = (out_entry.get("kind") if out_entry else "value")
+
+    def _empty(url, cached):
+        if out_kind == "series":
+            return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+                    "url": url, "cached": cached}
+        return {"kind": "value", "value": None, "url": url, "cached": cached}
+
+    url, _pt = _wcs_getcoverage_url(cfg, attrs)
+    if missing_required or not url or out_entry is None:
+        return _empty(url, False)
+
+    ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
+    timeout = int(cfg.get("timeout") or 30)
+    cache_key = (connector_name, "wcs::" + url + "::" + (out_entry.get("name") or ""))
+    now = time.time()
+    hit = _API_CACHE.get(cache_key)
+    if hit and (now - hit[0]) < ttl:
+        res = dict(hit[1]); res["url"] = url; res["cached"] = True
+        return res
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "HydroDesk/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+    except Exception:
+        return _empty(url, False)
+    try:
+        import netCDF4
+        ds = netCDF4.Dataset("inmem.nc", mode="r", memory=data)
+        try:
+            extracted = _wcs_extract(ds, out_entry)
+        finally:
+            ds.close()
+    except Exception:
+        return _empty(url, False)
+    if extracted is None:
+        return _empty(url, False)
+    _API_CACHE[cache_key] = (now, extracted)
+    res = dict(extracted); res["url"] = url; res["cached"] = False
+    return res
+
+
+def _wcs_describe(cfg, attrs):
+    """Test panel: the sample GetCoverage URL + (best-effort) the service's coverage
+    IDs via owslib GetCapabilities, so the user can pick a coverage."""
+    out = {}
+    try:
+        if cfg.get("inputs"):
+            rattrs, _ = _resolve_inputs(cfg, attrs, None)
+        else:
+            rattrs = dict(attrs or {})
+        url, pt = _wcs_getcoverage_url(cfg, rattrs)
+        out["sample_getcoverage_url"] = url
+        if pt and pt[0] is not None:
+            out["centre"] = {"lon": pt[0], "lat": pt[1]}
+    except Exception:
+        pass
+    try:
+        from owslib.wcs import WebCoverageService
+        base = _render_template(cfg.get("wcs_url") or "", attrs or {})
+        wcs = WebCoverageService(base, version=(cfg.get("wcs_version") or "2.0.1"))
+        try:
+            out["service_title"] = wcs.identification.title
+        except Exception:
+            pass
+        out["coverages"] = list(wcs.contents)[:120]
+    except Exception as exc:
+        out["capabilities_error"] = str(exc)[:200]
+    return out or None
+
+
+# --- Google Earth Engine connector (sample an asset at the record's point) ---
+def _gee_init(cfg):
+    """Initialise Earth Engine from the connector's service-account credential
+    (stored in the secure HydroCredential store as the key JSON). Returns the ``ee``
+    module on success, or (None, reason) — NEVER raises. The 'ee' package and a
+    credential must both be present; otherwise the connector degrades to no-data."""
+    try:
+        import ee
+    except Exception:
+        return None, "the earthengine-api package is not installed"
+    cred_name = (cfg.get("gee_credential") or "").strip()
+    if not cred_name:
+        return None, "no service-account credential is set"
+    key = None
+    try:
+        with Session(App.get_persistent_store_database("hydro_db")) as session:
+            key = _resolve_secret(session, cred_name)
+    except Exception:
+        key = None
+    if not key:
+        return None, "the service-account credential could not be resolved"
+    try:
+        info = json.loads(key)
+        email = info.get("client_email") or (cfg.get("gee_service_account") or "")
+        project = (cfg.get("gee_project") or info.get("project_id") or "").strip()
+        creds = ee.ServiceAccountCredentials(email, key_data=key)
+        ee.Initialize(creds, project=project or None)
+        return ee, ""
+    except Exception as exc:
+        return None, "Earth Engine init failed: %s" % (str(exc)[:140])
+
+
+def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
+               connector_name="connector"):
+    """Fetch one output from an Earth Engine connector. 'value' samples an Image at
+    the record's point (reduceRegion); 'series' reduces an ImageCollection over a
+    date range at the point. Requires the 'ee' package + a service-account
+    credential; without them it returns a soft-empty (NEVER raises). Caches per
+    (name, asset, point, output)."""
+    cfg = cfg or {}
+    if cfg.get("inputs"):
+        attrs, missing_required = _resolve_inputs(cfg, record_attrs, field_map)
+    else:
+        attrs, missing_required = dict(record_attrs or {}), []
+    catalog = _connector_outputs(cfg)
+    out_entry = (output if isinstance(output, dict)
+                 else (_find_output(catalog, output) if output
+                       else _primary_output(catalog)))
+    out_kind = (out_entry.get("kind") if out_entry else "value")
+
+    def _empty(cached):
+        if out_kind == "series":
+            return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+                    "url": "", "cached": cached}
+        return {"kind": "value", "value": None, "url": "", "cached": cached}
+
+    lon, lat = _wms_point(cfg, attrs)
+    asset = (cfg.get("gee_asset") or "").strip()
+    if missing_required or out_entry is None or lon is None or lat is None or not asset:
+        return _empty(False)
+
+    ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
+    scale = int(cfg.get("gee_scale") or 30)
+    band = (cfg.get("gee_band") or "").strip()
+    cache_key = (connector_name, "gee::%s::%s,%s::%s::%s"
+                 % (asset, lon, lat, out_entry.get("name") or "", band))
+    now = time.time()
+    hit = _API_CACHE.get(cache_key)
+    if hit and (now - hit[0]) < ttl:
+        res = dict(hit[1]); res["cached"] = True
+        return res
+
+    ee, reason = _gee_init(cfg)
+    if ee is None:
+        res = _empty(False); res["note"] = reason
+        return res
+    try:
+        pt = ee.Geometry.Point([lon, lat])
+        if (out_entry.get("kind") or "value").lower() == "series":
+            col = ee.ImageCollection(asset).filterBounds(pt)
+            start = (cfg.get("gee_start") or "").strip()
+            end = (cfg.get("gee_end") or "").strip()
+            if start and end:
+                col = col.filterDate(start, end)
+            if band:
+                col = col.select(band)
+            rows = col.getRegion(pt, scale).getInfo() or []
+            if len(rows) < 2:
+                extracted = {"kind": "series", "columns": [], "n": 0, "x": [], "y": []}
+            else:
+                header = rows[0]
+                ti = header.index("time") if "time" in header else 3
+                vi = (header.index(band) if band in header else len(header) - 1)
+                import datetime as _dt
+                xs, ys = [], []
+                for r in rows[1:]:
+                    t = r[ti]
+                    xs.append(_dt.datetime.utcfromtimestamp(t / 1000.0).isoformat()
+                              if isinstance(t, (int, float)) else str(t))
+                    ys.append(r[vi])
+                extracted = {"kind": "series",
+                             "columns": [{"name": "time", "values": xs},
+                                         {"name": band or "value", "values": ys}],
+                             "n": len(ys), "x": xs, "y": ys}
+        else:
+            img = ee.Image(asset)
+            if band:
+                img = img.select(band)
+            reducer = (cfg.get("gee_reducer") or "first").strip().lower()
+            red = {"mean": ee.Reducer.mean, "median": ee.Reducer.median,
+                   "first": ee.Reducer.first, "max": ee.Reducer.max,
+                   "min": ee.Reducer.min}.get(reducer, ee.Reducer.first)()
+            d = img.reduceRegion(red, pt, scale).getInfo() or {}
+            val = None
+            if band and band in d:
+                val = d[band]
+            elif d:
+                val = next(iter(d.values()))
+            extracted = {"kind": "value", "value": val}
+    except Exception as exc:
+        res = _empty(False); res["note"] = "Earth Engine query failed: %s" % (str(exc)[:140])
+        return res
+    _API_CACHE[cache_key] = (now, extracted)
+    res = dict(extracted); res["cached"] = False
+    return res
+
+
+def _gee_describe(cfg, attrs):
+    """Test panel: report the configured asset/point and whether Earth Engine is
+    usable (package present + credential resolves), without running a query."""
+    rattrs = dict(attrs or {})
+    if cfg.get("inputs"):
+        try:
+            rattrs, _ = _resolve_inputs(cfg, attrs, None)
+        except Exception:
+            pass
+    lon, lat = _wms_point(cfg, rattrs)
+    out = {"asset": (cfg.get("gee_asset") or "").strip(),
+           "band": (cfg.get("gee_band") or "").strip(),
+           "scale": cfg.get("gee_scale") or 30,
+           "point": ({"lon": lon, "lat": lat} if lon is not None else None)}
+    ee, reason = _gee_init(cfg)
+    out["earth_engine_ready"] = ee is not None
+    if ee is None:
+        out["status"] = reason
+    else:
+        out["status"] = "Earth Engine initialised; ready to sample the asset."
+    return out
+
+
 def fetch_api(connector_config, record_attrs, connector_name="connector",
               field_map=None, output=None):
     """The generic API fetch — the centerpiece extractor.
@@ -1219,6 +1541,12 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
                           field_map=field_map, connector_name=name)
     if knd == "wms":
         return _fetch_wms(cfg, record_attrs, output=output,
+                          field_map=field_map, connector_name=name)
+    if knd == "wcs":
+        return _fetch_wcs(cfg, record_attrs, output=output,
+                          field_map=field_map, connector_name=name)
+    if knd == "gee":
+        return _fetch_gee(cfg, record_attrs, output=output,
                           field_map=field_map, connector_name=name)
 
     # OUTPUT SELECTION (the multi-output model). Resolve the requested output to a
@@ -1573,6 +1901,41 @@ CONNECTOR_PRESETS = {
             "default_lat": 40.23,
             "ttl_seconds": 900,
             "timeout": 20,
+        },
+    },
+    "wcs_rasdaman": {
+        "label": "WCS — rasdaman demo (AvgLandTemp)",
+        "config": {
+            "kind": "wcs",
+            "wcs_url": "https://ows.rasdaman.org/rasdaman/ows",
+            "coverage": "AvgLandTemp",
+            "wcs_version": "2.0.1",
+            "wcs_format": "application/netcdf",
+            "variable": "",
+            "lat_axis": "Lat",
+            "lon_axis": "Long",
+            "extra_subset": "ansi(\"2014-07-01\")",
+            "bbox_buffer": 0.5,
+            "default_lon": -111.65,
+            "default_lat": 40.23,
+            "ttl_seconds": 900,
+            "timeout": 40,
+        },
+    },
+    "gee_srtm": {
+        "label": "GEE — SRTM elevation (needs earthengine-api + credential)",
+        "config": {
+            "kind": "gee",
+            "gee_asset": "USGS/SRTMGL1_003",
+            "gee_band": "elevation",
+            "gee_reducer": "first",
+            "gee_scale": 30,
+            "gee_project": "",
+            "gee_credential": "",
+            "default_lon": -111.65,
+            "default_lat": 40.23,
+            "ttl_seconds": 3600,
+            "timeout": 30,
         },
     },
 }
@@ -2786,6 +3149,12 @@ def _render_columns_table(result, cap=12):
         foot = str(format_html(
             "<div class='hd-series-foot'>showing latest {} of {} rows</div>",
             n - start, n))
+    # The source was capped on read (e.g. a CSV past max_rows): say so explicitly so
+    # the "of N" count is never mistaken for the whole file.
+    if (result or {}).get("truncated"):
+        foot += str(format_html(
+            "<div class='hd-series-foot'>source truncated to the first {} rows</div>",
+            n))
     table = ("<table class='hd-series-table'><thead><tr>" + th
              + "</tr></thead><tbody>" + body + "</tbody></table>")
     return mark_safe(
@@ -4441,7 +4810,7 @@ def _connector_config_from_post(post):
         timeout = 15
 
     kind = (post.get("kind") or "rest").strip().lower()
-    if kind not in ("rest", "netcdf", "thredds", "csv", "wms"):
+    if kind not in ("rest", "netcdf", "thredds", "csv", "wms", "wcs", "gee"):
         kind = "rest"
 
     inputs = _parse_inputs_rows(post)
@@ -4525,6 +4894,58 @@ def _connector_config_from_post(post):
             errors.append("A WMS connector needs a WMS service URL.")
         if not config["layers"]:
             errors.append("A WMS connector needs at least one layer name.")
+    elif kind == "wcs":
+        # WCS source fields. The coverage value (spatial mean near the point) + a
+        # time series (if the coverage has a time axis) are synthesized.
+        config["wcs_url"] = (post.get("wcs_url") or "").strip()
+        config["coverage"] = (post.get("coverage") or "").strip()
+        config["wcs_version"] = (post.get("wcs_version") or "2.0.1").strip()
+        config["wcs_format"] = (post.get("wcs_format") or "application/netcdf").strip()
+        config["variable"] = (post.get("wcs_variable") or "").strip()
+        config["lon_axis"] = (post.get("lon_axis") or "Long").strip()
+        config["lat_axis"] = (post.get("lat_axis") or "Lat").strip()
+        config["extra_subset"] = (post.get("extra_subset") or "").strip()
+        config["unit"] = (post.get("wcs_unit") or "").strip()
+        try:
+            config["bbox_buffer"] = float(post.get("wcs_bbox_buffer") or 0.25)
+        except (TypeError, ValueError):
+            config["bbox_buffer"] = 0.25
+        for k in ("default_lon", "default_lat"):
+            raw = (post.get(k) or "").strip()
+            if raw:
+                try:
+                    config[k] = float(raw)
+                except ValueError:
+                    pass
+        if not config["wcs_url"]:
+            errors.append("A WCS connector needs a WCS service URL.")
+        if not config["coverage"]:
+            errors.append("A WCS connector needs a Coverage ID.")
+    elif kind == "gee":
+        # Earth Engine source fields. Samples an Image (value) or ImageCollection
+        # (series) at the record's point. Needs the 'ee' package + a service-account
+        # credential; degrades to no-data when either is absent.
+        config["gee_asset"] = (post.get("gee_asset") or "").strip()
+        config["gee_band"] = (post.get("gee_band") or "").strip()
+        config["gee_reducer"] = (post.get("gee_reducer") or "first").strip().lower()
+        config["gee_project"] = (post.get("gee_project") or "").strip()
+        config["gee_credential"] = (post.get("gee_credential") or "").strip()
+        config["gee_start"] = (post.get("gee_start") or "").strip()
+        config["gee_end"] = (post.get("gee_end") or "").strip()
+        config["unit"] = (post.get("gee_unit") or "").strip()
+        try:
+            config["gee_scale"] = int(post.get("gee_scale") or 30)
+        except (TypeError, ValueError):
+            config["gee_scale"] = 30
+        for k in ("default_lon", "default_lat"):
+            raw = (post.get(k) or "").strip()
+            if raw:
+                try:
+                    config[k] = float(raw)
+                except ValueError:
+                    pass
+        if not config["gee_asset"]:
+            errors.append("A GEE connector needs an Earth Engine asset ID.")
     else:
         if not config["url_template"]:
             errors.append("URL Template is required.")
@@ -4578,6 +4999,27 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "wms_height": (config or {}).get("height", 384),
         "default_lon": (config or {}).get("default_lon", ""),
         "default_lat": (config or {}).get("default_lat", ""),
+        # WCS
+        "wcs_url": (config or {}).get("wcs_url", ""),
+        "coverage": (config or {}).get("coverage", ""),
+        "wcs_version": (config or {}).get("wcs_version", "2.0.1"),
+        "wcs_format": (config or {}).get("wcs_format", "application/netcdf"),
+        "wcs_variable": (config or {}).get("variable", "") if (config or {}).get("kind") == "wcs" else "",
+        "lon_axis": (config or {}).get("lon_axis", "Long"),
+        "lat_axis": (config or {}).get("lat_axis", "Lat"),
+        "extra_subset": (config or {}).get("extra_subset", ""),
+        "wcs_unit": (config or {}).get("unit", "") if (config or {}).get("kind") == "wcs" else "",
+        "wcs_bbox_buffer": (config or {}).get("bbox_buffer", 0.25) if (config or {}).get("kind") == "wcs" else 0.25,
+        # GEE
+        "gee_asset": (config or {}).get("gee_asset", ""),
+        "gee_band": (config or {}).get("gee_band", ""),
+        "gee_reducer": (config or {}).get("gee_reducer", "first"),
+        "gee_project": (config or {}).get("gee_project", ""),
+        "gee_credential": (config or {}).get("gee_credential", ""),
+        "gee_start": (config or {}).get("gee_start", ""),
+        "gee_end": (config or {}).get("gee_end", ""),
+        "gee_scale": (config or {}).get("gee_scale", 30),
+        "gee_unit": (config or {}).get("unit", "") if (config or {}).get("kind") == "gee" else "",
         "url_template": (config or {}).get("url_template", ""),
         "method": (config or {}).get("method", "GET"),
         "headers": json.dumps((config or {}).get("headers") or {}, indent=2),
@@ -4788,6 +5230,10 @@ def connector_test(request):
         raw = _csv_describe(config, attrs)
     elif knd == "wms":
         raw = _wms_describe(config, attrs)
+    elif knd == "wcs":
+        raw = _wcs_describe(config, attrs)
+    elif knd == "gee":
+        raw = _gee_describe(config, attrs)
     else:
         try:
             cfg_json = dict(config)

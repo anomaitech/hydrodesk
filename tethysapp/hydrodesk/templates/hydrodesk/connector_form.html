@@ -88,8 +88,10 @@
           <option value="thredds" {% if kind == 'thredds' %}selected{% endif %}>THREDDS catalog</option>
           <option value="csv"     {% if kind == 'csv' %}selected{% endif %}>CSV / tabular file</option>
           <option value="wms"     {% if kind == 'wms' %}selected{% endif %}>WMS map service</option>
+          <option value="wcs"     {% if kind == 'wcs' %}selected{% endif %}>WCS coverage service</option>
+          <option value="gee"     {% if kind == 'gee' %}selected{% endif %}>Google Earth Engine</option>
         </select>
-        <div class="frappe-help">REST = a URL returning JSON. NetCDF/THREDDS = a gridded dataset (a variable becomes a time series + latest value). CSV = a tabular file (the whole table becomes one series). WMS = a map service (a GetMap image centred on the record's point).</div>
+        <div class="frappe-help">REST = a URL returning JSON. NetCDF/THREDDS = a gridded dataset (a variable becomes a time series + latest value). CSV = a tabular file (the whole table becomes one series). WMS = a map service (a GetMap image centred on the record's point). WCS = a coverage service (the value at the record's point). GEE = Google Earth Engine (sample an asset at the point — needs the earthengine-api package + a service-account credential).</div>
       </div>
 
       {# ---- NetCDF / THREDDS source ---- #}
@@ -230,6 +232,116 @@
           </div>
         </div>
         <div class="frappe-help">The map centres on the record's geometry (a point type) or its <code>longitude</code>/<code>latitude</code> fields. The default centre is the fallback for non-spatial doctypes. A best-effort GetFeatureInfo value at that point is also available as a second output.</div>
+      </div>
+
+      {# ---- WCS source ---- #}
+      <div class="hd-kind-wcs">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_wcs_url">WCS service URL<span class="req">*</span></label>
+          <input class="form-control" type="text" id="id_wcs_url" name="wcs_url"
+                 value="{{ wcs_url }}"
+                 placeholder="https://ows.example.org/ows  &mdash; GetCapabilities endpoint">
+          <div class="frappe-help">A WCS 2.0.1 endpoint. The coverage value near the record's point is read by requesting a small NetCDF subset. Click <strong>Test</strong> to list coverage IDs.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.4fr 0.8fr 1fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_coverage">Coverage ID<span class="req">*</span></label>
+            <input class="form-control" type="text" id="id_coverage" name="coverage"
+                   value="{{ coverage }}" placeholder="e.g. AvgLandTemp">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_wcs_version">Version</label>
+            <input class="form-control" type="text" id="id_wcs_version" name="wcs_version"
+                   value="{{ wcs_version|default:'2.0.1' }}" placeholder="2.0.1">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_wcs_variable">NetCDF var <span class="frappe-muted frappe-text-sm">(blank = first)</span></label>
+            <input class="form-control" type="text" id="id_wcs_variable" name="wcs_variable"
+                   value="{{ wcs_variable }}" placeholder="optional">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:0.8fr 0.8fr 0.8fr 2fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_lat_axis">Lat axis</label>
+            <input class="form-control" type="text" id="id_lat_axis" name="lat_axis"
+                   value="{{ lat_axis|default:'Lat' }}" placeholder="Lat">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_lon_axis">Lon axis</label>
+            <input class="form-control" type="text" id="id_lon_axis" name="lon_axis"
+                   value="{{ lon_axis|default:'Long' }}" placeholder="Long">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_wcs_bbox_buffer">Subset ± (deg)</label>
+            <input class="form-control" type="text" id="id_wcs_bbox_buffer" name="wcs_bbox_buffer"
+                   value="{{ wcs_bbox_buffer|default:'0.25' }}" placeholder="0.25">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_extra_subset">Extra subset <span class="frappe-muted frappe-text-sm">(e.g. a time axis)</span></label>
+            <input class="form-control" type="text" id="id_extra_subset" name="extra_subset"
+                   value="{{ extra_subset }}" placeholder='ansi("2014-07-01")'>
+          </div>
+        </div>
+        <div class="frappe-help">The point comes from the record geometry / longitude-latitude fields (default centre for non-spatial types). The primary output is the coverage's spatial-mean value near the point; add a time <em>range</em> in Extra subset to get a series.</div>
+      </div>
+
+      {# ---- Google Earth Engine source ---- #}
+      <div class="hd-kind-gee">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_gee_asset">Earth Engine asset<span class="req">*</span></label>
+          <input class="form-control" type="text" id="id_gee_asset" name="gee_asset"
+                 value="{{ gee_asset }}" placeholder="e.g. USGS/SRTMGL1_003 (Image) or MODIS/... (ImageCollection)">
+          <div class="frappe-help">An <code>ee.Image</code> id for a value, or an <code>ee.ImageCollection</code> id (with a date range below) for a series. Requires the <code>earthengine-api</code> package + a service-account credential.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 0.8fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_band">Band</label>
+            <input class="form-control" type="text" id="id_gee_band" name="gee_band"
+                   value="{{ gee_band }}" placeholder="e.g. elevation">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_reducer">Reducer (value)</label>
+            <select class="form-select" id="id_gee_reducer" name="gee_reducer">
+              <option value="first"  {% if gee_reducer == 'first' %}selected{% endif %}>first</option>
+              <option value="mean"   {% if gee_reducer == 'mean' %}selected{% endif %}>mean</option>
+              <option value="median" {% if gee_reducer == 'median' %}selected{% endif %}>median</option>
+              <option value="min"    {% if gee_reducer == 'min' %}selected{% endif %}>min</option>
+              <option value="max"    {% if gee_reducer == 'max' %}selected{% endif %}>max</option>
+            </select>
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_scale">Scale (m)</label>
+            <input class="form-control" type="text" id="id_gee_scale" name="gee_scale"
+                   value="{{ gee_scale|default:'30' }}" placeholder="30">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:14px;">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_project">GCP project</label>
+            <input class="form-control" type="text" id="id_gee_project" name="gee_project"
+                   value="{{ gee_project }}" placeholder="blank = from the key">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_start">Series start <span class="frappe-muted frappe-text-sm">(collection)</span></label>
+            <input class="form-control" type="text" id="id_gee_start" name="gee_start"
+                   value="{{ gee_start }}" placeholder="2023-01-01">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_end">Series end</label>
+            <input class="form-control" type="text" id="id_gee_end" name="gee_end"
+                   value="{{ gee_end }}" placeholder="2023-12-31">
+          </div>
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_gee_credential">Service-account credential</label>
+          <select class="form-select" id="id_gee_credential" name="gee_credential">
+            <option value="">— none (Earth Engine disabled until set) —</option>
+            {% for c in credentials %}
+            <option value="{{ c }}" {% if gee_credential == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+          <div class="frappe-help">A stored credential whose secret is the service-account key JSON. Add one under <a href="{% url 'hydrodesk:credentials' %}">Credentials</a>. Click <strong>Test</strong> to confirm Earth Engine initialises.</div>
+        </div>
       </div>
 
       {# ---- REST URL + method ---- #}
@@ -623,6 +735,8 @@
       show('.hd-netcdf-only', k === 'netcdf');
       show('.hd-kind-csv', k === 'csv');
       show('.hd-kind-wms', k === 'wms');
+      show('.hd-kind-wcs', k === 'wcs');
+      show('.hd-kind-gee', k === 'gee');
     }
     if (kindSel) kindSel.addEventListener('change', applyKind);
     applyKind();
@@ -862,6 +976,21 @@
       setVal('id_wms_height', cfg.height);
       setVal('id_default_lon', cfg.default_lon);
       setVal('id_default_lat', cfg.default_lat);
+      setVal('id_wcs_url', cfg.wcs_url);
+      setVal('id_coverage', cfg.coverage);
+      setVal('id_wcs_version', cfg.wcs_version);
+      setVal('id_wcs_variable', cfg.variable);
+      setVal('id_lat_axis', cfg.lat_axis);
+      setVal('id_lon_axis', cfg.lon_axis);
+      setVal('id_wcs_bbox_buffer', cfg.bbox_buffer);
+      setVal('id_extra_subset', cfg.extra_subset);
+      setVal('id_gee_asset', cfg.gee_asset);
+      setVal('id_gee_band', cfg.gee_band);
+      setVal('id_gee_reducer', cfg.gee_reducer);
+      setVal('id_gee_scale', cfg.gee_scale);
+      setVal('id_gee_project', cfg.gee_project);
+      setVal('id_gee_start', cfg.gee_start);
+      setVal('id_gee_end', cfg.gee_end);
       var kindSel = document.getElementById('id_kind');
       if (kindSel) kindSel.dispatchEvent(new Event('change'));   // toggle sections
       setVal('id_url_template', cfg.url_template);
@@ -895,7 +1024,9 @@
       name: document.getElementById('id_name').value,
       kind: val('id_kind') || 'rest',
       dataset_url: val('id_dataset_url'),
-      variable: val('id_variable'),
+      // 'variable' feeds both NetCDF and WCS (different inputs) — pick by kind so the
+      // Test config (sent straight to the fetcher) carries the right one.
+      variable: (val('id_kind') === 'wcs') ? val('id_wcs_variable') : val('id_variable'),
       x_dim: val('id_x_dim') || 'time',
       unit: val('id_nc_unit'),
       catalog_url: val('id_catalog_url'),
@@ -910,11 +1041,29 @@
       image_format: val('id_image_format') || 'image/png',
       styles: val('id_styles'),
       crs: val('id_crs') || 'EPSG:4326',
-      bbox_buffer: parseFloat(val('id_bbox_buffer') || '0.5'),
+      // bbox_buffer is shared by WMS + WCS (separate inputs); pick by kind.
+      bbox_buffer: (val('id_kind') === 'wcs')
+        ? parseFloat(val('id_wcs_bbox_buffer') || '0.25')
+        : parseFloat(val('id_bbox_buffer') || '0.5'),
       width: parseInt(val('id_wms_width') || '512', 10),
       height: parseInt(val('id_wms_height') || '384', 10),
       default_lon: val('id_default_lon'),
       default_lat: val('id_default_lat'),
+      wcs_url: val('id_wcs_url'),
+      coverage: val('id_coverage'),
+      wcs_version: val('id_wcs_version') || '2.0.1',
+      wcs_format: 'application/netcdf',
+      lat_axis: val('id_lat_axis') || 'Lat',
+      lon_axis: val('id_lon_axis') || 'Long',
+      extra_subset: val('id_extra_subset'),
+      gee_asset: val('id_gee_asset'),
+      gee_band: val('id_gee_band'),
+      gee_reducer: val('id_gee_reducer') || 'first',
+      gee_scale: parseInt(val('id_gee_scale') || '30', 10),
+      gee_project: val('id_gee_project'),
+      gee_credential: val('id_gee_credential'),
+      gee_start: val('id_gee_start'),
+      gee_end: val('id_gee_end'),
       url_template: document.getElementById('id_url_template').value,
       method: document.getElementById('id_method').value,
       inputs: currentInputs(),
