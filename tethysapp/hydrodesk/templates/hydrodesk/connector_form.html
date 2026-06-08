@@ -137,6 +137,51 @@
                     placeholder="WSPD = sqrt(UWND**2 + VWND**2)">{{ nc_derived }}</textarea>
           <div class="frappe-help">One <code>name = formula</code> per line. The formula is evaluated per row over the real variables (by their exact names) and added as an extra <strong>table</strong> column. Operators <code>+ - * / ** %</code>; functions <code>sqrt, abs, min, max, round, floor, ceil, log, exp</code>.</div>
         </div>
+
+        {# ---- Spatial filter (how the lat/lon axes are reduced) ---- #}
+        <div class="frappe-form-group" style="margin-top:10px;">
+          <label class="frappe-label" for="id_nc_spatial">Spatial filter</label>
+          <select class="form-select" id="id_nc_spatial" name="nc_spatial">
+            <option value="mean"  {% if nc_spatial == 'mean' or not nc_spatial %}selected{% endif %}>Whole-grid mean (default)</option>
+            <option value="point" {% if nc_spatial == 'point' %}selected{% endif %}>Nearest point (a single grid cell)</option>
+            <option value="bbox"  {% if nc_spatial == 'bbox' %}selected{% endif %}>Bounding box (mean over a window)</option>
+          </select>
+          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average only inside a lat/lon window.</div>
+        </div>
+        <div class="hd-nc-spatial" style="display:none;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_nc_lat_dim">Lat dim/coord<span class="req">*</span></label>
+              <input class="form-control" type="text" id="id_nc_lat_dim" name="nc_lat_dim"
+                     value="{{ nc_lat_dim }}" placeholder="e.g. COADSY, lat">
+            </div>
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_nc_lon_dim">Lon dim/coord<span class="req">*</span></label>
+              <input class="form-control" type="text" id="id_nc_lon_dim" name="nc_lon_dim"
+                     value="{{ nc_lon_dim }}" placeholder="e.g. COADSX, lon">
+            </div>
+          </div>
+          <div class="hd-nc-point" style="display:none;grid-template-columns:1fr 1fr;gap:14px;">
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_nc_lon">Longitude <span class="frappe-muted frappe-text-sm">(blank = record geom)</span></label>
+              <input class="form-control" type="text" id="id_nc_lon" name="nc_lon" value="{{ nc_lon }}" placeholder="optional">
+            </div>
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_nc_lat">Latitude</label>
+              <input class="form-control" type="text" id="id_nc_lat" name="nc_lat" value="{{ nc_lat }}" placeholder="optional">
+            </div>
+          </div>
+          <div class="hd-nc-bbox" style="display:none;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;">
+            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lon_min">Lon min</label>
+              <input class="form-control" type="text" id="id_nc_lon_min" name="nc_lon_min" value="{{ nc_lon_min }}"></div>
+            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lon_max">Lon max</label>
+              <input class="form-control" type="text" id="id_nc_lon_max" name="nc_lon_max" value="{{ nc_lon_max }}"></div>
+            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lat_min">Lat min</label>
+              <input class="form-control" type="text" id="id_nc_lat_min" name="nc_lat_min" value="{{ nc_lat_min }}"></div>
+            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lat_max">Lat max</label>
+              <input class="form-control" type="text" id="id_nc_lat_max" name="nc_lat_max" value="{{ nc_lat_max }}"></div>
+          </div>
+        </div>
       </div>
 
       {# ---- CSV source ---- #}
@@ -763,6 +808,22 @@
     applyKind();
   })();
 
+  // ---- NetCDF spatial-filter sub-fields toggle (point vs bbox). ----
+  (function () {
+    var sp = document.getElementById('id_nc_spatial');
+    function applySpatial() {
+      var m = sp ? sp.value : 'mean';
+      var wrap = document.querySelector('.hd-nc-spatial');
+      var pt = document.querySelector('.hd-nc-point');
+      var bx = document.querySelector('.hd-nc-bbox');
+      if (wrap) wrap.style.display = (m === 'point' || m === 'bbox') ? '' : 'none';
+      if (pt) pt.style.display = (m === 'point') ? 'grid' : 'none';
+      if (bx) bx.style.display = (m === 'bbox') ? 'grid' : 'none';
+    }
+    if (sp) sp.addEventListener('change', applySpatial);
+    applySpatial();
+  })();
+
   // ---- Inputs editor: add/remove rows + (re)build from a list. ----
   var inputsBox = document.getElementById('hd-inputs');
   var inputTpl = document.getElementById('hd-input-tpl');
@@ -1042,6 +1103,10 @@
     try { return JSON.parse(raw); } catch (e) { return fallback; }
   }
   function val(id) { var el = document.getElementById(id); return el ? el.value : ''; }
+  function numOrUndef(id) {
+    var v = (val(id) || '').trim(); if (v === '') return undefined;
+    var f = parseFloat(v); return isNaN(f) ? undefined : f;
+  }
   function currentConfig() {
     return {
       name: document.getElementById('id_name').value,
@@ -1057,6 +1122,12 @@
         var n = l.slice(0, i).trim(), f = l.slice(i + 1).trim();
         return (n && f) ? { name: n, formula: f } : null;
       }).filter(Boolean),
+      spatial: val('id_nc_spatial') || 'mean',
+      lat_dim: val('id_nc_lat_dim'),
+      lon_dim: val('id_nc_lon_dim'),
+      lat: numOrUndef('id_nc_lat'), lon: numOrUndef('id_nc_lon'),
+      lat_min: numOrUndef('id_nc_lat_min'), lat_max: numOrUndef('id_nc_lat_max'),
+      lon_min: numOrUndef('id_nc_lon_min'), lon_max: numOrUndef('id_nc_lon_max'),
       catalog_url: val('id_catalog_url'),
       dataset: val('id_dataset'),
       csv_url: val('id_csv_url'),

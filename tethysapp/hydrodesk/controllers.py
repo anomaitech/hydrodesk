@@ -726,23 +726,94 @@ def _netcdf_coord_values(cvar):
     return [str(v) for v in _netcdf_to_list(vals)]
 
 
-def _netcdf_series_xy(ds, v, x_dim):
-    """Return (xs, ys) for a variable ``v`` along ``x_dim``: ys is the variable
-    REDUCED over its other dimensions by a masked spatial MEAN (so the series has
-    data whenever any grid point does), with a size guard — for a very large
-    variable a single mid-grid point is sampled instead of downloading it all. xs
-    are the x_dim coordinate values (CF time decoded). Masked steps are dropped."""
+def _nearest_index(coord_var, target):
+    """Index of the value nearest ``target`` in a 1-D coordinate variable, or None."""
     import numpy as np
+    try:
+        vals = np.ma.asarray(coord_var[:]).astype("float64")
+        if vals.ndim != 1 or not vals.size:
+            return None
+        return int(np.argmin(np.abs(vals - float(target))))
+    except Exception:
+        return None
+
+
+def _range_slice(coord_var, lo, hi):
+    """A slice over a 1-D coord covering [lo, hi] (inclusive, order-agnostic), or
+    slice(None) when the bounds are missing/unparseable or nothing falls inside."""
+    import numpy as np
+    try:
+        lo, hi = float(lo), float(hi)
+    except (TypeError, ValueError):
+        return slice(None)
+    if lo > hi:
+        lo, hi = hi, lo
+    try:
+        vals = np.ma.asarray(coord_var[:]).astype("float64")
+        idx = np.where((vals >= lo) & (vals <= hi))[0]
+        if idx.size:
+            return slice(int(idx.min()), int(idx.max()) + 1)
+    except Exception:
+        pass
+    return slice(None)
+
+
+def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
+    """Reduce a variable to a 1-D series along ``x_dim``, applying the connector's
+    SPATIAL FILTER to the lat/lon axes before averaging any remaining non-x axes:
+      spatial 'point' -> the grid cell NEAREST (lon, lat);
+      spatial 'bbox'  -> the mean over a lat/lon window;
+      'mean' / default -> the whole-grid masked mean (size-guarded).
+    (lon, lat) come from the config, or — when blank — the record's geometry
+    (_lon/_lat) / a longitude|latitude field. Returns the ys list (None for masked)."""
+    import numpy as np
+    cfg, attrs = cfg or {}, attrs or {}
     dims = list(v.dimensions)
-    nonx_axes = tuple(i for i, d in enumerate(dims) if d != x_dim)
-    if not dims or not nonx_axes:
-        ys = _netcdf_to_list(v[:])
-    elif v.size and v.size <= 5_000_000:
-        ys = _netcdf_to_list(np.ma.mean(np.ma.asarray(v[:]), axis=nonx_axes))
-    else:  # too big to download whole — sample a mid-grid point
-        idx = tuple(slice(None) if d == x_dim else (v.shape[k] // 2)
+    xd = x_dim if x_dim in dims else (dims[0] if dims else "")
+    if not dims or not [d for d in dims if d != xd]:
+        return _netcdf_to_list(v[:])    # already 1-D along x (or scalar)
+    mode = (cfg.get("spatial") or "mean").lower()
+    lat_dim = (cfg.get("lat_dim") or "").strip()
+    lon_dim = (cfg.get("lon_dim") or "").strip()
+    tlat = _wms_num(cfg.get("lat"), attrs.get("_lat"), attrs.get("latitude"), attrs.get("lat"))
+    tlon = _wms_num(cfg.get("lon"), attrs.get("_lon"), attrs.get("longitude"), attrs.get("lon"))
+    use_point = (mode == "point" and lat_dim and lon_dim
+                 and tlat is not None and tlon is not None)
+    use_bbox = (mode == "bbox" and (lat_dim or lon_dim))
+    # Whole-grid mean of a huge variable: sample a mid-grid point (legacy guard);
+    # point/bbox slice the lat/lon axes first so they never download the whole grid.
+    if not (use_point or use_bbox) and v.size and v.size > 5_000_000:
+        idx = tuple(slice(None) if d == xd else (v.shape[k] // 2)
                     for k, d in enumerate(dims))
-        ys = _netcdf_to_list(v[idx])
+        return _netcdf_to_list(v[idx])
+    index = []
+    for k, d in enumerate(dims):
+        if d == xd:
+            index.append(slice(None))
+        elif use_point and d in (lat_dim, lon_dim):
+            coord = ds.variables.get(d)
+            ix = _nearest_index(coord, tlat if d == lat_dim else tlon) if coord is not None else None
+            index.append(ix if ix is not None else v.shape[k] // 2)
+        elif use_bbox and d in (lat_dim, lon_dim):
+            coord = ds.variables.get(d)
+            lo, hi = ((cfg.get("lat_min"), cfg.get("lat_max")) if d == lat_dim
+                      else (cfg.get("lon_min"), cfg.get("lon_max")))
+            index.append(_range_slice(coord, lo, hi) if coord is not None else slice(None))
+        else:
+            index.append(slice(None))
+    sub = np.ma.asarray(v[tuple(index)])
+    sliced_dims = [d for d, ix in zip(dims, index) if isinstance(ix, slice)]
+    if xd in sliced_dims and sub.ndim:
+        xpos = sliced_dims.index(xd)
+        other = tuple(i for i in range(sub.ndim) if i != xpos)
+        return _netcdf_to_list(np.ma.mean(sub, axis=other) if other else sub)
+    return _netcdf_to_list(sub)
+
+
+def _netcdf_series_xy(ds, v, x_dim, cfg=None, attrs=None):
+    """(xs, ys) for a variable along ``x_dim``, applying the connector's spatial
+    filter; xs are the x_dim coordinate values (CF time decoded), masked steps dropped."""
+    ys = _netcdf_reduce_ys(ds, v, x_dim, cfg, attrs)
     cvar = ds.variables.get(x_dim) if x_dim else None
     xs = (_netcdf_coord_values(cvar) if cvar is not None
           else [str(i) for i in range(len(ys))])
@@ -750,24 +821,13 @@ def _netcdf_series_xy(ds, v, x_dim):
     return [x for x, _ in pairs], [y for _, y in pairs]
 
 
-def _netcdf_var_along(ds, v, x_dim):
-    """Reduce a variable to a 1-D series along ``x_dim`` (masked spatial mean over the
-    other dims, size-guarded), WITHOUT dropping masked steps — so several variables
-    stay row-aligned for a combined table. Returns the ys list (None for masked)."""
-    import numpy as np
-    dims = list(v.dimensions)
-    xd = x_dim if x_dim in dims else (dims[0] if dims else "")
-    nonx = tuple(i for i, d in enumerate(dims) if d != xd)
-    if not dims or not nonx:
-        return _netcdf_to_list(v[:])
-    if v.size and v.size <= 5_000_000:
-        return _netcdf_to_list(np.ma.mean(np.ma.asarray(v[:]), axis=nonx))
-    idx = tuple(slice(None) if d == xd else (v.shape[k] // 2)
-                for k, d in enumerate(dims))
-    return _netcdf_to_list(v[idx])
+def _netcdf_var_along(ds, v, x_dim, cfg=None, attrs=None):
+    """Spatially-filtered 1-D series (None for masked, NOT dropped) — keeps several
+    variables row-aligned for a combined table."""
+    return _netcdf_reduce_ys(ds, v, x_dim, cfg, attrs)
 
 
-def _netcdf_multivar_columns(ds, var_names, x_dim, derived=None):
+def _netcdf_multivar_columns(ds, var_names, x_dim, derived=None, cfg=None, attrs=None):
     """Build aligned table columns for several variables along ``x_dim``: the x_dim
     coordinate first, then one column per existing variable (each reduced over its
     non-x dims), then any DERIVED columns — a row-wise expression over the real
@@ -777,7 +837,7 @@ def _netcdf_multivar_columns(ds, var_names, x_dim, derived=None):
     for vn in var_names:
         v = ds.variables.get(vn)
         if v is not None:
-            per.append((vn, _netcdf_var_along(ds, v, x_dim)))
+            per.append((vn, _netcdf_var_along(ds, v, x_dim, cfg, attrs)))
     if not per:
         return []
     n = min(len(ys) for _vn, ys in per)
@@ -806,16 +866,17 @@ def _netcdf_multivar_columns(ds, var_names, x_dim, derived=None):
     return cols
 
 
-def _netcdf_extract(ds, out_entry):
+def _netcdf_extract(ds, out_entry, cfg=None, attrs=None):
     """Extract ONE output from an open netCDF4 Dataset. A 'table' output (carrying a
     ``vars`` list) -> one multi-column series (x_dim + each variable); a 'series'
-    output -> the variable along its x_dim (other dims spatially averaged); a 'value'
-    output -> the last point of that variable's series (a consistent latest scalar)."""
+    output -> the variable along its x_dim (spatially filtered per the connector's
+    spatial config); a 'value' output -> the last point of that series. ``cfg``/
+    ``attrs`` carry the spatial filter (point/bbox) + the record's lon/lat."""
     out_entry = out_entry or {}
     multi = out_entry.get("vars")
     if multi:
         cols = _netcdf_multivar_columns(ds, multi, (out_entry.get("x_dim") or "").strip(),
-                                        out_entry.get("derived"))
+                                        out_entry.get("derived"), cfg, attrs)
         if not cols:
             return None
         n = max((len(c["values"]) for c in cols), default=0)
@@ -830,7 +891,7 @@ def _netcdf_extract(ds, out_entry):
     x_dim = (out_entry.get("x_dim") or "").strip() or (dims[0] if dims else "")
     if x_dim not in dims:
         x_dim = dims[0] if dims else ""
-    xs, ys = _netcdf_series_xy(ds, v, x_dim)
+    xs, ys = _netcdf_series_xy(ds, v, x_dim, cfg, attrs)
     if (out_entry.get("kind") or "value").lower() == "series":
         return {"kind": "series",
                 "columns": [{"name": x_dim or "index", "values": xs},
@@ -963,6 +1024,16 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
     _sig = ",".join((out_entry.get("vars") or [out_entry.get("var") or ""]))
     _sig += "|" + ";".join((d.get("name", "") + "=" + d.get("formula", ""))
                            for d in (out_entry.get("derived") or []))
+    # Spatial filter signature: the same url+var can resolve to a different series per
+    # location (point/bbox + the record's lon/lat), so it must key the cache.
+    _sp = (cfg.get("spatial") or "mean").lower()
+    if _sp == "point":
+        _sig += "|pt:%s,%s" % (
+            _wms_num(cfg.get("lon"), attrs.get("_lon"), attrs.get("longitude"), attrs.get("lon")),
+            _wms_num(cfg.get("lat"), attrs.get("_lat"), attrs.get("latitude"), attrs.get("lat")))
+    elif _sp == "bbox":
+        _sig += "|bx:%s,%s,%s,%s" % (cfg.get("lon_min"), cfg.get("lon_max"),
+                                     cfg.get("lat_min"), cfg.get("lat_max"))
     cache_key = (connector_name,
                  url + "::" + (out_entry.get("name") or "") + "::" + _sig)
     now = time.time()
@@ -977,7 +1048,7 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
         socket.setdefaulttimeout(timeout)
         ds = netCDF4.Dataset(url)
         try:
-            extracted = _netcdf_extract(ds, out_entry)
+            extracted = _netcdf_extract(ds, out_entry, cfg, attrs)
         finally:
             ds.close()
     except Exception:
@@ -5523,6 +5594,24 @@ def _connector_config_from_post(post):
             if sep and name and formula:
                 derived.append({"name": name, "formula": formula})
         config["derived"] = derived
+        # Spatial filter: how the lat/lon axes are reduced. 'mean' (whole grid),
+        # 'point' (nearest cell to lon/lat — blank lon/lat uses the record geometry),
+        # or 'bbox' (mean over a lat/lon window). lat_dim/lon_dim name the coord dims.
+        spatial = (post.get("nc_spatial") or "mean").strip().lower()
+        if spatial not in ("mean", "point", "bbox"):
+            spatial = "mean"
+        config["spatial"] = spatial
+        config["lat_dim"] = (post.get("nc_lat_dim") or "").strip()
+        config["lon_dim"] = (post.get("nc_lon_dim") or "").strip()
+        for k in ("lat", "lon", "lat_min", "lat_max", "lon_min", "lon_max"):
+            raw = (post.get("nc_" + k) or "").strip()
+            if raw:
+                try:
+                    config[k] = float(raw)
+                except ValueError:
+                    pass
+        if spatial in ("point", "bbox") and not (config["lat_dim"] and config["lon_dim"]):
+            errors.append("A point/bbox spatial filter needs the Lat dim and Lon dim names.")
         if kind == "thredds":
             config["catalog_url"] = (post.get("catalog_url") or "").strip()
             config["dataset"] = (post.get("dataset") or "").strip()
@@ -5666,6 +5755,15 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
             (d.get("name", "") + " = " + d.get("formula", ""))
             for d in ((config or {}).get("derived") or [])
             if isinstance(d, dict)),
+        "nc_spatial": (config or {}).get("spatial", "mean"),
+        "nc_lat_dim": (config or {}).get("lat_dim", ""),
+        "nc_lon_dim": (config or {}).get("lon_dim", ""),
+        "nc_lat": (config or {}).get("lat", "") if (config or {}).get("spatial") == "point" else "",
+        "nc_lon": (config or {}).get("lon", "") if (config or {}).get("spatial") == "point" else "",
+        "nc_lat_min": (config or {}).get("lat_min", ""),
+        "nc_lat_max": (config or {}).get("lat_max", ""),
+        "nc_lon_min": (config or {}).get("lon_min", ""),
+        "nc_lon_max": (config or {}).get("lon_max", ""),
         "catalog_url": (config or {}).get("catalog_url", ""),
         "dataset": (config or {}).get("dataset", ""),
         # CSV
