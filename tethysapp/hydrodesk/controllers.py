@@ -2415,9 +2415,17 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 f["widget"] = "email"
             elif t == "string" and fmt == "uri":
                 f["widget"] = "url"
+            elif t == "string" and prop.get("x-field") == "phone":
+                f["widget"] = "phone"
+            elif t == "string" and prop.get("x-field") == "color":
+                f["widget"] = "color"
             elif t in ("number", "integer"):
                 f["widget"] = "number"
                 f["step"] = "any" if t == "number" else "1"
+                # Rating is an integer 0..max, shown as a small bounded number input.
+                if prop.get("x-field") == "rating":
+                    f["min"] = 0
+                    f["max"] = int(prop.get("maximum") or 5)
             elif t == "boolean":
                 f["widget"] = "checkbox"
                 f["checked"] = bool(values.get(name, prop.get("default", False)))
@@ -3032,7 +3040,74 @@ def _format_typed_cell(prop, value, session=None):
         return format_html('<a href="mailto:{0}">{0}</a>', str(value))
     if fmt == "uri":
         return format_html('<a href="{0}" target="_blank" rel="noopener">{0}</a>', str(value))
+    xfield = prop.get("x-field")
+    if xfield == "currency":
+        return _fmt_currency(value)
+    if xfield == "percent":
+        return _fmt_percent(value)
+    if xfield == "duration":
+        return _fmt_duration(value)
+    if xfield == "phone":
+        dial = re.sub(r"[^0-9+]", "", str(value))
+        return format_html('<a href="tel:{}">{}</a>', dial, str(value))
+    if xfield == "color":
+        return format_html(
+            '<span style="display:inline-block;width:12px;height:12px;'
+            'border:1px solid #ccc;border-radius:2px;background:{};'
+            'vertical-align:middle;margin-right:6px;"></span>{}',
+            str(value), str(value))
+    if xfield == "rating":
+        return _fmt_rating(value, prop.get("maximum") or 5)
     return _format_cell(value)
+
+
+def _fmt_currency(value, symbol="$"):
+    """A number -> '$1,234.56' (thousands-grouped, 2 dp). Non-numeric -> plain."""
+    try:
+        return "%s%s" % (symbol, "{:,.2f}".format(float(value)))
+    except (TypeError, ValueError):
+        return _format_cell(value)
+
+
+def _fmt_percent(value):
+    """A number -> '45%' / '45.5%' (trailing-zero-trimmed)."""
+    try:
+        return "%s%%" % ("%g" % float(value))
+    except (TypeError, ValueError):
+        return _format_cell(value)
+
+
+def _fmt_duration(value):
+    """A number of SECONDS -> a compact '2d 3h 30m 15s' (largest non-zero units)."""
+    try:
+        total = int(float(value))
+    except (TypeError, ValueError):
+        return _format_cell(value)
+    neg = total < 0
+    total = abs(total)
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append("%dd" % days)
+    if hours:
+        parts.append("%dh" % hours)
+    if mins:
+        parts.append("%dm" % mins)
+    if secs or not parts:
+        parts.append("%ds" % secs)
+    return ("-" if neg else "") + " ".join(parts)
+
+
+def _fmt_rating(value, maximum=5):
+    """An integer 0..maximum -> filled/empty stars (plain text, auto-escaped)."""
+    try:
+        mx = int(maximum or 5)
+        n = max(0, min(int(round(float(value))), mx))
+    except (TypeError, ValueError):
+        return _format_cell(value)
+    return "★" * n + "☆" * (mx - n)
 
 
 def _render_table_field(prop, value):
@@ -3706,6 +3781,21 @@ def _schema_for(field_type, options):
         return {"type": "string", "format": "email"}
     if ft == "url":
         return {"type": "string", "format": "uri"}
+    # --- formatted scalar types (batch 2): a standard JSON type + an x-field display
+    # hint. They coerce/validate like number/integer/string; the input widget +
+    # detail/list formatting dispatch off x-field (custom key, ignored by validation).
+    if ft == "currency":
+        return {"type": "number", "x-field": "currency"}
+    if ft == "percent":
+        return {"type": "number", "x-field": "percent"}
+    if ft == "duration":  # stored as a number of SECONDS
+        return {"type": "number", "x-field": "duration"}
+    if ft == "phone":
+        return {"type": "string", "x-field": "phone"}
+    if ft == "color":
+        return {"type": "string", "x-field": "color"}
+    if ft == "rating":  # integer 0..5, shown as stars
+        return {"type": "integer", "x-field": "rating", "minimum": 0, "maximum": 5}
     if ft == "link":  # foreign key: Options column carries the target HydroType slug
         return {"type": "string", "x-link-type": (options or "").strip()}
     if ft == "api":  # live field: Options column carries the CONNECTOR NAME
@@ -3823,6 +3913,9 @@ def _builder_type_for(prop):
         return "api"
     if prop.get("x-child-type"):
         return "table"
+    if prop.get("x-field") in ("currency", "percent", "duration", "phone",
+                               "color", "rating"):
+        return prop.get("x-field")  # formatted scalar types round-trip by x-field
     t = prop.get("type")
     if t == "array":
         return "table" if prop.get("x-widget") == "table" else "tags"

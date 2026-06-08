@@ -131,6 +131,14 @@
               <input class="form-control" type="url"
                      id="id_{{ w.name }}" name="{{ w.name }}"
                      value="{{ w.value }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "phone" %}
+              <input class="form-control" type="tel"
+                     id="id_{{ w.name }}" name="{{ w.name }}"
+                     value="{{ w.value }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "color" %}
+              <input class="form-control" type="color" style="max-width:80px;height:34px;padding:2px;"
+                     id="id_{{ w.name }}" name="{{ w.name }}"
+                     value="{{ w.value|default:'#000000' }}"{% if w.required %} required{% endif %}>
             {% elif w.widget == "api" %}
               {# API field: READ-ONLY. It stores no input — the live value is
                  fetched from the connector when the record is VIEWED (detail). #}
