@@ -514,6 +514,16 @@
           </div>
         </div>
         <div class="frappe-help">These let the DocType builder map a record's Shapefile + Date fields to this connector — the same per-record mapping as NetCDF. Use <code>{field}</code> tokens or a literal date.</div>
+
+        {# ---- Test region: a stand-in shapefile so the Test button has a geometry ---- #}
+        <div class="frappe-form-group" style="margin-top:8px;border-top:1px dashed var(--fr-border,#e2e6ea);padding-top:10px;">
+          <label class="frappe-label">Test region <span class="frappe-muted frappe-text-sm">(stand-in for the Test button)</span></label>
+          <div class="frappe-help" style="margin-bottom:6px;">Real records use their own Shapefile field. The <strong>Test</strong> button has no record, so a per-record connector can't build <code>{bbox}</code> — upload a shapefile <em>or</em> paste a polygon here and it fills the region so you can see the outputs. (Saved on the connector as a stand-in; a real record's shapefile always takes priority.)</div>
+          <input class="form-control" type="file" id="id_pr_shapefile_file" name="pr_shapefile_file" accept=".zip,.shp,application/zip">
+          <div class="frappe-help" style="margin:5px 0 3px;">…or paste a WKT / GeoJSON polygon:</div>
+          <textarea class="form-control" id="id_pr_polygon" name="pr_polygon" rows="2"
+                    placeholder="POLYGON((-112 37, -111 37, -111 38, -112 38, -112 37))">{{ pr_polygon }}</textarea>
+        </div>
       </div>
 
       {# ---- REST URL + method ---- #}
@@ -1278,7 +1288,7 @@
     var f = parseFloat(v); return isNaN(f) ? undefined : f;
   }
   function currentConfig() {
-    return {
+    var cfg = {
       name: document.getElementById('id_name').value,
       kind: val('id_kind') || 'rest',
       dataset_url: val('id_dataset_url'),
@@ -1360,6 +1370,19 @@
       ttl_seconds: parseInt(document.getElementById('id_ttl_seconds').value || '900', 10),
       timeout: parseInt(document.getElementById('id_timeout').value || '15', 10)
     };
+    // Per-record overrides for the geospatial REST/WCS/GEE kinds: the pr_* controls
+    // (not the netcdf spatial select) drive spatial/time, and the Test-region polygon
+    // becomes the stand-in geometry so the Test button can build {bbox}/the region.
+    var k = val('id_kind') || 'rest';
+    if (k === 'rest' || k === 'wcs' || k === 'gee') {
+      var prR = document.getElementById('id_pr_region');
+      cfg.spatial = (prR && prR.checked) ? 'shapefile' : '';
+      cfg.time_source = val('id_pr_time_source') || 'none';
+      cfg.time_start = val('id_pr_time_start');
+      cfg.time_end = val('id_pr_time_end');
+      cfg.polygon = val('id_pr_polygon');
+    }
+    return cfg;
   }
 
   // ---- Clickable JSON tree. Distinguishes ARRAY vs SCALAR:

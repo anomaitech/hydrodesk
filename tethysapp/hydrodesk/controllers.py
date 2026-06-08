@@ -6862,16 +6862,32 @@ def _parse_json_field(raw, default):
     return val, None
 
 
-def _parse_record_params(post, config):
-    """Shared per-record region/time fields for the geospatial connectors (WCS, GEE):
+def _parse_record_params(post, config, files=None):
+    """Shared per-record region/time fields for the geospatial connectors (WCS, GEE, REST):
     a checkbox 'pr_region' opts the region into the record's shapefile (spatial=shapefile);
     'pr_time_source'=range + pr_time_start/pr_time_end (literals or {field} tokens) define
-    the per-record date window. Lets the x-nc-map builder mapping drive these kinds too."""
+    the per-record date window. A 'Test region' (an uploaded shapefile OR a pasted polygon)
+    is stored as config['polygon'] — a STAND-IN the Test button uses when there's no record
+    (a real record's shapefile always takes priority in the resolver). Lets the x-nc-map
+    builder mapping drive these kinds too."""
+    files = files or {}
     if (post.get("pr_region") or "").strip().lower() in ("1", "on", "true", "shapefile", "yes"):
         config["spatial"] = "shapefile"
     config["time_source"] = (post.get("pr_time_source") or "none").strip().lower()
     config["time_start"] = (post.get("pr_time_start") or "").strip()
     config["time_end"] = (post.get("pr_time_end") or "").strip()
+    # Test-region stand-in geometry: an uploaded shapefile (-> inline GeoJSON) wins; else
+    # a pasted WKT/GeoJSON polygon. Stored in 'polygon' (the resolver's fallback source).
+    up = files.get("pr_shapefile_file")
+    pasted = (post.get("pr_polygon") or "").strip()
+    if up is not None:
+        gj = _shapefile_to_featurecollection(up)
+        if gj:
+            config["polygon"] = gj
+        elif pasted:
+            config["polygon"] = pasted
+    elif pasted:
+        config["polygon"] = pasted
 
 
 def _connector_config_from_post(post, files=None):
@@ -7105,7 +7121,7 @@ def _connector_config_from_post(post, files=None):
         config["extra_subset"] = (post.get("extra_subset") or "").strip()
         config["unit"] = (post.get("wcs_unit") or "").strip()
         config["time_axis"] = (post.get("pr_time_axis") or "ansi").strip()
-        _parse_record_params(post, config)   # per-record shapefile region + date range
+        _parse_record_params(post, config, files)   # per-record shapefile region + date range
         try:
             config["bbox_buffer"] = float(post.get("wcs_bbox_buffer") or 0.25)
         except (TypeError, ValueError):
@@ -7134,7 +7150,7 @@ def _connector_config_from_post(post, files=None):
         config["gee_end"] = (post.get("gee_end") or "").strip()
         config["unit"] = (post.get("gee_unit") or "").strip()
         config["gee_demo"] = (post.get("gee_demo") or "").strip().lower() in ("1", "on", "true", "yes")
-        _parse_record_params(post, config)   # per-record shapefile region + date range
+        _parse_record_params(post, config, files)   # per-record shapefile region + date range
         try:
             config["gee_scale"] = int(post.get("gee_scale") or 30)
         except (TypeError, ValueError):
@@ -7149,7 +7165,7 @@ def _connector_config_from_post(post, files=None):
         if not config["gee_asset"]:
             errors.append("A GEE connector needs an Earth Engine asset ID.")
     else:
-        _parse_record_params(post, config)   # per-record {bbox}/{datetime} (OGC REST)
+        _parse_record_params(post, config, files)   # per-record {bbox}/{datetime} (OGC REST)
         if not config["url_template"]:
             errors.append("URL Template is required.")
 
@@ -7269,6 +7285,7 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         if (config or {}).get("kind") in ("wcs", "gee", "rest") else "none",
         "pr_time_start": (config or {}).get("time_start", "") if (config or {}).get("kind") in ("wcs", "gee", "rest") else "",
         "pr_time_end": (config or {}).get("time_end", "") if (config or {}).get("kind") in ("wcs", "gee", "rest") else "",
+        "pr_polygon": (config or {}).get("polygon", "") if (config or {}).get("kind") in ("wcs", "gee", "rest") else "",
         "time_axis": (config or {}).get("time_axis", "ansi"),
         "url_template": (config or {}).get("url_template", ""),
         "method": (config or {}).get("method", "GET"),
