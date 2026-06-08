@@ -2520,6 +2520,11 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 f["widget"] = "phone"
             elif t == "string" and prop.get("x-field") == "color":
                 f["widget"] = "color"
+            elif prop.get("x-field") == "formula":
+                # Computed field: READ-ONLY on the form (filled on save from the other
+                # fields); just shows its expression so it's visible but inert.
+                f["widget"] = "formula"
+                f["formula"] = prop.get("x-formula") or ""
             elif t in ("number", "integer"):
                 f["widget"] = "number"
                 f["step"] = "any" if t == "number" else "1"
@@ -2658,6 +2663,84 @@ def _coerce_attributes(field_schema, post):
         else:  # string (+ enum) stays a string
             out[key] = raw
     return out, errors
+
+
+# --- Formula fields: a SAFE arithmetic evaluator (no eval/exec). Only numbers, the
+#     record's own field values (by key), +-*/ ** % //, unary +/-, and a small set of
+#     whitelisted math functions are allowed; anything else -> None. ---
+_FORMULA_FUNCS = None
+
+
+def _formula_funcs():
+    global _FORMULA_FUNCS
+    if _FORMULA_FUNCS is None:
+        import math
+        _FORMULA_FUNCS = {
+            "sqrt": math.sqrt, "abs": abs, "min": min, "max": max, "round": round,
+            "floor": math.floor, "ceil": math.ceil, "log": math.log,
+            "log10": math.log10, "exp": math.exp, "pow": pow,
+        }
+    return _FORMULA_FUNCS
+
+
+def _safe_eval(expr, variables):
+    """Evaluate an arithmetic ``expr`` over ``variables`` (a {name: value} map of the
+    record's fields). Returns a rounded float, or None when the expression is empty,
+    references a non-numeric/absent field, or uses anything not on the allow-list."""
+    import ast
+    import operator as op
+    expr = (expr or "").strip()
+    if not expr:
+        return None
+    bin_ops = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
+               ast.Div: op.truediv, ast.Pow: op.pow, ast.Mod: op.mod,
+               ast.FloorDiv: op.floordiv}
+    un_ops = {ast.UAdd: op.pos, ast.USub: op.neg}
+    funcs = _formula_funcs()
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise ValueError("non-numeric constant")
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in bin_ops:
+            return bin_ops[type(node.op)](ev(node.left), ev(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in un_ops:
+            return un_ops[type(node.op)](ev(node.operand))
+        if isinstance(node, ast.Name):
+            val = variables.get(node.id)
+            if isinstance(val, bool) or val is None:
+                raise ValueError("field %s is not a number" % node.id)
+            return float(val)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in funcs and not node.keywords):
+            return funcs[node.func.id](*[ev(a) for a in node.args])
+        raise ValueError("disallowed expression")
+
+    try:
+        result = ev(ast.parse(expr, mode="eval"))
+        return round(float(result), 6)
+    except Exception:
+        return None
+
+
+def _compute_formulas(field_schema, attrs):
+    """Fill every formula field (x-field == 'formula') by evaluating its x-formula
+    expression over the record's other field values. Modifies ``attrs`` in place: a
+    successful result is stored; an un-computable one is dropped (so a stale/forged
+    value never survives). Runs after coercion, before validation."""
+    props = (field_schema or {}).get("properties") or {}
+    for key, prop in props.items():
+        if (prop or {}).get("x-field") != "formula":
+            continue
+        val = _safe_eval((prop or {}).get("x-formula") or "", attrs)
+        if val is None:
+            attrs.pop(key, None)
+        else:
+            attrs[key] = val
+    return attrs
 
 
 def _parse_point(post):
@@ -2848,6 +2931,7 @@ def hydrotype_new(request, slug="monitoring_station"):
 
         validated = attributes
         if not coerce_errors:
+            _compute_formulas(field_schema, attributes)   # fill computed fields
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
@@ -2921,6 +3005,8 @@ def _importable_fields(field_schema):
     for key, prop in _ordered_props(field_schema):
         prop = prop or {}
         if prop.get("x-layout") or prop.get("x-api-connector") or prop.get("x-child-type"):
+            continue
+        if prop.get("x-field") == "formula":   # computed, never user-provided
             continue
         if prop.get("type") == "array" and prop.get("x-widget") == "table":
             continue
@@ -3026,6 +3112,7 @@ def import_records(request, slug="monitoring_station"):
                 row_errors.append({"row": i, "msg": "; ".join(
                     f"{k} {v}" for k, v in coerce_errors.items())})
                 continue
+            _compute_formulas(field_schema, attributes)   # fill computed fields
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 row_errors.append({"row": i, "msg": vmsg})
@@ -3089,6 +3176,7 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
             errors.append(f"{key} {msg}.")
         validated = attributes
         if not coerce_errors:
+            _compute_formulas(field_schema, attributes)   # fill computed fields
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
@@ -4072,6 +4160,9 @@ def _schema_for(field_type, options):
         return {"type": "string", "x-field": "color"}
     if ft == "rating":  # integer 0..5, shown as stars
         return {"type": "integer", "x-field": "rating", "minimum": 0, "maximum": 5}
+    if ft == "formula":  # computed from other fields; Options column = the expression
+        return {"type": "number", "x-field": "formula",
+                "x-formula": (options or "").strip()}
     if ft == "link":  # foreign key: Options column carries the target HydroType slug
         return {"type": "string", "x-link-type": (options or "").strip()}
     if ft == "api":  # live field: Options column carries the CONNECTOR NAME
@@ -4192,8 +4283,8 @@ def _builder_type_for(prop):
     if prop.get("x-child-type"):
         return "table"
     if prop.get("x-field") in ("currency", "percent", "duration", "phone",
-                               "color", "rating"):
-        return prop.get("x-field")  # formatted scalar types round-trip by x-field
+                               "color", "rating", "formula"):
+        return prop.get("x-field")  # formatted/computed types round-trip by x-field
     t = prop.get("type")
     if t == "array":
         return "table" if prop.get("x-widget") == "table" else "tags"
@@ -4230,6 +4321,8 @@ def _builder_options_for(prop, builder_type):
         return prop.get("x-link-type") or ""
     if builder_type == "api":
         return prop.get("x-api-connector") or ""
+    if builder_type == "formula":
+        return prop.get("x-formula") or ""
     if builder_type == "table":
         if prop.get("x-child-type"):
             obj = {"child_type": prop.get("x-child-type")}

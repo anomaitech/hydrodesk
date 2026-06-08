@@ -132,6 +132,7 @@
               <option value="phone"    {% if r.type == 'phone' %}selected{% endif %}>Phone</option>
               <option value="color"    {% if r.type == 'color' %}selected{% endif %}>Color</option>
               <option value="rating"   {% if r.type == 'rating' %}selected{% endif %}>Rating</option>
+              <option value="formula"  {% if r.type == 'formula' %}selected{% endif %}>Formula (computed)</option>
               <option value="link"     {% if r.type == 'link' %}selected{% endif %}>Link</option>
               <option value="api"      {% if r.type == 'api' %}selected{% endif %}>API</option>
               <option value="table"    {% if r.type == 'table' %}selected{% endif %}>Table</option>
@@ -193,6 +194,7 @@
               <option value="phone">Phone</option>
               <option value="color">Color</option>
               <option value="rating">Rating</option>
+              <option value="formula">Formula (computed)</option>
               <option value="link">Link</option>
               <option value="api">API</option>
               <option value="table">Table</option>
@@ -660,11 +662,12 @@
       // DATA field. Section/Column breaks are layout-only -> no options.
       var isLayout = (t === 'section' || t === 'column' || t === 'tab');
       if (!isLayout) buildCommonOptions(wrap);
-      if (t === 'select')      buildSelectUI(wrap);
-      else if (t === 'link')   buildLinkUI(wrap);
-      else if (t === 'api')    buildApiUI(wrap);
-      else if (t === 'table')  buildTableUI(wrap);
-      else if (isLayout)       buildEmptyUI(t);
+      if (t === 'select')       buildSelectUI(wrap);
+      else if (t === 'link')    buildLinkUI(wrap);
+      else if (t === 'api')     buildApiUI(wrap);
+      else if (t === 'table')   buildTableUI(wrap);
+      else if (t === 'formula') buildFormulaUI(wrap);
+      else if (isLayout)        buildEmptyUI(t);
       showModal();
     }
 
@@ -1006,6 +1009,27 @@
           if (p.opt) p.opt.value = (v || '').trim();
         });
       });
+    }
+
+    // ---- FORMULA: an expression computed from other fields (by key) ----
+    function buildFormulaUI(wrap) {
+      var p = rowParts(wrap);
+      var lbl = document.createElement('label');
+      lbl.className = 'frappe-label'; lbl.textContent = 'Formula';
+      var inp = document.createElement('input');
+      inp.className = 'form-control';
+      inp.placeholder = 'e.g. quantity * rate';
+      inp.value = (p.opt && p.opt.value || '').trim();
+      var note = document.createElement('div');
+      note.className = 'hd-cfg-note';
+      note.innerHTML = 'Compute this field from OTHER fields, referenced by their '
+        + '<strong>key</strong> (the lowercase, underscore form of the label). '
+        + 'Operators <code>+ - * / ** %</code>; functions <code>sqrt, abs, min, max, '
+        + 'round, floor, ceil, log, exp</code>. Example: '
+        + '<code>sqrt(uwnd**2 + vwnd**2)</code>. It is read-only on the form and '
+        + 'filled when the record is saved.';
+      modalBody.appendChild(lbl); modalBody.appendChild(inp); modalBody.appendChild(note);
+      applyFns.push(function () { if (p.opt) p.opt.value = (inp.value || '').trim(); });
     }
 
     // ---- API: connector <select> + per-input field mapping (x-api-map) ----

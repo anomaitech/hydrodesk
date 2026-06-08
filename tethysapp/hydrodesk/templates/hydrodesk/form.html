@@ -145,6 +145,13 @@
               <input class="form-control" type="color" style="max-width:80px;height:34px;padding:2px;"
                      id="id_{{ w.name }}" name="{{ w.name }}"
                      value="{{ w.value|default:'#000000' }}"{% if w.required %} required{% endif %}>
+            {% elif w.widget == "formula" %}
+              {# Computed: READ-ONLY. Filled on save from the other fields. #}
+              <div class="frappe-muted frappe-text-sm"
+                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+                <i class="bi bi-calculator"></i>
+                Computed: <code>{{ w.formula }}</code> &mdash; filled when you save.
+              </div>
             {% elif w.widget == "api" %}
               {# API field: READ-ONLY. It stores no input — the live value is
                  fetched from the connector when the record is VIEWED (detail). #}
