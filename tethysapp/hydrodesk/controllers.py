@@ -4677,7 +4677,12 @@ def _compute_formulas(field_schema, attrs):
 # Heavy imports (RestrictedPython, numpy, pandas) are LAZY so app startup is unaffected.
 # Inputs bind by NAME: a free variable matching a record field uses that field's value.
 # ===========================================================================
-_SCRIPT_ALLOWED_ROOTS = {"math", "statistics", "datetime", "json", "re"}
+# Pure-compute stdlib roots a script may use. '_strptime'/'time'/'calendar' are
+# datetime.strptime's lazy transitive imports — none expose file/network, the module-root
+# guard blocks pivoting through them to os/sys, and any time.sleep DoS is bounded by the
+# SIGALRM timeout. The script can't name '_strptime' (underscore is compile-blocked).
+_SCRIPT_ALLOWED_ROOTS = {"math", "statistics", "datetime", "json", "re",
+                         "_strptime", "time", "calendar"}
 _SCRIPT_PROXY_ROOTS = {"numpy", "pandas"}
 _SCRIPT_DENY_ATTRS = {
     "eval", "query", "to_pickle", "to_csv", "to_excel", "to_hdf", "to_sql",
@@ -4700,7 +4705,15 @@ _SCRIPT_NP_FUNCS = (
     "transpose flip roll sort argsort unique isnan isinf isfinite nan_to_num "
     "nanmean nanstd nansum nanmin nanmax interp polyfit polyval histogram bincount "
     "corrcoef cov array_equal allclose isclose pi e nan inf newaxis float64 int64 "
-    "bool_").split()
+    "bool_ "
+    # --- additions vetted from the hydrology audit (all pure-compute; no I/O/eval) ---
+    "trapz trapezoid zeros_like ones_like full_like empty empty_like maximum minimum "
+    "fmax fmin convolve correlate searchsorted digitize ptp count_nonzero nonzero "
+    "flatnonzero nanpercentile nanquantile nanmedian nanvar nancumsum nanargmax "
+    "nanargmin nanprod tanh sinh cosh radians degrees hypot meshgrid tile repeat "
+    "expand_dims squeeze moveaxis swapaxes take indices apply_along_axis pad append "
+    "insert delete array_split ediff1d add subtract multiply divide true_divide "
+    "floor_divide isin intersect1d union1d setdiff1d diag atleast_1d").split()
 _SCRIPT_NP_SUBNS = {
     "random": "rand randn randint normal uniform choice seed random_sample permutation shuffle".split(),
     "linalg": "norm inv solve det eig eigvals svd lstsq pinv qr matrix_rank".split(),
@@ -4709,7 +4722,10 @@ _SCRIPT_NP_SUBNS = {
 _SCRIPT_PD_FUNCS = (
     "DataFrame Series concat merge date_range to_datetime to_numeric to_timedelta "
     "Timestamp Timedelta NaT isna notna cut qcut Categorical pivot_table melt "
-    "crosstab factorize").split()
+    "crosstab factorize "
+    # audit additions for calendar-correct water-year work. NOTE: only the CLASSES/
+    # functions — NOT pd.offsets (a module, which would reopen pd.offsets.np.<io> pivots).
+    "DateOffset Period period_range Grouper").split()
 
 
 def _script_ns(module, names, subns=None):
@@ -4737,15 +4753,23 @@ def _build_script_globals():
     from RestrictedPython.Eval import default_guarded_getitem, default_guarded_getiter
 
     np_proxy = _script_ns(numpy, _SCRIPT_NP_FUNCS, _SCRIPT_NP_SUBNS)
+    if not hasattr(np_proxy, "trapz") and hasattr(numpy, "trapezoid"):
+        np_proxy.trapz = numpy.trapezoid       # numpy>=2.0 renamed trapz -> trapezoid
     pd_proxy = _script_ns(pandas, _SCRIPT_PD_FUNCS)
     modules = {"np": np_proxy, "numpy": np_proxy, "pd": pd_proxy, "pandas": pd_proxy,
                "math": math, "statistics": statistics, "datetime": datetime,
                "json": json, "re": re}
 
+    missing = object()                                  # sentinel for "attr not present"
+
     def _guard_getattr(obj, name, default=None):
         if name in _SCRIPT_DENY_ATTRS or name.startswith("read_"):
             raise AttributeError("attribute '%s' is not allowed in a script" % name)
-        val = safer_getattr(obj, name, default)        # blocks _-names, format/format_map
+        val = safer_getattr(obj, name, missing)         # blocks _-names, format/format_map
+        if val is missing:
+            # A clear error beats the cryptic "'NoneType' object is not callable" you'd
+            # get if a not-whitelisted np/pd function silently resolved to None.
+            raise AttributeError("'%s' is not available in the script sandbox" % name)
         if isinstance(val, types.ModuleType):
             root = (getattr(val, "__name__", "") or "").split(".")[0]
             if root not in _SCRIPT_ALLOWED_ROOTS:
@@ -4761,16 +4785,43 @@ def _build_script_globals():
             return __import__(name, *a, **k)
         raise ImportError("import of '%s' is not allowed in a script" % name)
 
+    # Augmented assignment (a += b, s -= r) compiles to _inplacevar_('+=', a, b); without
+    # it RestrictedPython raises NameError on EVERY += — breaking accumulator/mass-balance
+    # loops. Pure arithmetic, no I/O.
+    _INPLACE = {"+=": lambda a, b: a + b, "-=": lambda a, b: a - b,
+                "*=": lambda a, b: a * b, "/=": lambda a, b: a / b,
+                "//=": lambda a, b: a // b, "%=": lambda a, b: a % b,
+                "**=": lambda a, b: a ** b, "&=": lambda a, b: a & b,
+                "|=": lambda a, b: a | b, "^=": lambda a, b: a ^ b,
+                ">>=": lambda a, b: a >> b, "<<=": lambda a, b: a << b,
+                "@=": lambda a, b: a @ b}
+
+    def _inplacevar(op, x, y):
+        fn = _INPLACE.get(op)
+        if fn is None:
+            raise NotImplementedError("operator %s not supported" % op)
+        return fn(x, y)
+
+    # Item/slice assignment (arr[i]=x, df['c']=…) — full_write_guard blocks it on numpy/
+    # pandas objects, which kills the canonical preallocate-then-fill recursive-filter
+    # idiom. Permit it ONLY for these in-memory compute types; attribute writes still can't
+    # reach a dunder (compile-blocked) or a module (proxy/denylist-gated), so no escape.
+    def _script_write(obj):
+        if isinstance(obj, (numpy.ndarray, numpy.generic,
+                            pandas.Series, pandas.DataFrame, pandas.Index)):
+            return obj
+        return full_write_guard(obj)
+
     b = dict(safe_builtins)
     b["__import__"] = _guard_import
     for fn in ("min", "max", "sum", "abs", "round", "len", "range", "sorted",
                "enumerate", "zip", "map", "filter", "all", "any", "bool", "int",
                "float", "str", "list", "dict", "tuple", "set", "frozenset",
-               "reversed", "divmod", "pow"):
+               "reversed", "divmod", "pow", "isinstance"):
         b[fn] = getattr(builtins, fn)
     g = {"__builtins__": b, "_getattr_": _guard_getattr,
          "_getitem_": default_guarded_getitem, "_getiter_": default_guarded_getiter,
-         "_write_": full_write_guard,
+         "_write_": _script_write, "_inplacevar_": _inplacevar,
          "_iter_unpack_sequence_": guarded_iter_unpack_sequence,
          "_unpack_sequence_": guarded_unpack_sequence}
     g.update(modules)
