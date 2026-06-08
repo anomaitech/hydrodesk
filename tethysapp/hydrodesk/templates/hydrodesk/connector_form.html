@@ -486,12 +486,15 @@
       {# ---- Per-record region & time (WCS + GEE): same shapefile + date-range mapping as NetCDF ---- #}
       <div class="hd-kind-prparams">
         <div class="frappe-section-head" style="margin-top:6px;">Per-record region &amp; time</div>
+        <div class="hd-kind-rest frappe-help" style="margin-bottom:8px;">
+          For a REST API this exposes two URL tokens from each record: <code>{bbox}</code> (the record's shapefile bounding box, <code>minlon,minlat,maxlon,maxlat</code>) and <code>{datetime}</code> (the date window as an RFC3339 interval). Put them in the URL Template below, e.g. <code>…/items?bbox={bbox}&amp;datetime={datetime}&amp;f=json</code>.
+        </div>
         <div class="frappe-form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
             <input type="checkbox" id="id_pr_region" name="pr_region" value="on" {% if pr_region %}checked{% endif %}>
             Region = the record's uploaded <strong>Shapefile</strong> field
           </label>
-          <div class="frappe-help">When ticked, the query reduces over each record's own shapefile (mapped on the doctype's API field). Otherwise it uses the record's point.</div>
+          <div class="frappe-help">When ticked, the query uses each record's own shapefile (raster kinds reduce over it; REST gets its <code>{bbox}</code>). Otherwise it uses the record's point.</div>
         </div>
         <div class="frappe-form-group" style="max-width:360px;">
           <label class="frappe-label" for="id_pr_time_source">Date range</label>
@@ -921,8 +924,8 @@
       show('.hd-kind-wms', k === 'wms');
       show('.hd-kind-wcs', k === 'wcs');
       show('.hd-kind-gee', k === 'gee');
-      // Per-record region & time mapping applies to the geospatial raster kinds.
-      show('.hd-kind-prparams', k === 'wcs' || k === 'gee');
+      // Per-record region & time mapping applies to the raster kinds + REST ({bbox}/{datetime}).
+      show('.hd-kind-prparams', k === 'wcs' || k === 'gee' || k === 'rest');
     }
     if (kindSel) kindSel.addEventListener('change', applyKind);
     applyKind();

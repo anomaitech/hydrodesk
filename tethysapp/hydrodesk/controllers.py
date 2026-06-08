@@ -2801,6 +2801,15 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
         attrs, missing_required = _resolve_inputs(cfg, record_attrs, field_map)
     else:
         attrs = dict(record_attrs or {})
+    # Per-record REST: expose {bbox} (the record's shapefile bbox) + {datetime} (its
+    # date window) as URL tokens when the connector opts in (spatial=shapefile / range).
+    # Compute them from the ORIGINAL record_attrs (which carries _shapefile + the mapped
+    # date fields) since _resolve_inputs returns only the declared inputs.
+    if _supports_record_params(cfg):
+        _ext = _inject_rest_spatiotemporal(cfg, record_attrs)
+        for _k in ("bbox", "datetime"):
+            if _ext.get(_k):
+                attrs[_k] = _ext[_k]
 
     url_template = cfg.get("url_template") or ""
     method = (cfg.get("method") or "GET").upper()
@@ -4992,8 +5001,29 @@ def _render_image_block(result, label="map"):
 
 # Connector kinds that accept a per-record parameter mapping (x-nc-map): a record's
 # Shapefile field -> the region, and Date fields -> the time window. NetCDF/THREDDS,
-# Earth Engine, and WCS are all region+time data sources.
-_RECORD_PARAM_KINDS = ("netcdf", "thredds", "gee", "wcs")
+# Earth Engine, and WCS are region+time grids; REST gets the region as a {bbox} token
+# and the window as a {datetime} token (for OGC API Features / any bbox+datetime API).
+_RECORD_PARAM_KINDS = ("netcdf", "thredds", "gee", "wcs", "rest")
+
+
+def _inject_rest_spatiotemporal(cfg, attrs):
+    """For a per-record REST connector, expose two URL tokens computed from the record:
+    ``{bbox}``  = the shapefile's bounding box 'minlon,minlat,maxlon,maxlat' (OGC order),
+    ``{datetime}`` = the date window as an RFC3339 interval 'start/end' (open-ended with
+    '..'). Only fills a token when the source resolves; never overwrites with blanks."""
+    attrs = dict(attrs or {})
+    rings = _shapefile_union_rings(cfg, attrs)
+    if rings:
+        allx = [p[0] for r in rings for p in r]
+        ally = [p[1] for r in rings for p in r]
+        attrs["bbox"] = "%g,%g,%g,%g" % (min(allx), min(ally), max(allx), max(ally))
+    start = _resolve_date(cfg.get("time_start"), attrs)
+    end = _resolve_date(cfg.get("time_end"), attrs)
+    if start and end and start > end:
+        start, end = end, start
+    if start or end:
+        attrs["datetime"] = "%sT00:00:00Z/%sT23:59:59Z" % (start or "..", end or "..")
+    return attrs
 
 
 def _supports_record_params(cfg):
@@ -7119,6 +7149,7 @@ def _connector_config_from_post(post, files=None):
         if not config["gee_asset"]:
             errors.append("A GEE connector needs an Earth Engine asset ID.")
     else:
+        _parse_record_params(post, config)   # per-record {bbox}/{datetime} (OGC REST)
         if not config["url_template"]:
             errors.append("URL Template is required.")
 
@@ -7231,13 +7262,13 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "gee_scale": (config or {}).get("gee_scale", 30),
         "gee_unit": (config or {}).get("unit", "") if (config or {}).get("kind") == "gee" else "",
         "gee_demo": (config or {}).get("gee_demo", False),
-        # Per-record region & time (WCS/GEE): round-trip the shared pr_* controls.
+        # Per-record region & time (WCS/GEE/REST): round-trip the shared pr_* controls.
         "pr_region": (config or {}).get("spatial") == "shapefile"
-        if (config or {}).get("kind") in ("wcs", "gee") else False,
+        if (config or {}).get("kind") in ("wcs", "gee", "rest") else False,
         "pr_time_source": (config or {}).get("time_source", "none")
-        if (config or {}).get("kind") in ("wcs", "gee") else "none",
-        "pr_time_start": (config or {}).get("time_start", "") if (config or {}).get("kind") in ("wcs", "gee") else "",
-        "pr_time_end": (config or {}).get("time_end", "") if (config or {}).get("kind") in ("wcs", "gee") else "",
+        if (config or {}).get("kind") in ("wcs", "gee", "rest") else "none",
+        "pr_time_start": (config or {}).get("time_start", "") if (config or {}).get("kind") in ("wcs", "gee", "rest") else "",
+        "pr_time_end": (config or {}).get("time_end", "") if (config or {}).get("kind") in ("wcs", "gee", "rest") else "",
         "time_axis": (config or {}).get("time_axis", "ansi"),
         "url_template": (config or {}).get("url_template", ""),
         "method": (config or {}).get("method", "GET"),
