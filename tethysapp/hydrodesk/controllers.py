@@ -1761,10 +1761,45 @@ def _resolve_thredds_url(cfg, attrs):
         au = chosen.access_urls or {}
         for key in ("OPENDAP", "OpenDAP", "OPeNDAP", "dap", "DODS"):
             if au.get(key):
-                return au[key]
-        return next(iter(au.values()), "")
+                return _strip_file_scheme(au[key])
+        if au:
+            return _strip_file_scheme(next(iter(au.values())))
+        # Fallback: siphon yields no access_urls for some minimal/non-standard catalogs
+        # -> build the OPeNDAP URL from the dataset's url_path + an OPENDAP service base
+        # (recursing compound services).
+        built = _thredds_opendap_from_services(cat, chosen)
+        return _strip_file_scheme(built)
     except Exception:
         return ""
+
+
+def _strip_file_scheme(url):
+    """A ``file:///path`` URL -> the bare local path (netCDF4 opens a path, not file://)."""
+    url = (url or "").strip()
+    if url.startswith("file://"):
+        url = url[len("file://"):]
+    return url
+
+
+def _thredds_opendap_from_services(cat, ds):
+    """Build a THREDDS dataset's OPeNDAP URL from its ``url_path`` + an OPENDAP service
+    base, recursing compound services. '' when no OPENDAP service / url_path is found."""
+    url_path = getattr(ds, "url_path", None)
+    if not url_path:
+        return ""
+
+    def _walk(services):
+        for s in services or []:
+            if (getattr(s, "service_type", "") or "").upper() == "OPENDAP" \
+                    and getattr(s, "base", None) is not None:
+                return s.base
+            found = _walk(getattr(s, "services", None))
+            if found is not None:
+                return found
+        return None
+
+    base = _walk(getattr(cat, "services", None))
+    return ((base or "") + url_path) if base is not None else ""
 
 
 def _netcdf_describe(cfg, attrs):
@@ -1913,7 +1948,7 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
     old_to = socket.getdefaulttimeout()
     try:
         socket.setdefaulttimeout(timeout)
-        ds = netCDF4.Dataset(url)
+        ds = netCDF4.Dataset(_strip_file_scheme(url))   # file:///path -> local path
         try:
             extracted = _netcdf_extract(ds, out_entry, cfg, attrs)
             extracted = _apply_time_range(extracted, cfg, attrs)   # per-record date window
@@ -2439,6 +2474,52 @@ def _gee_init(cfg):
         return None, "Earth Engine init failed: %s" % (str(exc)[:140])
 
 
+_GEE_DEMO_NOTE = ("synthetic preview — Earth Engine isn't configured; install "
+                  "earthengine-api + add a service-account credential for live data")
+
+
+def _gee_synthetic(cfg, attrs, out_entry):
+    """A DETERMINISTIC synthetic Earth-Engine result for the demo/preview mode: an
+    NDVI-like value (0..1) that depends on the record's REGION centroid (its mapped
+    shapefile) and DATE window, so different records visibly differ — without a live
+    Earth Engine. Returns the same value/series shape a real fetch would, plus a note."""
+    import math
+    import datetime as _dt
+    rings = _shapefile_union_rings(cfg, attrs)
+    if rings:
+        allx = [p[0] for r in rings for p in r]
+        ally = [p[1] for r in rings for p in r]
+        lon, lat = (min(allx) + max(allx)) / 2.0, (min(ally) + max(ally)) / 2.0
+    else:
+        lon, lat = _wms_point(cfg, attrs)
+    if lon is None or lat is None:
+        lon, lat = 0.0, 0.0
+
+    def _ndvi(doy):
+        base = 0.55 - 0.012 * abs(lat - 35.0) + 0.05 * math.sin((lon + 120.0) / 20.0)
+        return round(max(0.0, min(1.0, base + 0.18 * math.sin(2 * math.pi * doy / 365.0))), 4)
+
+    band = (cfg.get("gee_band") or "value").strip() or "value"
+    start = _resolve_date(cfg.get("time_start"), attrs)
+    end = _resolve_date(cfg.get("time_end"), attrs)
+    if (out_entry.get("kind") or "value").lower() == "series" and start and end:
+        if start > end:
+            start, end = end, start
+        step = max(1, (end - start).days // 12)
+        xs, ys, d = [], [], start
+        while d <= end:
+            xs.append(d.isoformat())
+            ys.append(_ndvi(d.timetuple().tm_yday))
+            d = d + _dt.timedelta(days=step)
+        return {"kind": "series", "columns": [{"name": "time", "values": xs},
+                                              {"name": band, "values": ys}],
+                "n": len(ys), "x": xs, "y": ys, "url": "", "cached": False,
+                "note": _GEE_DEMO_NOTE}
+    doy = (start or end).timetuple().tm_yday if (start or end) else 180
+    return {"kind": "value", "value": _ndvi(doy), "url": "", "cached": False,
+            "note": _GEE_DEMO_NOTE}
+
+
 def _gee_geometry(ee, cfg, attrs):
     """An ``ee.Geometry`` for the record: its mapped SHAPEFILE as a MultiPolygon when
     one is present (region reduction), otherwise its point. Returns (geom, is_region);
@@ -2509,6 +2590,14 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
 
     ee, reason = _gee_init(cfg)
     if ee is None:
+        # SYNTHETIC PREVIEW (opt-in): when Earth Engine isn't available, a connector
+        # with gee_demo=true returns deterministic synthetic data that still varies by
+        # the record's REGION + DATE window — so the per-record mapping is demonstrable
+        # before real earthengine-api + a service-account credential are configured.
+        if cfg.get("gee_demo"):
+            res = _gee_synthetic(cfg, attrs, out_entry)
+            _API_CACHE[cache_key] = (now, res)
+            return dict(res)
         res = _empty(False); res["note"] = reason
         return res
     try:
@@ -5092,12 +5181,20 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
 
 
 def _api_source_note(result, connector):
-    """A tiny muted footnote: the (secret-redacted) source URL the value came from."""
+    """A tiny muted footnote: the (secret-redacted) source URL the value came from,
+    plus the result's ``note`` when present (e.g. a synthetic-preview / degradation
+    message) so the user always knows when data isn't a live fetch."""
     url = result.get("url") or ""
-    return str(format_html(
+    note = (result or {}).get("note") or ""
+    base = format_html(
         "<div class='frappe-help' style='margin-top:3px;'>via connector "
-        "<code>{}</code> &middot; <span style='word-break:break-all;'>{}</span></div>",
-        connector.name, url))
+        "<code>{}</code>{}</div>",
+        connector.name,
+        format_html(" &middot; <span style='word-break:break-all;'>{}</span>", url) if url else "")
+    if note:
+        base = format_html("{}<div class='frappe-help' style='margin-top:2px;color:#b35900;'>"
+                           "<i class='bi bi-info-circle'></i> {}</div>", base, note)
+    return str(base)
 
 
 def _sparkline_svg(values):
@@ -7006,6 +7103,7 @@ def _connector_config_from_post(post, files=None):
         config["gee_start"] = (post.get("gee_start") or "").strip()
         config["gee_end"] = (post.get("gee_end") or "").strip()
         config["unit"] = (post.get("gee_unit") or "").strip()
+        config["gee_demo"] = (post.get("gee_demo") or "").strip().lower() in ("1", "on", "true", "yes")
         _parse_record_params(post, config)   # per-record shapefile region + date range
         try:
             config["gee_scale"] = int(post.get("gee_scale") or 30)
@@ -7132,6 +7230,7 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "gee_end": (config or {}).get("gee_end", ""),
         "gee_scale": (config or {}).get("gee_scale", 30),
         "gee_unit": (config or {}).get("unit", "") if (config or {}).get("kind") == "gee" else "",
+        "gee_demo": (config or {}).get("gee_demo", False),
         # Per-record region & time (WCS/GEE): round-trip the shared pr_* controls.
         "pr_region": (config or {}).get("spatial") == "shapefile"
         if (config or {}).get("kind") in ("wcs", "gee") else False,

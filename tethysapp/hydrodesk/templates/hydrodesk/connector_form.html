@@ -474,6 +474,13 @@
           </select>
           <div class="frappe-help">A stored credential whose secret is the service-account key JSON. Add one under <a href="{% url 'hydrodesk:credentials' %}">Credentials</a>. Click <strong>Test</strong> to confirm Earth Engine initialises.</div>
         </div>
+        <div class="frappe-form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="id_gee_demo" name="gee_demo" value="on" {% if gee_demo %}checked{% endif %}>
+            Synthetic preview <span class="frappe-muted frappe-text-sm">(no Earth Engine)</span>
+          </label>
+          <div class="frappe-help">When ticked, this connector returns deterministic <strong>synthetic</strong> data that still varies by each record's region + date window — so you can preview the per-record mapping before installing <code>earthengine-api</code> + a service-account credential. Replace with real EE for live data.</div>
+        </div>
       </div>
 
       {# ---- Per-record region & time (WCS + GEE): same shapefile + date-range mapping as NetCDF ---- #}
