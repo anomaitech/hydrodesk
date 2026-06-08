@@ -3429,6 +3429,7 @@ def _derive_columns(field_schema):
             if not (p or {}).get("x-api-connector")
             and not (p or {}).get("x-child-type")
             and not (p or {}).get("x-layout")
+            and not (p or {}).get("x-field") == "script"     # holds no value; outputs do
             and not (p or {}).get("x-field") == "shapefile"  # big GeoJSON blob, not a cell
             and not ((p or {}).get("type") == "array"
                      and (p or {}).get("x-widget") == "table")]
@@ -4379,6 +4380,11 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 # fields); just shows its expression so it's visible but inert.
                 f["widget"] = "formula"
                 f["formula"] = prop.get("x-formula") or ""
+            elif prop.get("x-field") == "script":
+                # Python-script field: READ-ONLY badge on the form (outputs are computed
+                # on save). The source itself isn't surfaced into the form context.
+                f["widget"] = "script"
+                f["script_outputs"] = prop.get("x-script-outputs") or []
             elif t in ("number", "integer"):
                 f["widget"] = "number"
                 f["step"] = "any" if t == "number" else "1"
@@ -4456,6 +4462,8 @@ def _coerce_attributes(field_schema, post):
         t = prop.get("type")
         if prop.get("x-layout") or prop.get("x-child-type"):
             continue  # layout marker (no data) / LINKED table (separate records)
+        if prop.get("x-field") in ("formula", "script") or prop.get("x-computed"):
+            continue  # computed on save (never user-provided) — a POST can't forge them
         if prop.get("x-field") == "shapefile":
             continue  # uploaded file -> handled from request.FILES, not POST text
         if t == "boolean":
@@ -4869,6 +4877,44 @@ def _coerce_script_output(value, ftype):
     if ft in ("text", "string", "date"):
         return v if (v is None or isinstance(v, str)) else str(v)
     return v   # time-series / table / other -> the json-ified structure
+
+
+def _script_output_json_type(field_type):
+    """The JSON-Schema 'type' for a computed-output property, from its UI field type."""
+    return {"Number": "number", "Text": "string", "Date": "string",
+            "Time-Series": "array", "Image": "string"}.get(field_type, "string")
+
+
+def _infer_script_output_field_type(value):
+    """Best-effort (field_type, kind) for a script result value — used to pre-select a
+    variable's type in the builder's Test-run output picker. The backend re-validates the
+    user's final choice, so a wrong guess is harmless."""
+    try:
+        import numpy as _np
+        if isinstance(value, _np.generic):
+            value = value.item()
+        elif isinstance(value, _np.ndarray):
+            return ("Time-Series", "series")
+    except Exception:
+        pass
+    try:
+        import pandas as _pd
+        if isinstance(value, (_pd.DataFrame, _pd.Series)):
+            return ("Time-Series", "series")
+        if isinstance(value, _pd.Timestamp):
+            return ("Date", "date")
+    except Exception:
+        pass
+    import datetime as _dt
+    if isinstance(value, bool):
+        return ("Text", "boolean")
+    if isinstance(value, (int, float)):
+        return ("Number", "number")
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return ("Date", "date")
+    if isinstance(value, (list, tuple)):
+        return ("Time-Series", "series")
+    return ("Text", "string")
 
 
 def _compute_scripts(field_schema, attrs):
@@ -6530,6 +6576,11 @@ def _schema_for(field_type, options):
     if ft == "formula":  # computed from other fields; Options column = the expression
         return {"type": "number", "x-field": "formula",
                 "x-formula": (options or "").strip()}
+    if ft == "script":  # sandboxed Python; Options column = the source. The declared
+        # outputs (x-script-outputs + one computed property each) are added by the third
+        # pass in _assemble_type_spec; this base property holds no record value itself.
+        return {"x-field": "script", "x-script": (options or "").strip(),
+                "x-script-outputs": []}
     if ft == "link":  # foreign key: Options column carries the target HydroType slug
         return {"type": "string", "x-link-type": (options or "").strip()}
     if ft == "api":  # live field: Options column carries the CONNECTOR NAME
@@ -6650,7 +6701,7 @@ def _builder_type_for(prop):
     if prop.get("x-child-type"):
         return "table"
     if prop.get("x-field") in ("currency", "percent", "duration", "phone",
-                               "color", "rating", "formula", "shapefile"):
+                               "color", "rating", "formula", "shapefile", "script"):
         return prop.get("x-field")  # formatted/computed types round-trip by x-field
     t = prop.get("type")
     if t == "array":
@@ -6690,6 +6741,8 @@ def _builder_options_for(prop, builder_type):
         return prop.get("x-api-connector") or ""
     if builder_type == "formula":
         return prop.get("x-formula") or ""
+    if builder_type == "script":
+        return prop.get("x-script") or ""
     if builder_type == "table":
         if prop.get("x-child-type"):
             obj = {"child_type": prop.get("x-child-type")}
@@ -6741,7 +6794,12 @@ def _schema_to_builder_rows(field_schema):
             "options": _builder_options_for(prop, bt),
             "required": key in required,
             "field_map": field_map,
-            "api_outputs": list(prop.get("x-api-outputs") or []),
+            # Outputs round-trip through the SAME api_outputs carrier; a script's
+            # x-script-outputs use the 'name' key, so normalize them to 'output' here.
+            "api_outputs": list(prop.get("x-api-outputs")
+                or [{"output": o.get("name"), "label": o.get("label"),
+                     "field_type": o.get("field_type")}
+                    for o in (prop.get("x-script-outputs") or []) if isinstance(o, dict)]),
             "nc_map": nc_map,
             "nc_map_json": json.dumps(nc_map) if nc_map else "",
             "default": dflt,
@@ -6898,6 +6956,8 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         # JSON list endpoints powering the Configure modal's Link/API pickers.
         "types_json_url": reverse("hydrodesk:types_json"),
         "connectors_json_url": reverse("hydrodesk:connectors_json"),
+        # The Python-Script field's Test-run endpoint (runs the sandbox on sample inputs).
+        "script_test_url": reverse("hydrodesk:script_test"),
         # Convenience deep-links for the modal's empty-state hints.
         "connectors_url": reverse("hydrodesk:connectors"),
         "new_type_url": reverse("hydrodesk:new_type"),
@@ -6938,6 +6998,9 @@ def _assemble_type_spec(post, force_slug=None):
     # exist. Each entry: (display_row_no, prop_name, connector_name, raw_field_map,
     # raw_api_outputs).
     api_rows = []
+    # Python-script rows captured for the THIRD PASS (after every property exists): each
+    # is (display_row_no, prop_name, raw_outputs) — the ticked outputs + their types.
+    script_rows = []
     layout_seq = 0
     for idx, row in enumerate(rows):
         label = row["label"]
@@ -6998,6 +7061,21 @@ def _assemble_type_spec(post, force_slug=None):
                              dict(row.get("field_map") or {}),
                              list(row.get("api_outputs") or []),
                              dict(row.get("nc_map") or {})))
+        if (row["type"] or "").strip().lower() == "script":
+            src = (row["options"] or "").strip()
+            if not src:
+                form_errors.append(
+                    f"Row {idx + 1}: a Python Script field needs a script in its config.")
+                continue
+            try:                              # reject a syntax error up front
+                from RestrictedPython import compile_restricted
+                compile_restricted(src, "<hydrodesk-script>", "exec")
+            except SyntaxError as _se:
+                form_errors.append(f"Row {idx + 1}: script has a syntax error: {str(_se)[:90]}")
+                continue
+            except Exception:
+                pass                          # non-syntax issues surface at run time
+            script_rows.append((idx + 1, prop_name, list(row.get("api_outputs") or [])))
         seen.add(prop_name)
         prop = _schema_for(row["type"], row["options"])
         prop["title"] = label  # _build_widgets/_derive_columns use title as the label
@@ -7143,6 +7221,30 @@ def _assemble_type_spec(post, force_slug=None):
                 }]
         if x_outputs:
             properties[prop_name]["x-api-outputs"] = x_outputs
+
+    # --- THIRD PASS: Python-script fields. Build x-script-outputs (keyed 'name' — the
+    # key _compute_scripts reads) from the ticked outputs, and emit one read-only
+    # COMPUTED property per output (typed) so the outputs are first-class fields
+    # (columns, Data API catalog, filtering). Added BEFORE x-order is built below. ---
+    for row_no, prop_name, raw_outputs in script_rows:
+        x_outputs = []
+        for o in raw_outputs:
+            if not isinstance(o, dict):
+                continue
+            oname = _slugify_underscore(o.get("output") or o.get("name") or "")
+            if not oname:
+                continue
+            ft = (o.get("field_type") or "Text").strip()
+            if ft not in _OUTPUT_FIELD_TYPES:
+                ft = "Text"
+            label = (o.get("label") or oname.replace("_", " ").title()).strip()
+            x_outputs.append({"name": oname, "label": label, "field_type": ft})
+            if oname not in properties:        # one read-only computed property per output
+                properties[oname] = {"type": _script_output_json_type(ft),
+                                     "x-computed": True, "x-computed-by": prop_name,
+                                     "title": label}
+                seen.add(oname)
+        properties[prop_name]["x-script-outputs"] = x_outputs
 
     if not properties:
         form_errors.append("Add at least one field (a row with a Label).")
@@ -8582,6 +8684,50 @@ def connector_inputs(request, conn_name=None):
     outputs = _outputs_for_checklist(_connector_outputs(cfg))
     return JsonResponse({"ok": True, "name": name, "inputs": field_inputs,
                          "outputs": outputs})
+
+
+@controller(name="script_test", url="script-test", title="Test Script")
+def script_test(request):
+    """Builder-only JSON endpoint for the Python-Script field's Test-run button.
+
+    POST a JSON body ``{source:<str>, inputs:{<field>: <sample value>, ...}}`` (CSRF
+    via X-CSRFToken). Runs the sandboxed script ONCE and returns its assigned variables
+    with an inferred field type + a JSON preview, plus the AST-detected free variables
+    (the script's INPUTS). Never persists anything. EXECUTES user code, so it is gated
+    to builders; the same RestrictedPython sandbox + SIGALRM timeout as the save path."""
+    if not _can_build(request):
+        return JsonResponse({"ok": False, "error": "permission denied"}, status=403)
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST required"}, status=405)
+    try:
+        body = json.loads((request.body or b"").decode("utf-8") or "{}")
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({"ok": False, "error": "bad request: %s" % exc}, status=400)
+    source = (body.get("source") or "").strip()
+    inputs = body.get("inputs") if isinstance(body.get("inputs"), dict) else {}
+    if not source:
+        return JsonResponse({"ok": False, "error": "script is empty"}, status=400)
+    free = _script_free_vars(source)
+    bound = {v: inputs.get(v) for v in free}          # only bind the detected free vars
+    try:
+        out = _run_python_script(source, bound)       # sandboxed, 5s SIGALRM timeout
+    except Exception as exc:
+        return JsonResponse({"ok": False,
+                             "error": ("%s: %s" % (type(exc).__name__, exc))[:240],
+                             "inputs": [{"name": v} for v in free]})
+    variables = []
+    for name, val in out.items():
+        ftype, kind = _infer_script_output_field_type(val)
+        try:
+            preview = json.dumps(_script_jsonify(val))
+        except (TypeError, ValueError):
+            preview = str(val)
+        if len(preview) > 200:
+            preview = preview[:200] + "…"
+        variables.append({"name": name, "kind": kind, "field_type": ftype,
+                          "preview": preview})
+    return JsonResponse({"ok": True, "inputs": [{"name": v} for v in free],
+                         "variables": variables})
 
 
 @controller(name="types_json", url="types.json", title="HydroTypes JSON")

@@ -159,6 +159,13 @@
                 <i class="bi bi-calculator"></i>
                 Computed: <code>{{ w.formula }}</code> &mdash; filled when you save.
               </div>
+            {% elif w.widget == "script" %}
+              {# Python-script field: READ-ONLY. Its outputs are computed on save. #}
+              <div class="frappe-muted frappe-text-sm"
+                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+                <i class="bi bi-code-slash"></i>
+                Python script &mdash; {{ w.script_outputs|length }} output{{ w.script_outputs|length|pluralize }} computed when you save.
+              </div>
             {% elif w.widget == "api" %}
               {# API field: READ-ONLY. It stores no input — the live value is
                  fetched from the connector when the record is VIEWED (detail). #}

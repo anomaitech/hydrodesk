@@ -134,6 +134,7 @@
               <option value="rating"   {% if r.type == 'rating' %}selected{% endif %}>Rating</option>
               <option value="shapefile" {% if r.type == 'shapefile' %}selected{% endif %}>Shapefile (upload)</option>
               <option value="formula"  {% if r.type == 'formula' %}selected{% endif %}>Formula (computed)</option>
+              <option value="script"   {% if r.type == 'script' %}selected{% endif %}>Python Script (computed)</option>
               <option value="link"     {% if r.type == 'link' %}selected{% endif %}>Link</option>
               <option value="api"      {% if r.type == 'api' %}selected{% endif %}>API</option>
               <option value="table"    {% if r.type == 'table' %}selected{% endif %}>Table</option>
@@ -200,6 +201,7 @@
               <option value="rating">Rating</option>
               <option value="shapefile">Shapefile (upload)</option>
               <option value="formula">Formula (computed)</option>
+              <option value="script">Python Script (computed)</option>
               <option value="link">Link</option>
               <option value="api">API</option>
               <option value="table">Table</option>
@@ -406,6 +408,13 @@
     var CONNECTORS_URL  = '{{ connectors_json_url }}';
     var CONNECTORS_PAGE = '{{ connectors_url }}';
     var NEW_TYPE_PAGE   = '{{ new_type_url }}';
+    var SCRIPT_TEST_URL = '{{ script_test_url }}';
+
+    // CSRF cookie reader (the /script-test POST executes code, so it is CSRF-checked).
+    function getCookie(name) {
+      var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+      return m ? decodeURIComponent(m.pop()) : '';
+    }
 
     // Types/connectors lists are fetched lazily once and cached for the session.
     var typesCache = null, connectorsCache = null;
@@ -551,6 +560,12 @@
                + (mapped ? ' &middot; ' + mapped + ' mapped' : '')
                + (nOut ? ' &middot; ' + nOut + (nOut === 1 ? ' output' : ' outputs') : '');
         } else { html = 'no connector'; muted = true; }
+      } else if (typ === 'script') {
+        if (val) {
+          var nso = rowOutputsSeed(wrap).length;
+          html = 'script: ' + val.length + ' chars'
+               + (nso ? ' &middot; ' + nso + (nso === 1 ? ' output' : ' outputs') : ' &middot; no outputs yet');
+        } else { html = 'no script yet'; muted = true; }
       } else if (typ === 'table') {
         var tparsed = null;
         try { tparsed = JSON.parse(val || 'null'); } catch (e) { tparsed = null; }
@@ -616,9 +631,12 @@
       }
       // Keep the API mapping panel populated (hidden inputs only) so the summary
       // count + a re-render survive; clear stale map + outputs when leaving API.
+      // A Script field reuses the field_outputs_<i> carrier, so KEEP outputs for it.
       if (p.type && p.type.value !== 'api' && p.panel) {
         p.panel.querySelectorAll('input[name^="field_map_"]').forEach(function (n) { n.remove(); });
-        p.panel.querySelectorAll('input[name^="field_outputs_"]').forEach(function (n) { n.remove(); });
+        if (p.type.value !== 'script') {
+          p.panel.querySelectorAll('input[name^="field_outputs_"]').forEach(function (n) { n.remove(); });
+        }
       }
       refreshSummary(wrap);
     }
@@ -638,6 +656,14 @@
         var outSeed = rowOutputsSeed(wrap);
         if (outSeed.length && !p.panel.querySelector('input[name="field_outputs_' + p.idx + '"]')) {
           writeRowOutputs(wrap, outSeed);
+        }
+      }
+      // Script rows reuse the field_outputs_<i> carrier — materialize its seed too so
+      // the picked outputs POST after a validation-error re-render without reopening.
+      if (p.type && p.type.value === 'script' && p.panel) {
+        var sOutSeed = rowOutputsSeed(wrap);
+        if (sOutSeed.length && !p.panel.querySelector('input[name="field_outputs_' + p.idx + '"]')) {
+          writeRowOutputs(wrap, sOutSeed);
         }
       }
       refreshRow(wrap);
@@ -687,6 +713,7 @@
       else if (t === 'api')     buildApiUI(wrap);
       else if (t === 'table')   buildTableUI(wrap);
       else if (t === 'formula') buildFormulaUI(wrap);
+      else if (t === 'script')  buildScriptUI(wrap);
       else if (isLayout)        buildEmptyUI(t);
       showModal();
     }
@@ -1050,6 +1077,173 @@
         + 'filled when the record is saved.';
       modalBody.appendChild(lbl); modalBody.appendChild(inp); modalBody.appendChild(note);
       applyFns.push(function () { if (p.opt) p.opt.value = (inp.value || '').trim(); });
+    }
+
+    // ---- PYTHON SCRIPT: code editor + Test-run (sandbox) + typed outputs picker ----
+    function buildScriptUI(wrap) {
+      var p = rowParts(wrap);
+      var seeded = {};                              // previously-picked outputs (edit mode)
+      rowOutputsSeed(wrap).forEach(function (o) { if (o && o.output) seeded[o.output] = o; });
+      var samples = {};                             // free-var -> sample value text
+      var FT = ['Number', 'Text', 'Date', 'Time-Series'];
+      var outRows = {};
+
+      var lbl = document.createElement('label');
+      lbl.className = 'frappe-label'; lbl.textContent = 'Python script';
+      var ed = document.createElement('textarea');
+      ed.className = 'form-control'; ed.rows = 12;
+      ed.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre;';
+      ed.placeholder = 'import numpy as np\narr = np.array(values)\nmean = float(arr.mean())';
+      ed.value = (p.opt && p.opt.value) || '';
+      var note = document.createElement('div');
+      note.className = 'hd-cfg-note';
+      note.innerHTML = 'Runs in a sandbox when the record is saved. Inputs are OTHER fields, '
+        + 'referenced by their <strong>key</strong> (auto-detected below). '
+        + '<code>numpy</code> as <code>np</code>, <code>pandas</code> as <code>pd</code>, plus '
+        + '<code>math / statistics / datetime</code> are available; no files or network. '
+        + 'Each variable you assign can be stored as a typed output field.';
+
+      var bar = document.createElement('div');
+      bar.style.cssText = 'display:flex;align-items:center;gap:10px;margin:10px 0;';
+      var testBtn = document.createElement('button');
+      testBtn.type = 'button'; testBtn.className = 'btn btn-default btn-sm';
+      testBtn.innerHTML = '<i class="bi bi-play"></i> Test run';
+      var status = document.createElement('span');
+      status.className = 'frappe-text-sm';
+      bar.appendChild(testBtn); bar.appendChild(status);
+
+      var inHead = document.createElement('div');
+      inHead.className = 'frappe-help'; inHead.style.margin = '8px 0 4px';
+      inHead.textContent = 'Inputs — sample values for the test run:';
+      var inBox = document.createElement('div');
+      var outHead = document.createElement('div');
+      outHead.className = 'frappe-help'; outHead.style.margin = '12px 0 4px';
+      outHead.textContent = 'Outputs — tick to store as a typed field:';
+      var outBox = document.createElement('div');
+
+      modalBody.appendChild(lbl); modalBody.appendChild(ed); modalBody.appendChild(note);
+      modalBody.appendChild(bar);
+      modalBody.appendChild(inHead); modalBody.appendChild(inBox);
+      modalBody.appendChild(outHead); modalBody.appendChild(outBox);
+
+      function renderInputs(inputs) {
+        inBox.querySelectorAll('input[data-iname]').forEach(function (n) {
+          samples[n.getAttribute('data-iname')] = n.value;       // preserve typed samples
+        });
+        inBox.innerHTML = '';
+        inputs = inputs || [];
+        if (!inputs.length) {
+          var none = document.createElement('div');
+          none.className = 'frappe-text-sm frappe-muted';
+          none.textContent = 'No inputs detected yet (Test run to detect fields the script reads).';
+          inBox.appendChild(none); return;
+        }
+        inputs.forEach(function (i) {
+          var nm = i.name;
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:4px 0;';
+          var l = document.createElement('code'); l.textContent = nm; l.style.minWidth = '110px';
+          var v = document.createElement('input');
+          v.type = 'text'; v.className = 'form-control form-control-sm';
+          v.setAttribute('data-iname', nm);
+          v.placeholder = 'sample e.g. [1,2,3,4] or 5';
+          if (samples[nm] != null) v.value = samples[nm];
+          v.addEventListener('input', function () { samples[nm] = v.value; });
+          row.appendChild(l); row.appendChild(v); inBox.appendChild(row);
+        });
+      }
+
+      function renderOutputs(variables, errored) {
+        outBox.innerHTML = ''; outRows = {};
+        var names = [], meta = {};
+        (variables || []).forEach(function (v) { names.push(v.name); meta[v.name] = v; });
+        Object.keys(seeded).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+        if (!names.length) {
+          var none = document.createElement('div');
+          none.className = 'frappe-text-sm frappe-muted';
+          none.textContent = errored ? 'Fix the error above, then Test run to list outputs.'
+                                      : 'Run the script to list its variables.';
+          outBox.appendChild(none); return;
+        }
+        names.forEach(function (nm) {
+          var v = meta[nm] || {}, sv = seeded[nm];
+          var item = document.createElement('div');
+          item.style.cssText = 'display:flex;align-items:center;gap:8px;margin:5px 0;flex-wrap:wrap;';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.className = 'form-check-input';
+          cb.checked = !!sv || (!Object.keys(seeded).length && !!v.name);
+          var lab = document.createElement('code'); lab.textContent = nm; lab.style.minWidth = '90px';
+          var labelIn = document.createElement('input');
+          labelIn.type = 'text'; labelIn.className = 'form-control form-control-sm';
+          labelIn.style.width = '140px'; labelIn.placeholder = 'Label';
+          labelIn.value = (sv && sv.label) || nm.replace(/_/g, ' ').replace(/\b\w/g,
+            function (c) { return c.toUpperCase(); });
+          var ft = document.createElement('select');
+          ft.className = 'form-select form-select-sm'; ft.style.width = 'auto';
+          FT.forEach(function (t) {
+            var op = document.createElement('option');
+            op.value = t; op.textContent = (t === 'Time-Series' ? 'Table' : t); ft.appendChild(op);
+          });
+          ft.value = (sv && sv.field_type) || v.field_type || 'Text';
+          outRows[nm] = { cb: cb, labelInput: labelIn, ftSelect: ft };
+          item.appendChild(cb); item.appendChild(lab); item.appendChild(labelIn); item.appendChild(ft);
+          if (v.preview != null) {
+            var prev = document.createElement('span');
+            prev.className = 'frappe-help'; prev.style.cssText = 'flex-basis:100%;margin-left:26px;';
+            prev.textContent = '= ' + v.preview; item.appendChild(prev);
+          }
+          outBox.appendChild(item);
+        });
+      }
+
+      function doTest() {
+        var src = (ed.value || '').trim();
+        if (!src) { status.innerHTML = '<span class="frappe-muted">write a script first</span>'; return; }
+        var inputs = {};
+        Object.keys(samples).forEach(function (k) {
+          var raw = (samples[k] || '').trim();
+          if (raw === '') return;
+          try { inputs[k] = JSON.parse(raw); } catch (e) { inputs[k] = raw; }
+        });
+        status.innerHTML = '<span class="frappe-muted">Running…</span>'; testBtn.disabled = true;
+        fetch(SCRIPT_TEST_URL, {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+          body: JSON.stringify({ source: src, inputs: inputs })
+        }).then(function (r) { return r.json(); }).then(function (d) {
+          testBtn.disabled = false;
+          renderInputs(d.inputs || []);
+          if (d.ok) {
+            var nv = (d.variables || []).length;
+            status.innerHTML = '<span style="color:#1a7f37;">&#10003; ran &mdash; '
+              + nv + ' variable' + (nv === 1 ? '' : 's') + '</span>';
+            renderOutputs(d.variables || [], false);
+          } else {
+            status.innerHTML = '<span style="color:#c0392b;">' + escapeHtml(d.error || 'error') + '</span>';
+            renderOutputs([], true);
+          }
+        }).catch(function () {
+          testBtn.disabled = false;
+          status.innerHTML = '<span style="color:#c0392b;">request failed</span>';
+        });
+      }
+      testBtn.addEventListener('click', doTest);
+
+      renderInputs([]);                 // seed view (edit mode shows picked outputs)
+      renderOutputs([], false);
+
+      applyFns.push(function () {
+        if (p.opt) p.opt.value = (ed.value || '').trim();
+        var picked = [];
+        Object.keys(outRows).forEach(function (nm) {
+          var r = outRows[nm];
+          if (r.cb.checked) {
+            picked.push({ output: nm, label: (r.labelInput.value || nm).trim(),
+                          field_type: r.ftSelect.value });
+          }
+        });
+        writeRowOutputs(wrap, picked);
+      });
     }
 
     // ---- API: connector <select> + per-input field mapping (x-api-map) ----
