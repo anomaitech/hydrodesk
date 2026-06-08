@@ -855,6 +855,60 @@ def _polygon_rings(cfg):
     return _parse_polygon_text(cfg.get("polygon"))
 
 
+def _shapefile_upload_to_geojson(file_obj):
+    """IMPORT an uploaded shapefile — a zipped bundle (.shp+.shx+.dbf[+.prj]) or a
+    bare .shp — and return its FIRST polygon as a GeoJSON string. We convert at
+    upload time so the geometry is stored INLINE in the connector's ``polygon``
+    config (a pure-JSON row): no server file to keep, and the existing polygon
+    machinery (_parse_polygon_text -> _polygon_rings -> _netcdf_polygon_ys) handles
+    it unchanged. None if pyshp is missing or nothing polygonal is found."""
+    import io
+    import json as _json
+    import zipfile
+    try:
+        import shapefile  # pyshp
+    except Exception:
+        return None
+    try:
+        data = file_obj.read()
+    except Exception:
+        return None
+    if not data:
+        return None
+    try:
+        buf = io.BytesIO(data)
+        if zipfile.is_zipfile(buf):
+            buf.seek(0)
+            zf = zipfile.ZipFile(buf)
+
+            def _pick(ext):
+                for n in zf.namelist():
+                    base = n.rsplit("/", 1)[-1]
+                    if base.lower().endswith(ext) and not base.startswith("."):
+                        return n
+                return None
+
+            shp_n = _pick(".shp")
+            if not shp_n:
+                return None
+            kw = {"shp": io.BytesIO(zf.read(shp_n))}
+            for ext, key in ((".shx", "shx"), (".dbf", "dbf")):
+                nm = _pick(ext)
+                if nm:
+                    kw[key] = io.BytesIO(zf.read(nm))
+            reader = shapefile.Reader(**kw)
+        else:
+            # A bare .shp carries the geometry on its own (shx is only an index).
+            reader = shapefile.Reader(shp=io.BytesIO(data))
+        for shp in reader.iterShapes():
+            gj = getattr(shp, "__geo_interface__", None)
+            if gj and (gj.get("type") or "") in ("Polygon", "MultiPolygon"):
+                return _json.dumps(gj)
+    except Exception:
+        return None
+    return None
+
+
 def _points_in_polygon(lon2d, lat2d, rings):
     """Boolean mask of which (lon,lat) grid points fall inside the polygon (numpy
     ray-cast; rings XOR'd so holes are excluded). Longitudes are normalised to
@@ -5756,9 +5810,13 @@ def _parse_json_field(raw, default):
     return val, None
 
 
-def _connector_config_from_post(post):
+def _connector_config_from_post(post, files=None):
     """Assemble a HydroConnector.config dict from the builder POST, with the auth
-    block, paths, and templated headers/query. Returns (name, config, errors)."""
+    block, paths, and templated headers/query. Returns (name, config, errors).
+
+    ``files`` is request.FILES — an uploaded shapefile (zip or .shp) is IMPORTED
+    here (converted to inline GeoJSON in config['polygon']) for the polygon mode."""
+    files = files or {}
     errors = []
     name = (post.get("name") or "").strip()
     if not name:
@@ -5863,10 +5921,21 @@ def _connector_config_from_post(post):
                     pass
         config["polygon"] = (post.get("nc_polygon") or "").strip()      # WKT / GeoJSON
         config["shapefile"] = (post.get("nc_shapefile") or "").strip()  # server .shp path
+        # IMPORT an uploaded shapefile (zip or .shp): convert to inline GeoJSON now
+        # and store it in polygon, so the connector stays a pure-JSON row.
+        up = files.get("nc_shapefile_file")
+        if up is not None:
+            gj = _shapefile_upload_to_geojson(up)
+            if gj:
+                config["polygon"] = gj
+            else:
+                errors.append("Could not read a polygon from the uploaded shapefile "
+                              "(expected a .zip bundle of .shp/.shx/.dbf, or a .shp).")
         if spatial in ("point", "bbox", "polygon", "cells") and not (config["lat_dim"] and config["lon_dim"]):
             errors.append("A point/bbox/polygon/cells spatial filter needs the Lat dim and Lon dim names.")
         if spatial == "polygon" and not (config["polygon"] or config["shapefile"]):
-            errors.append("A polygon spatial filter needs a WKT/GeoJSON polygon or a shapefile path.")
+            errors.append("A polygon spatial filter needs a WKT/GeoJSON polygon, "
+                          "an uploaded shapefile, or a shapefile path.")
         if kind == "thredds":
             config["catalog_url"] = (post.get("catalog_url") or "").strip()
             config["dataset"] = (post.get("dataset") or "").strip()
@@ -6110,7 +6179,7 @@ def connectors(request):
     engine = App.get_persistent_store_database("hydro_db")
 
     if request.method == "POST":
-        name, config, form_errors = _connector_config_from_post(request.POST)
+        name, config, form_errors = _connector_config_from_post(request.POST, request.FILES)
         if not form_errors:
             with Session(engine) as session:
                 exists = session.execute(
@@ -6170,7 +6239,7 @@ def connector_edit(request, conn_id=None):
     engine = App.get_persistent_store_database("hydro_db")
 
     if request.method == "POST":
-        name, config, form_errors = _connector_config_from_post(request.POST)
+        name, config, form_errors = _connector_config_from_post(request.POST, request.FILES)
         if not form_errors:
             with Session(engine) as session:
                 conn = session.execute(
@@ -6251,7 +6320,7 @@ def connector_test(request):
             config = body.get("config") or {}
             attrs = body.get("attrs") or {}
         else:
-            name, config, _ = _connector_config_from_post(request.POST)
+            name, config, _ = _connector_config_from_post(request.POST, request.FILES)
             attrs = json.loads(request.POST.get("attrs") or "{}")
     except (ValueError, TypeError) as exc:
         return JsonResponse({"ok": False, "error": f"bad request: {exc}"}, status=400)

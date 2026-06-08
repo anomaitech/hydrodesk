@@ -67,7 +67,7 @@
     </div>
   </div>
 
-  <form method="post" action="{{ form_action }}" class="frappe-form-card" id="hd-connector-form" novalidate>
+  <form method="post" action="{{ form_action }}" class="frappe-form-card" id="hd-connector-form" enctype="multipart/form-data" novalidate>
     {% csrf_token %}
 
     <div class="frappe-form-section">
@@ -190,7 +190,13 @@
                         placeholder="POLYGON((-175 -15, -145 -15, -145 15, -175 15, -175 -15))">{{ nc_polygon }}</textarea>
             </div>
             <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_shapefile">…or shapefile path <span class="frappe-muted frappe-text-sm">(.shp on the server)</span></label>
+              <label class="frappe-label" for="id_nc_shapefile_file">…or import a shapefile <span class="frappe-muted frappe-text-sm">(upload a .zip bundle, or a .shp)</span></label>
+              <input class="form-control" type="file" id="id_nc_shapefile_file" name="nc_shapefile_file"
+                     accept=".zip,.shp,application/zip">
+              <div class="frappe-help">Upload a zipped shapefile (<code>.shp</code> + <code>.shx</code> + <code>.dbf</code>) or a bare <code>.shp</code>. On save it is converted to an inline GeoJSON polygon — no file is kept on the server. (Then re-open to Test, which reads the stored polygon.)</div>
+            </div>
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_nc_shapefile">…or shapefile path <span class="frappe-muted frappe-text-sm">(.shp already on the server)</span></label>
               <input class="form-control" type="text" id="id_nc_shapefile" name="nc_shapefile"
                      value="{{ nc_shapefile }}" placeholder="/path/to/region.shp">
               <div class="frappe-help">The grid cells inside the polygon's first ring (holes excluded) are averaged. Lon is normalised to −180…180; a polygon crossing the antimeridian isn't supported yet.</div>
