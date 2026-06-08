@@ -32,6 +32,7 @@
       <span class="frappe-sidebar-ico">&#9632;</span> Home
     </a>
   </li>
+  {% if request.user.is_superuser or request.user.is_staff %}
   <li class="nav-item">
     <a class="nav-link{% block nav_active_doctypes %}{% endblock %}" href="{% url 'hydrodesk:doctypes' %}">
       <span class="frappe-sidebar-ico">&#9707;</span> DocTypes
@@ -42,6 +43,7 @@
       <span class="frappe-sidebar-ico">&#43;</span> New HydroType
     </a>
   </li>
+  {% endif %}
   <li class="nav-item">
     <a class="nav-link{% block nav_active_map %}{% endblock %}" href="{% url 'hydrodesk:map' %}">
       <span class="frappe-sidebar-ico">&#9678;</span> Map View

@@ -26,9 +26,11 @@
       <span class="indicator-pill gray">{{ record_count }} record{{ record_count|pluralize }}</span>
     </div>
     <div class="frappe-page-actions">
+      {% if request.user.is_superuser or request.user.is_staff %}
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:edit_type' slug=slug %}">
         <i class="bi bi-pencil"></i> Edit type
       </a>
+      {% endif %}
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:map' %}">
         <i class="bi bi-geo-alt"></i> Map View
       </a>

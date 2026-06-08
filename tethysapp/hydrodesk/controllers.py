@@ -69,17 +69,22 @@ def desk_home(request):
     types = []
     with Session(engine) as session:
         rows = session.execute(
-            select(m.HydroType.slug, m.HydroType.display_name, m.HydroType.geometry_kind)
+            select(m.HydroType.slug, m.HydroType.display_name,
+                   m.HydroType.geometry_kind, m.HydroType.field_schema)
             .order_by(m.HydroType.display_name)
         ).all()
-        for slug, display_name, gkind in rows:
+        for slug, display_name, gkind, fs in rows:
+            if not _user_can(request, fs, "read"):
+                continue  # hide types the user has no read permission for
             count = session.execute(
                 select(func.count()).select_from(m.HydroRecord)
                 .where(m.HydroRecord.hydrotype_slug == slug)
             ).scalar()
             types.append({"slug": slug, "display_name": display_name,
                           "geometry_kind": gkind, "count": count or 0})
-    return render(request, "hydrodesk/home.html", {"types": types, "total": len(types)})
+    return render(request, "hydrodesk/home.html",
+                  {"types": types, "total": len(types),
+                   "can_build": _can_build(request)})
 
 
 def _records_geojson(slug):
@@ -2202,6 +2207,17 @@ def _denied(request, action, display_name):
         "home_url": reverse("hydrodesk:home"),
     }).content
     return HttpResponseForbidden(html)
+
+
+def _can_build(request):
+    """True if the user may MANAGE the SCHEMA — create / edit / delete / duplicate
+    HydroTypes and reach the DocType builder. Schema editing is privileged: superuser
+    or staff only. (Per-record access is governed separately by _user_can +
+    x-permissions; this gate is about who can change the metadata model itself.)"""
+    user = getattr(request, "user", None)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    return bool(user.is_superuser or user.is_staff)
 
 
 def _label_for(target_field_schema, attrs):
@@ -4600,6 +4616,8 @@ def new_hydrotype(request):
             a duplicate slug). On success redirect to the new type's List view; on
             error re-render with messages + entries.
     """
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
     if request.method != "POST":
         blank = [{"label": "", "type": "text", "options": "", "required": False}
                  for _ in range(_BUILDER_MIN_ROWS)]
@@ -4640,6 +4658,8 @@ def edit_hydrotype(request, slug="monitoring_station"):
     version. NOTE: renaming a field's LABEL changes its derived key, so data stored
     under the old key on existing records is no longer shown (a rename-field caveat).
     """
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
     engine = App.get_persistent_store_database("hydro_db")
     with Session(engine) as session:
         meta = _load_hydrotype(session, slug)
@@ -4715,6 +4735,8 @@ def delete_hydrotype(request, slug="monitoring_station"):
             redirect Home. Records of OTHER types are never touched (a linked child
             of a different type is left intact, just unparented).
     """
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
     engine = App.get_persistent_store_database("hydro_db")
     with Session(engine) as session:
         meta = _load_hydrotype(session, slug)
@@ -4770,6 +4792,8 @@ def doctypes_list(request):
     count, record count, with per-row Open/Edit/Duplicate/Delete and select +
     bulk-delete. The home page shows the same types as cards; this is the tabular
     management surface."""
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
     engine = App.get_persistent_store_database("hydro_db")
     types = []
     with Session(engine) as session:
@@ -4799,6 +4823,8 @@ def doctypes_bulk_delete(request):
     """Bulk-delete the SELECTED HydroTypes AND all their records (POST only). The
     list posts ticked rows as repeated ``slugs``; records of the deleted types go
     too. Records of OTHER types are never touched."""
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
     if request.method == "POST":
         slugs = [s.strip() for s in request.POST.getlist("slugs") if s.strip()]
         if slugs:
@@ -4817,6 +4843,8 @@ def doctypes_bulk_delete(request):
 def duplicate_hydrotype(request, slug="monitoring_station"):
     """Clone a HydroType's full definition under a new name/slug ('<name> Copy'),
     then open it in the edit builder. No records are copied (POST only)."""
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
     if request.method != "POST":
         return redirect(reverse("hydrodesk:doctypes"))
     engine = App.get_persistent_store_database("hydro_db")

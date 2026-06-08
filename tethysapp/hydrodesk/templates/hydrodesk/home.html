@@ -26,9 +26,11 @@
       </div>
     </div>
     <div class="frappe-page-actions">
+      {% if can_build %}
       <a class="btn btn-primary" href="{% url 'hydrodesk:new_type' %}">
         <i class="bi bi-plus-lg"></i> New HydroType
       </a>
+      {% endif %}
     </div>
   </div>
 
@@ -36,10 +38,12 @@
     <div class="frappe-widget-group-title">HydroTypes</div>
     <div class="frappe-shortcut-grid">
 
+      {% if can_build %}
       <a class="frappe-shortcut-card create" href="{% url 'hydrodesk:new_type' %}">
         <span class="plus">&#43;</span>
         <span>New HydroType</span>
       </a>
+      {% endif %}
 
       {% for t in types %}
       <a class="frappe-shortcut-card" href="{% url 'hydrodesk:list' slug=t.slug %}">
@@ -54,7 +58,7 @@
         <div class="frappe-shortcut-actions">
           <span class="btn btn-default btn-sm">Open list</span>
           <span class="btn btn-link btn-sm" onclick="event.preventDefault();event.stopPropagation();window.location='{% url 'hydrodesk:new' slug=t.slug %}';">+ Record</span>
-          <span class="btn btn-link btn-sm" title="Edit this type's fields" onclick="event.preventDefault();event.stopPropagation();window.location='{% url 'hydrodesk:edit_type' slug=t.slug %}';"><i class="bi bi-pencil"></i> Edit type</span>
+          {% if can_build %}<span class="btn btn-link btn-sm" title="Edit this type's fields" onclick="event.preventDefault();event.stopPropagation();window.location='{% url 'hydrodesk:edit_type' slug=t.slug %}';"><i class="bi bi-pencil"></i> Edit type</span>{% endif %}
         </div>
       </a>
       {% empty %}
