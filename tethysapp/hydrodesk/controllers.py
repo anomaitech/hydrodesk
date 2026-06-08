@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid as uuidlib
@@ -473,7 +474,72 @@ def _extract_output(data, out):
             "kind": "series", "columns": columns, "n": n,
             "x": [x for x, _ in pairs], "y": [y for _, y in pairs],
         }
-    return {"kind": "value", "value": _json_path(data, out.get("path") or "")}
+    return {"kind": "value", "value": _coerce_output(_json_path(data, out.get("path") or ""),
+                                                     out.get("type"))}
+
+
+def _coerce_output(value, typ):
+    """Coerce an extracted value by its declared output type so a number that arrived
+    as a JSON string (e.g. '1.5') becomes a float for charts/math. Strings/dates/objects
+    pass through unchanged; an un-coercible value is left as-is (never raises)."""
+    typ = (typ or "").lower()
+    if value is None or not isinstance(value, str):
+        return value
+    if typ in ("number", "float", "double"):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    if typ in ("integer", "int"):
+        try:
+            return int(float(value))
+        except ValueError:
+            return value
+    return value
+
+
+def _render_body(template, attrs):
+    """Substitute {field} tokens in a request BODY template from attrs — WITHOUT URL
+    encoding (a JSON/GraphQL body, not a URL). A missing token becomes ''. Structurally
+    injection-safe (only bare {name} tokens, looked up in a plain dict)."""
+    if not template:
+        return None
+
+    def _sub(match):
+        v = attrs.get(match.group(1))
+        return "" if v in (None, "") else str(v)
+
+    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, str(template))
+
+
+def _merge_extracted(pages):
+    """Merge per-page _extract_output results from a paginated fetch. Series pages are
+    concatenated column-wise (aligned by column name); value/json pages keep the LAST
+    non-empty. ``pages`` is the list of extracted dicts in page order."""
+    pages = [p for p in pages if p]
+    if not pages:
+        return {"kind": "value", "value": None}
+    if any(p.get("kind") == "series" for p in pages):
+        names, cols = [], {}
+        for p in pages:
+            for c in (p.get("columns") or []):
+                nm = c.get("name")
+                if nm not in cols:
+                    cols[nm] = []
+                    names.append(nm)
+                cols[nm].extend(c.get("values") or [])
+        columns = [{"name": nm, "values": cols[nm]} for nm in names]
+        n = max((len(c["values"]) for c in columns), default=0)
+        xs = columns[0]["values"] if columns else []
+        yi = next((i for i, c in enumerate(columns)
+                   if (c["name"] or "").lower() == "value"), 1 if len(columns) > 1 else None)
+        ys = columns[yi]["values"] if (yi is not None and yi < len(columns)) else []
+        pairs = [(x, y) for x, y in zip(xs, ys) if y not in _NO_DATA]
+        return {"kind": "series", "columns": columns, "n": n,
+                "x": [x for x, _ in pairs], "y": [y for _, y in pairs]}
+    last = next((p for p in reversed(pages) if p.get("value") is not None
+                 or p.get("json") is not None), pages[-1])
+    return last
 
 
 def _render_template(template, attrs):
@@ -567,27 +633,90 @@ def _resolve_secret(session, credential_name):
     return row[0] if row is not None else None
 
 
-def _api_request_json(connector_name, url, method, headers, timeout):
-    """Perform ONE cached HTTP request and return parsed JSON (or None).
+def _xml_to_dict(elem):
+    """Normalise an XML ElementTree element into a JSON-shaped dict so the SAME
+    _json_path / _json_path_series extractor works on XML APIs (WaterML/SOAP/Atom).
+    Namespaces are stripped; attributes become '@name' keys; repeated child tags
+    become a list; a leaf element becomes its (stripped) text."""
+    tag = elem.tag.split("}")[-1]
+    kids = list(elem)
+    if not kids:
+        text = (elem.text or "").strip()
+        if elem.attrib:
+            node = {"@" + k.split("}")[-1]: v for k, v in elem.attrib.items()}
+            node["#text"] = text
+            return {tag: node}
+        return {tag: text}
+    node = {}
+    for c in kids:
+        for k, v in _xml_to_dict(c).items():
+            if k in node:
+                if not isinstance(node[k], list):
+                    node[k] = [node[k]]
+                node[k].append(v)
+            else:
+                node[k] = v
+    for k, v in elem.attrib.items():
+        node["@" + k.split("}")[-1]] = v
+    return {tag: node}
 
-    Cache key is (connector_name, url) so two records with different substituted
-    ids cache independently, but repeated views of the same record reuse one fetch
-    within the TTL. On any failure returns None (graceful), exactly like the NWIS
-    fallback — a flaky API never 500s a detail page."""
+
+# Side-channel for the LAST request error per connector (status/reason), so fetch_api
+# can surface "API error: 404 Not Found" instead of a silent no-data. Filled by
+# _api_request_json, read once by fetch_api (mirrors the _API_TTL_BY_NAME pattern).
+_API_LAST_ERROR = {}
+
+
+def _api_request_json(connector_name, url, method, headers, timeout,
+                      body=None, content_type=None, accept=None):
+    """Perform ONE cached HTTP request and return a parsed dict/list tree (or None).
+
+    Parses JSON; falls back to XML (normalised to a dict tree) when the body isn't
+    JSON or the Content-Type is XML — so the same path extractor covers both. Sends a
+    request BODY (bytes) when given, with its Content-Type. Records the last HTTP error
+    in _API_LAST_ERROR for the caller to surface. On any failure returns None (graceful)
+    — a flaky API never 500s a detail page. Cache key folds in the method + body so a
+    POST query caches distinctly from a GET."""
     now = time.time()
-    key = (connector_name, url)
+    key = (connector_name, url, (method or "GET").upper(), body or "")
     cached = _API_CACHE.get(key)
     if cached and (now - cached[0]) < _api_cache_ttl(connector_name):
         return cached[1]
+    _API_LAST_ERROR.pop(connector_name, None)
     try:
-        req = urllib.request.Request(url, method=(method or "GET").upper())
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        req = urllib.request.Request(url, data=data, method=(method or "GET").upper())
         for hk, hv in (headers or {}).items():
             req.add_header(hk, hv)
+        if data is not None and content_type:
+            req.add_header("Content-Type", content_type)
+        if accept:
+            req.add_header("Accept", accept)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.load(resp)
+            raw = resp.read()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+        text = raw.decode("utf-8-sig", "replace")
+        payload = None
+        if "xml" not in ctype:
+            try:
+                payload = json.loads(text)
+            except (ValueError, TypeError):
+                payload = None
+        if payload is None:                       # not JSON -> try XML -> dict tree
+            try:
+                import xml.etree.ElementTree as ET
+                payload = _xml_to_dict(ET.fromstring(text))
+            except Exception:
+                payload = None
+        if payload is None:
+            return None
         _API_CACHE[key] = (now, payload)
         return payload
-    except Exception:
+    except urllib.error.HTTPError as exc:
+        _API_LAST_ERROR[connector_name] = "%s %s" % (exc.code, exc.reason)
+        return None
+    except Exception as exc:
+        _API_LAST_ERROR[connector_name] = type(exc).__name__
         return None
 
 
@@ -2858,25 +2987,64 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
         redacted_url = redacted_url.replace(urllib.parse.quote(str(secret), safe=""), "***")
         redacted_url = redacted_url.replace(str(secret), "***")
 
+    # Optional request BODY (templated like the URL, but NOT URL-encoded) -> POST/PUT
+    # APIs (GraphQL, POST-search, OGC 'filter'). A dict body is JSON-encoded verbatim.
+    body = None
+    body_tpl = cfg.get("body_template")
+    if body_tpl is None and cfg.get("body") is not None:
+        body_tpl = cfg.get("body")
+    if isinstance(body_tpl, (dict, list)):
+        body = json.dumps(body_tpl)
+    elif body_tpl:
+        body = _render_body(str(body_tpl), attrs)
+    content_type = cfg.get("body_content_type") or ("application/json" if body else None)
+    accept = cfg.get("accept")
+
     now = time.time()
-    cached_entry = _API_CACHE.get((name, url))
+    _m = (method or "GET").upper()
+    cached_entry = _API_CACHE.get((name, url, _m, body or ""))
     was_cached = bool(cached_entry and (now - cached_entry[0]) < ttl)
 
-    data = _api_request_json(name, url, method, headers, timeout)
+    # PAGINATION: follow a next-link (paginate.next_path) up to max_pages, then merge.
+    pg = cfg.get("paginate") or {}
+    next_path = (pg.get("next_path") or "").strip()
+    max_pages = max(1, min(int(pg.get("max_pages") or 1), 50))
+    pages, page_url, seen = [], url, set()
+    for _ in range(max_pages if next_path else 1):
+        d = _api_request_json(name, page_url, _m, headers, timeout,
+                              body=body, content_type=content_type, accept=accept)
+        if d is None:
+            break
+        pages.append(d)
+        if not next_path:
+            break
+        nxt = _json_path(d, next_path)
+        if nxt in (None, ""):
+            break
+        nxt = str(nxt)
+        if nxt.startswith("/") or not nxt.startswith("http"):
+            nxt = urllib.parse.urljoin(page_url, nxt)
+        if nxt in seen or nxt == page_url:
+            break
+        seen.add(page_url)
+        page_url = nxt
 
-    if data is None:
-        return _soft_empty(redacted_url, was_cached)
+    if not pages:
+        res = _soft_empty(redacted_url, was_cached)
+        err = _API_LAST_ERROR.get(name)
+        if err:
+            res["note"] = "API error: " + err
+        return res
 
-    # JSON (legacy raw/scoped tree, Test flow only): scope by the connector's
-    # output_path then return the parsed sub-tree. No outputs[] equivalent.
+    # JSON (legacy raw/scoped tree, Test flow only): scope page 1 by the output_path.
     if out_kind == "json":
         op = cfg.get("output_path") or ""
-        scoped = _json_path(data, op) if op else data
+        scoped = _json_path(pages[0], op) if op else pages[0]
         return {"kind": "json", "json": scoped, "url": redacted_url, "cached": was_cached}
 
-    # Extract the SELECTED named output from the ONE parsed response. _extract_output
-    # reuses the EXACT _NO_DATA pairwise filter for series so the sparkline is clean.
-    extracted = _extract_output(data, out_entry)
+    # Extract the SELECTED named output from each page, then merge (series concat / value
+    # keep-last). _extract_output reuses the _NO_DATA pairwise filter for the sparkline.
+    extracted = _merge_extracted([_extract_output(p, out_entry) for p in pages])
     extracted["url"] = redacted_url
     extracted["cached"] = was_cached
     return extracted
@@ -7166,6 +7334,22 @@ def _connector_config_from_post(post, files=None):
             errors.append("A GEE connector needs an Earth Engine asset ID.")
     else:
         _parse_record_params(post, config, files)   # per-record {bbox}/{datetime} (OGC REST)
+        # Generality knobs: a request BODY (POST/PUT/GraphQL), an Accept header, and
+        # pagination (follow a next-link). All optional + stored only when set.
+        body_tpl = (post.get("body_template") or "").strip()
+        if body_tpl:
+            config["body_template"] = body_tpl
+            config["body_content_type"] = (post.get("body_content_type") or "application/json").strip()
+        accept = (post.get("accept") or "").strip()
+        if accept:
+            config["accept"] = accept
+        next_path = (post.get("paginate_next_path") or "").strip()
+        if next_path:
+            try:
+                mp = max(1, min(50, int(post.get("paginate_max_pages") or 10)))
+            except (TypeError, ValueError):
+                mp = 10
+            config["paginate"] = {"next_path": next_path, "max_pages": mp}
         if not config["url_template"]:
             errors.append("URL Template is required.")
 
@@ -7287,6 +7471,12 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "pr_time_end": (config or {}).get("time_end", "") if (config or {}).get("kind") in ("wcs", "gee", "rest") else "",
         "pr_polygon": (config or {}).get("polygon", "") if (config or {}).get("kind") in ("wcs", "gee", "rest") else "",
         "time_axis": (config or {}).get("time_axis", "ansi"),
+        # REST generality knobs (body / pagination / Accept).
+        "body_template": (config or {}).get("body_template", ""),
+        "body_content_type": (config or {}).get("body_content_type", "application/json"),
+        "accept": (config or {}).get("accept", ""),
+        "paginate_next_path": ((config or {}).get("paginate") or {}).get("next_path", ""),
+        "paginate_max_pages": ((config or {}).get("paginate") or {}).get("max_pages", 10),
         "url_template": (config or {}).get("url_template", ""),
         "method": (config or {}).get("method", "GET"),
         "headers": json.dumps((config or {}).get("headers") or {}, indent=2),

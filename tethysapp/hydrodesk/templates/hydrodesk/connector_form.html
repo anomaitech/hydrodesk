@@ -556,6 +556,43 @@
             </select>
           </div>
         </div>
+        {# ---- Advanced: request body + pagination + Accept (broadens format coverage) ---- #}
+        <details style="margin-top:8px;">
+          <summary class="frappe-label" style="cursor:pointer;">Advanced &mdash; request body, pagination, XML</summary>
+          <div style="padding:8px 0;">
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_body_template">Request body <span class="frappe-muted frappe-text-sm">(POST/PUT/GraphQL; <code>{field}</code> tokens, not URL-encoded)</span></label>
+              <textarea class="form-control" id="id_body_template" name="body_template" rows="2"
+                        placeholder='{"query":"...","variables":{"site":"{site}"}}'>{{ body_template }}</textarea>
+              <div class="frappe-help">Sent as the request body (set Method to POST/PUT). Defaults to <code>application/json</code>; override below.</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+              <div class="frappe-form-group">
+                <label class="frappe-label" for="id_body_content_type">Body Content-Type</label>
+                <input class="form-control" type="text" id="id_body_content_type" name="body_content_type"
+                       value="{{ body_content_type|default:'application/json' }}" placeholder="application/json">
+              </div>
+              <div class="frappe-form-group">
+                <label class="frappe-label" for="id_accept">Accept header <span class="frappe-muted frappe-text-sm">(XML APIs work too)</span></label>
+                <input class="form-control" type="text" id="id_accept" name="accept" value="{{ accept }}" placeholder="application/json or application/xml">
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;">
+              <div class="frappe-form-group">
+                <label class="frappe-label" for="id_paginate_next_path">Pagination &mdash; next-link path</label>
+                <input class="form-control" type="text" id="id_paginate_next_path" name="paginate_next_path"
+                       value="{{ paginate_next_path }}" placeholder="e.g. links.next or next">
+                <div class="frappe-help">A JSON path to the next-page URL; the fetch follows it and merges pages. Blank = single page.</div>
+              </div>
+              <div class="frappe-form-group">
+                <label class="frappe-label" for="id_paginate_max_pages">Max pages</label>
+                <input class="form-control" type="text" id="id_paginate_max_pages" name="paginate_max_pages"
+                       value="{{ paginate_max_pages|default:'10' }}" placeholder="10">
+              </div>
+            </div>
+            <div class="frappe-help">The extractor also parses <strong>XML</strong> automatically (normalised to the same path language) — no JSON required.</div>
+          </div>
+        </details>
       </div>
     </div>
 
@@ -1355,6 +1392,13 @@
       gee_end: val('id_gee_end'),
       url_template: document.getElementById('id_url_template').value,
       method: document.getElementById('id_method').value,
+      body_template: val('id_body_template') || undefined,
+      body_content_type: val('id_body_content_type') || undefined,
+      accept: val('id_accept') || undefined,
+      paginate: (val('id_paginate_next_path')) ? {
+        next_path: val('id_paginate_next_path'),
+        max_pages: parseInt(val('id_paginate_max_pages') || '10', 10)
+      } : undefined,
       inputs: currentInputs(),
       outputs: currentOutputs(),
       headers: jsonOr('id_headers', {}),
