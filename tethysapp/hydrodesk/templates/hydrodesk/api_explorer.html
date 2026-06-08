@@ -64,9 +64,10 @@
           <div id="hd-filters"></div>
           <button class="btn btn-link btn-sm" type="button" id="hd-add-filter" style="padding:0;">+ Add filter</button>
           <div class="frappe-help" style="margin-top:8px;">
-            <code>⊞</code> inline table — filter rows with <code>col:value</code> / <code>col&gt;100</code>.
-            <code>⚡</code> live connector output (e.g. a time-series fetched per record) — selecting it
-            adds <code>include=</code> so the table is materialized, and the same row filters apply (over the first 50 records).
+            <code>⊞</code> inline table · <code>⚡</code> live connector output (time-series fetched per record).
+            Pick a table field to get a <strong>row-condition builder</strong>: choose columns, add conditions,
+            and combine them with <strong>AND / OR</strong> (each match is tested against a single row). Live
+            fields auto-add <code>include=</code> and are evaluated over the first 50 records.
           </div>
         </div>
 
@@ -119,7 +120,10 @@
   var TOKEN   = "{{ token|escapejs }}";
   var OPS = [["", "="], ["__ne", "≠"], ["__gt", ">"], ["__lt", "<"],
             ["__gte", "≥"], ["__lte", "≤"], ["__contains", "contains"], ["__in", "in (a,b)"]];
-  var OPS_TABLE = [["__any", "row matches"]];
+  // Per-column operators INSIDE a table row predicate (the literal op goes into the
+  // expression, e.g. temp>20 / quality:Good). ':' = contains.
+  var OPS_ROW = [[":", "contains"], ["=", "="], ["!=", "≠"], [">", ">"], ["<", "<"],
+                [">=", "≥"], ["<=", "≤"]];
   var collections = [], active = null;
   var listEl = document.getElementById("hd-doctypes");
   var bodyEl = document.getElementById("hd-builder-body");
@@ -182,40 +186,123 @@
     if (!active) return;
     var row = document.createElement("div");
     row.className = "hd-filter-row";
+    row.style.cssText = "display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid "
+      + "var(--fr-border-color,#e6e9ee);border-radius:8px;margin-bottom:8px;background:var(--fr-control-bg,#fafbfc);";
     var fopts = '<option value="">— field —</option>' + active.fields.map(function (f) {
       var mark = f.is_connector_output ? ' ⚡' : (f.is_table ? ' ⊞' : '');
       return '<option value="' + esc(f.key) + '">' + esc(f.title) + mark + '</option>'; }).join("");
-    row.innerHTML = '<select class="form-select form-select-sm hd-f-field">' + fopts + '</select>'
-      + '<select class="form-select form-select-sm hd-f-op">' + opOptions(OPS, "") + '</select>'
-      + '<input class="form-control form-control-sm hd-f-val" placeholder="value">'
-      + '<button class="btn btn-link btn-sm hd-f-x" type="button" style="padding:0;color:#c00;">×</button>';
-    var fieldEl = row.querySelector(".hd-f-field");
-    var opEl = row.querySelector(".hd-f-op");
-    var valEl = row.querySelector(".hd-f-val");
+    var head = document.createElement("div");
+    head.style.cssText = "display:flex;gap:8px;align-items:center;";
+    head.innerHTML = '<select class="form-select form-select-sm hd-f-field" style="flex:1;">' + fopts + '</select>'
+      + '<button class="btn btn-link btn-sm hd-f-x" type="button" style="padding:0;color:#c00;">remove</button>';
+    var body = document.createElement("div");
+    body.className = "hd-fr-body";
+    row.appendChild(head); row.appendChild(body);
+    var fieldEl = head.querySelector(".hd-f-field");
     fieldEl.addEventListener("change", function () {
+      row._fieldKey = fieldEl.value;
       var f = fieldByKey(fieldEl.value);
-      if (f && f.is_table) {
-        opEl.innerHTML = opOptions(OPS_TABLE, "__any");
-        var cols = (f.columns || []);
-        if (f.is_connector_output) {
-          var ex = (f.outputs && f.outputs[0] && f.outputs[0].output) || "value";
-          valEl.placeholder = "col:value or col>value (live — e.g. " + ex + ">20)";
-          valEl.title = "Live connector output (" + (f.connector || "") + "), fetched per record. "
-                      + "Selecting it adds include=" + f.key + "; filters apply over the first 50 records.";
-        } else {
-          valEl.placeholder = "col:value or col>value" + (cols.length ? " (e.g. " + cols[0] + ">100)" : "");
-          valEl.title = cols.length ? ("columns: " + cols.join(", ")) : "";
-        }
-      } else {
-        opEl.innerHTML = opOptions(OPS, "");
-        valEl.placeholder = "value"; valEl.title = "";
-      }
+      if (f && f.is_table) renderTableBody(body, f);
+      else renderScalarBody(body);
       buildUrl();
     });
-    row.querySelector(".hd-f-x").onclick = function () { row.remove(); buildUrl(); };
-    row.querySelectorAll("select,input").forEach(function (el) { el.addEventListener("input", buildUrl); });
+    head.querySelector(".hd-f-x").onclick = function () { row.remove(); buildUrl(); };
     filtersEl.appendChild(row);
+    renderScalarBody(body);   // until a field is chosen
   }
+
+  // SCALAR field body: a single [op][value] pair (stored-attribute filter).
+  function renderScalarBody(body) {
+    body.innerHTML = '<div style="display:grid;grid-template-columns:130px 1fr;gap:8px;">'
+      + '<select class="form-select form-select-sm hd-f-op">' + opOptions(OPS, "") + '</select>'
+      + '<input class="form-control form-control-sm hd-f-val" placeholder="value"></div>';
+    body.querySelectorAll("select,input").forEach(function (el) { el.addEventListener("input", buildUrl); });
+  }
+
+  // TABLE field body (inline ⊞ or live ⚡): a row-predicate builder — N column
+  // conditions joined by AND/OR, matching a SINGLE row of the table.
+  function renderTableBody(body, f) {
+    body.innerHTML = "";
+    var cols = f.columns || [];
+    var hint = document.createElement("div");
+    hint.className = "frappe-help"; hint.style.margin = "0 0 6px";
+    hint.innerHTML = (f.is_connector_output
+        ? "⚡ live output via <code>" + esc(f.connector || "") + "</code> — fetched per record (first 50). "
+        : "")
+      + (cols.length ? "columns: <strong>" + cols.map(esc).join("</strong>, <strong>") + "</strong>"
+                     : "columns appear after the first fetch");
+    body.appendChild(hint);
+    var joinWrap = document.createElement("div");
+    joinWrap.className = "hd-joinwrap";
+    joinWrap.style.cssText = "display:none;align-items:center;gap:6px;margin-bottom:6px;";
+    joinWrap.innerHTML = '<span class="frappe-muted frappe-text-sm">match a row where</span>'
+      + '<select class="form-select form-select-sm hd-join" style="width:auto;">'
+      + '<option value="AND">all conditions (AND)</option><option value="OR">any condition (OR)</option></select>';
+    joinWrap.querySelector(".hd-join").addEventListener("change", buildUrl);
+    body.appendChild(joinWrap);
+    var conds = document.createElement("div");
+    conds.className = "hd-conds";
+    body.appendChild(conds);
+    var add = document.createElement("button");
+    add.type = "button"; add.className = "btn btn-link btn-sm"; add.style.padding = "0";
+    add.textContent = "+ condition";
+    add.onclick = function () { addCond(conds, f, joinWrap); buildUrl(); };
+    body.appendChild(add);
+    addCond(conds, f, joinWrap);   // start with one condition
+  }
+
+  function addCond(conds, f, joinWrap) {
+    var c = document.createElement("div");
+    c.className = "hd-cond";
+    c.style.cssText = "display:grid;grid-template-columns:1fr 110px 1fr 26px;gap:6px;margin-bottom:6px;";
+    var cols = f.columns || [];
+    var colCtl = cols.length
+      ? '<select class="form-select form-select-sm hd-c-col"><option value="">— column —</option>'
+        + cols.map(function (col) { return '<option value="' + esc(col) + '">' + esc(col) + '</option>'; }).join("")
+        + '</select>'
+      : '<input class="form-control form-control-sm hd-c-col" placeholder="column">';
+    c.innerHTML = colCtl
+      + '<select class="form-select form-select-sm hd-c-op">' + opOptions(OPS_ROW, ":") + '</select>'
+      + '<input class="form-control form-control-sm hd-c-val" placeholder="value">'
+      + '<button class="btn btn-link btn-sm hd-c-x" type="button" style="padding:0;color:#c00;">×</button>';
+    c.querySelector(".hd-c-x").onclick = function () { c.remove(); joinVis(conds, joinWrap); buildUrl(); };
+    c.querySelectorAll("select,input").forEach(function (el) { el.addEventListener("input", buildUrl); });
+    conds.appendChild(c);
+    joinVis(conds, joinWrap);
+  }
+  function joinVis(conds, joinWrap) {
+    joinWrap.style.display = conds.querySelectorAll(".hd-cond").length > 1 ? "flex" : "none";
+  }
+
+  // Read ONE filter row -> {param, include} (or null). Scalar -> field+op=value;
+  // table -> field__any=<conditions joined by AND/OR>, and the field is auto-included
+  // when it's a live connector output.
+  function assembleRow(row) {
+    var fkey = row._fieldKey;
+    if (!fkey) return null;
+    var f = fieldByKey(fkey);
+    if (f && f.is_table) {
+      var jn = row.querySelector(".hd-join");
+      var joiner = jn ? jn.value : "AND";
+      var parts = [];
+      row.querySelectorAll(".hd-cond").forEach(function (c) {
+        var col = (c.querySelector(".hd-c-col").value || "").trim();
+        var op = c.querySelector(".hd-c-op").value;
+        var val = (c.querySelector(".hd-c-val").value || "").trim();
+        if (col && val !== "") parts.push(col + op + val);
+      });
+      var inc = f.is_connector_output ? fkey : null;
+      if (!parts.length) return { include: inc, param: null };
+      var expr = parts.join(" " + joiner + " ");
+      return { include: inc,
+               param: encodeURIComponent(fkey + "__any") + "=" + encodeURIComponent(expr) };
+    }
+    var opEl = row.querySelector(".hd-f-op"), valEl = row.querySelector(".hd-f-val");
+    var op = opEl ? opEl.value : "", val = valEl ? valEl.value : "";
+    if (val === "") return null;
+    return { param: encodeURIComponent(fkey + op) + "=" + encodeURIComponent(val) };
+  }
+
   document.getElementById("hd-add-filter").onclick = function () { addFilter(); };
   ["hd-format", "hd-limit", "hd-offset", "hd-order"].forEach(function (id) {
     document.getElementById(id).addEventListener("input", buildUrl);
@@ -226,12 +313,10 @@
   function buildParams() {
     var params = [], includeSet = {};
     filtersEl.querySelectorAll(".hd-filter-row").forEach(function (row) {
-      var f = row.querySelector(".hd-f-field").value;
-      var op = row.querySelector(".hd-f-op").value;
-      var v = row.querySelector(".hd-f-val").value;
-      var fld = f ? fieldByKey(f) : null;
-      if (fld && fld.is_connector_output) includeSet[f] = 1;   // materialize the live series
-      if (f && v !== "") params.push(encodeURIComponent(f + op) + "=" + encodeURIComponent(v));
+      var r = assembleRow(row);
+      if (!r) return;
+      if (r.include) includeSet[r.include] = 1;   // materialize the live series
+      if (r.param) params.push(r.param);
     });
     var inc = Object.keys(includeSet);
     if (inc.length) params.push("include=" + encodeURIComponent(inc.join(",")));

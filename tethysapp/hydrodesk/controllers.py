@@ -3521,22 +3521,15 @@ def _api_apply_filters(stmt, params):
                 stmt = stmt.where(col.in_([v.strip() for v in val.split(",") if v.strip()]))
             elif op == "any":
                 # TABLE-aware filter: keep records whose inline-table field has ANY row
-                # matching a sub-condition. 'field__any=quality:Good' or 'discharge>100'.
-                me = re.match(r"^\s*([A-Za-z0-9_]+)\s*(>=|<=|!=|>|<|=|:)\s*(.+?)\s*$", str(val))
-                if not me:
-                    errors.append("table filter '%s' must be key:value or key>value" % key)
+                # matching a (possibly compound) predicate — 'quality:Good',
+                # 'discharge>100', or 'temp>20 AND quality:Good' / '(a OR b) AND c'.
+                ast = _parse_row_predicate(val)
+                if ast is None:
+                    errors.append("table filter '%s' must be col:value / col>value, "
+                                  "optionally joined by AND/OR" % key)
                     continue
-                skey, sop, sval = me.group(1), me.group(2), me.group(3)
-                jop = {":": "==", "=": "==", "!=": "!=", ">": ">",
-                       "<": "<", ">=": ">=", "<=": "<="}[sop]
                 sfield = re.sub(r"[^A-Za-z0-9_]", "", field)
-                skey = re.sub(r"[^A-Za-z0-9_]", "", skey)
-                try:                                  # numeric literal vs quoted string
-                    float(sval)
-                    vlit = sval
-                except ValueError:
-                    vlit = '"%s"' % sval.replace("\\", "").replace('"', "")
-                jpath = '$.%s[*] ? (@.%s %s %s)' % (sfield, skey, jop, vlit)
+                jpath = '$.%s[*] ? (%s)' % (sfield, _predicate_to_jsonpath(ast))
                 stmt = stmt.where(func.jsonb_path_exists(m.HydroRecord.attributes, jpath))
             else:  # numeric range
                 num = cast(col, Float)
@@ -3615,35 +3608,164 @@ def _materialize_connector_series(session, prop, attrs, cache):
 
 
 def _parse_table_expr(expr):
-    """Parse a row predicate 'key:value' / 'key>val' (the __any payload) into
-    (key, op, value_str), or None when malformed."""
+    """Parse ONE row condition 'col:value' / 'col>val' into (col, op, value_str), or
+    None when malformed. The atom of a (possibly compound) __any predicate."""
     me = re.match(r"^\s*([A-Za-z0-9_]+)\s*(>=|<=|!=|>|<|=|:)\s*(.+?)\s*$", str(expr))
     return (me.group(1), me.group(2), me.group(3)) if me else None
 
 
-def _rows_match_any(rows, key, op, valstr):
-    """True if ANY row's ``key`` cell satisfies ``op valstr``. Numeric comparison when
-    both sides parse as float; otherwise string (==, != exact; ':' is contains).
-    Mirrors the inline-table __any jsonpath semantics, in Python, for live series."""
-    for row in (rows or []):
-        if not isinstance(row, dict) or key not in row:
-            continue
-        cell = row.get(key)
-        if cell is None:
-            continue
+# A __any value may be a COMPOUND predicate over a table row: conditions (col OP val)
+# joined by AND/OR (or && / ||), with optional parentheses, e.g.
+#   temp>20 AND quality:Good     |     (temp>30 OR temp<5) AND quality:Good
+# It is parsed ONCE into a small AST — ('cond',col,op,val) | ('and',a,b) | ('or',a,b)
+# — then compiled to a Postgres jsonpath predicate (inline tables) OR evaluated in
+# Python per row (live connector series). Idents are sanitized and values are
+# numeric-or-quoted at compile time, so the generated jsonpath is injection-safe.
+# Caveat: AND/OR are operators, so a bare value containing the standalone word "and"
+# / "or" must use the && / || forms (the UI builder assembles symbol-free rows).
+_PRED_SPLIT_RE = re.compile(r"\s*(\(|\)|&&|\|\||\bAND\b|\bOR\b)\s*", re.IGNORECASE)
+
+
+def _tokenize_predicate(expr):
+    """Flat token list: ('PAREN','('/')'), ('OP','AND'/'OR'), ('COND',(col,op,val)).
+    Returns None if any condition atom is malformed."""
+    tokens = []
+    for i, part in enumerate(_PRED_SPLIT_RE.split(str(expr))):
+        if i % 2 == 1:                                   # a captured separator
+            up = part.upper()
+            up = {"&&": "AND", "||": "OR"}.get(up, up)
+            tokens.append(("OP", up) if up in ("AND", "OR") else ("PAREN", up))
+        else:
+            s = part.strip()
+            if not s:
+                continue
+            cond = _parse_table_expr(s)
+            if cond is None:
+                return None
+            tokens.append(("COND", cond))
+    return tokens or None
+
+
+def _parse_row_predicate(expr):
+    """Parse a compound row predicate into an AST, or None if malformed. AND binds
+    tighter than OR; parentheses group. Bounded recursive descent (no eval)."""
+    tokens = _tokenize_predicate(expr)
+    if not tokens:
+        return None
+
+    def parse_or(i):
+        node, i = parse_and(i)
+        while i < len(tokens) and tokens[i] == ("OP", "OR"):
+            rhs, i = parse_and(i + 1)
+            node = ("or", node, rhs)
+        return node, i
+
+    def parse_and(i):
+        node, i = parse_term(i)
+        while i < len(tokens) and tokens[i] == ("OP", "AND"):
+            rhs, i = parse_term(i + 1)
+            node = ("and", node, rhs)
+        return node, i
+
+    def parse_term(i):
+        if i >= len(tokens):
+            raise ValueError("unexpected end")
+        kind, payload = tokens[i]
+        if (kind, payload) == ("PAREN", "("):
+            node, i = parse_or(i + 1)
+            if i >= len(tokens) or tokens[i] != ("PAREN", ")"):
+                raise ValueError("unbalanced parens")
+            return node, i + 1
+        if kind == "COND":
+            return ("cond",) + payload, i + 1
+        raise ValueError("expected a condition")
+
+    try:
+        node, i = parse_or(0)
+    except ValueError:
+        return None
+    return node if i == len(tokens) else None
+
+
+def _predicate_to_jsonpath(ast):
+    """Compile a predicate AST to the body of a jsonpath `? ( ... )` filter. Idents
+    sanitized to [A-Za-z0-9_]; values numeric-or-quoted — so it is injection-safe."""
+    kind = ast[0]
+    if kind == "cond":
+        _, col, op, val = ast
+        col = re.sub(r"[^A-Za-z0-9_]", "", col)
+        jop = {":": "==", "=": "==", "!=": "!=", ">": ">", "<": "<",
+               ">=": ">=", "<=": "<="}[op]
         try:
-            cf, vf = float(cell), float(valstr)
-        except (TypeError, ValueError):
-            cs = str(cell)
-            if (op == "!=" and cs != valstr) or (op == "=" and cs == valstr) \
-                    or (op == ":" and valstr.lower() in cs.lower()):
-                return True
-            continue
-        if (op == ">" and cf > vf) or (op == "<" and cf < vf) \
-                or (op == ">=" and cf >= vf) or (op == "<=" and cf <= vf) \
-                or (op == "!=" and cf != vf) or (op in (":", "=") and cf == vf):
-            return True
+            float(val)
+            lit = val
+        except ValueError:
+            lit = '"%s"' % val.replace("\\", "").replace('"', "")
+        return "@.%s %s %s" % (col, jop, lit)
+    return "(%s %s %s)" % (_predicate_to_jsonpath(ast[1]),
+                           "&&" if kind == "and" else "||",
+                           _predicate_to_jsonpath(ast[2]))
+
+
+def _cell_cmp(cell, op, valstr):
+    """Compare one row cell against ``valstr`` with ``op``. Numeric when both parse as
+    float; else string (== / != exact, ':' = case-insensitive contains). A null cell
+    never matches (mirrors jsonpath's treatment of a missing key)."""
+    if cell is None:
+        return False
+    try:
+        cf, vf = float(cell), float(valstr)
+    except (TypeError, ValueError):
+        cs = str(cell)
+        if op == "!=":
+            return cs != valstr
+        if op == "=":
+            return cs == valstr
+        if op == ":":
+            return valstr.lower() in cs.lower()
+        return False                                     # >,<,>=,<= on non-numeric
+    return {">": cf > vf, "<": cf < vf, ">=": cf >= vf, "<=": cf <= vf,
+            "!=": cf != vf, ":": cf == vf, "=": cf == vf}[op]
+
+
+def _eval_predicate(ast, row):
+    """Evaluate a predicate AST against one row dict (pure recursive walk)."""
+    kind = ast[0]
+    if kind == "cond":
+        _, col, op, val = ast
+        return _cell_cmp(row.get(col) if isinstance(row, dict) else None, op, val)
+    if kind == "and":
+        return _eval_predicate(ast[1], row) and _eval_predicate(ast[2], row)
+    if kind == "or":
+        return _eval_predicate(ast[1], row) or _eval_predicate(ast[2], row)
     return False
+
+
+def _rows_match_any(rows, ast):
+    """True if ANY row in ``rows`` satisfies the predicate AST (live-series __any)."""
+    return any(isinstance(r, dict) and _eval_predicate(ast, r) for r in (rows or []))
+
+
+def _connector_series_columns(cfg, output_name=None):
+    """Best-effort STATIC column names for a connector's series output (no fetch),
+    from its config: declared variables[], or netcdf/thredds x_dim + variable(s) (+
+    derived). Returns [] when the columns are only knowable at fetch (e.g. CSV)."""
+    outs = _connector_outputs(cfg or {})
+    chosen = next((o for o in outs if output_name and o.get("name") == output_name), None)
+    if chosen is None:
+        chosen = (next((o for o in outs if o.get("kind") == "series" and o.get("primary")), None)
+                  or next((o for o in outs if o.get("kind") == "series"), None))
+    if not chosen:
+        return []
+    if chosen.get("variables"):
+        return [v["name"] for v in _series_variables(chosen)]
+    xd = (chosen.get("x_dim") or "time")
+    if chosen.get("vars"):
+        return [xd] + list(chosen["vars"]) + \
+               [d["name"] for d in (chosen.get("derived") or []) if d.get("name")]
+    if chosen.get("var"):
+        return [xd, chosen["var"]]
+    return []
 
 
 @controller(name="api_records", url="api/{slug}/records", title="Records API",
@@ -3691,11 +3813,12 @@ def api_records(request, slug=None):
         for k, v in request.GET.items():
             fld, _, op = k.partition("__")
             if fld in conn_fields and op == "any":
-                expr = _parse_table_expr(v)
-                if expr is None:
+                ast = _parse_row_predicate(v)
+                if ast is None:
                     return JsonResponse({"ok": False, "error":
-                        "table filter '%s' must be key:value or key>value" % k}, status=400)
-                conn_filters.append((fld, expr))
+                        "table filter '%s' must be col:value / col>value, optionally "
+                        "joined by AND/OR" % k}, status=400)
+                conn_filters.append((fld, ast))
                 include.add(fld)          # filtering a connector field implies fetching it
             else:
                 sql_get[k] = v
@@ -3730,8 +3853,8 @@ def api_records(request, slug=None):
                 kept = []
                 for rid, attrs, geom in session.execute(filtered.limit(MAT_CAP)).all():
                     mats = _materialize(attrs)
-                    if all(_rows_match_any(mats.get(fld), key, op, val)
-                           for fld, (key, op, val) in conn_filters):
+                    if all(_rows_match_any(mats.get(fld), ast)
+                           for fld, ast in conn_filters):
                         kept.append((rid, attrs, geom, mats))
                 total = len(kept)
                 if sql_total > MAT_CAP:
@@ -3800,6 +3923,7 @@ def api_catalog(request):
     engine = App.get_persistent_store_database("hydro_db")
     base = request.build_absolute_uri("/apps/hydrodesk/api/").rstrip("/")
     out = []
+    conn_cache = {}   # connector name -> row, so series columns are resolved once
     with Session(engine) as session:
         rows = session.execute(select(
             m.HydroType.slug, m.HydroType.display_name, m.HydroType.geometry_kind,
@@ -3822,14 +3946,25 @@ def api_catalog(request):
                     if p.get("x-child-type"):
                         fd["linked_to"] = p["x-child-type"]
                 if p.get("x-api-connector"):        # live connector output (not stored)
+                    cname = p["x-api-connector"]
                     fd["is_connector_output"] = True
-                    fd["connector"] = p["x-api-connector"]
+                    fd["connector"] = cname
                     outs = [o for o in (p.get("x-api-outputs") or []) if isinstance(o, dict)]
                     fd["outputs"] = [{"output": o.get("output"), "label": o.get("label"),
                                       "field_type": o.get("field_type")} for o in outs]
-                    # series outputs become an inline table once materialized (?include=)
-                    if any((o.get("field_type") or "") == "Time-Series" for o in outs):
+                    # A Time-Series output becomes an inline table once materialized
+                    # (?include=); derive its columns from the connector (no fetch).
+                    ts = [o for o in outs if (o.get("field_type") or "") == "Time-Series"]
+                    if ts:
                         fd["is_table"] = True
+                        if cname not in conn_cache:
+                            conn_cache[cname] = _load_connector(session, cname)
+                        conn = conn_cache[cname]
+                        if conn is not None:
+                            cols = _connector_series_columns(conn.config or {},
+                                                             ts[0].get("output") or None)
+                            if cols:
+                                fd["columns"] = cols
                 fields.append(fd)
             out.append({"doctype": sl, "display_name": dn, "geometry": gk,
                         "count": count, "fields": fields,
