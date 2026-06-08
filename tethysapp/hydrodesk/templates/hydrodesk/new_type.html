@@ -171,6 +171,9 @@
             {% if r.api_outputs %}
             <script type="application/json" class="hd-out-seed">{{ r.api_outputs_json|default:'[]'|safe }}</script>
             {% endif %}
+            {% if r.nc_map %}
+            <script type="application/json" class="hd-ncmap-seed">{{ r.nc_map_json|default:'{}'|safe }}</script>
+            {% endif %}
           </div>
         </div>
         {% endfor %}
@@ -436,7 +439,8 @@
         var typ = wrap.querySelector('[name^="field_type_"]');
         if (!lbl || !lbl.value.trim()) return;
         if (typ && typ.value === 'api') return;
-        out.push({ slug: slugify(lbl.value), label: lbl.value.trim() });
+        out.push({ slug: slugify(lbl.value), label: lbl.value.trim(),
+                   type: typ ? typ.value : 'text' });
       });
       return out;
     }
@@ -508,6 +512,20 @@
       hid.type = 'hidden';
       hid.name = 'field_outputs_' + p.idx;
       hid.value = JSON.stringify(outputs || []);
+      p.panel.appendChild(hid);
+    }
+
+    // Replace the row's hidden field_ncmap_<i> JSON ({shapefile,start,end} -> field
+    // slugs) — the netcdf API field's per-record parameter mapping (x-nc-map).
+    function writeRowNcMap(wrap, ncmap) {
+      var p = rowParts(wrap);
+      if (!p.panel) return;
+      p.panel.querySelectorAll('input[name="field_ncmap_' + p.idx + '"]').forEach(function (n) { n.remove(); });
+      if (!ncmap || !Object.keys(ncmap).length) return;
+      var hid = document.createElement('input');
+      hid.type = 'hidden';
+      hid.name = 'field_ncmap_' + p.idx;
+      hid.value = JSON.stringify(ncmap);
       p.panel.appendChild(hid);
     }
 
@@ -1082,6 +1100,66 @@
         outBox.style.marginTop = '10px';
         modalBody.appendChild(outBox);
 
+        // ---- NetCDF query parameters: map this record's Shapefile + date-range fields
+        //      to the connector's per-record spatial/time inputs. Shown ABOVE the
+        //      outputs, only for a netcdf connector that needs a shapefile / date range.
+        var ncBox = document.createElement('div');
+        ncBox.className = 'hd-ncmap-box';
+        modalBody.insertBefore(ncBox, outBox);
+        var ncSelects = {};
+        function ncSeed() {
+          var live = p.panel && p.panel.querySelector('input[name="field_ncmap_' + p.idx + '"]');
+          if (live && live.value) { try { return JSON.parse(live.value) || {}; } catch (e) {} }
+          var s = p.panel && p.panel.querySelector('.hd-ncmap-seed');
+          if (s) { try { return JSON.parse(s.textContent || '{}') || {}; } catch (e) {} }
+          return {};
+        }
+        function ncFieldSelect(curVal, types) {
+          var ms = document.createElement('select');
+          ms.className = 'form-select form-select-sm';
+          var b = document.createElement('option'); b.value = ''; b.textContent = '— choose field —';
+          ms.appendChild(b);
+          currentFieldChoices(p.idx).forEach(function (c) {
+            if (types.indexOf(c.type) < 0) return;
+            var o = document.createElement('option'); o.value = c.slug; o.textContent = c.label;
+            ms.appendChild(o);
+          });
+          if (curVal) {
+            var has = Array.prototype.some.call(ms.options, function (o) { return o.value === curVal; });
+            if (!has) { var ex = document.createElement('option'); ex.value = curVal; ex.textContent = curVal; ms.appendChild(ex); }
+            ms.value = curVal;
+          }
+          return ms;
+        }
+        function renderNcMap(connName) {
+          ncBox.innerHTML = ''; ncSelects = {};
+          var c = null; (conns || []).forEach(function (x) { if (x.name === connName) c = x; });
+          if (!c || c.kind !== 'netcdf') return;
+          var wantShp = (c.spatial === 'shapefile');
+          var wantTime = (c.time_source === 'range');
+          if (!wantShp && !wantTime) return;
+          var seed = ncSeed();
+          var head = document.createElement('div');
+          head.className = 'frappe-help';
+          head.style.cssText = 'margin:8px 0 4px;font-weight:600;color:var(--fr-text,#1f272e);';
+          head.textContent = 'NetCDF query parameters';
+          ncBox.appendChild(head);
+          function addRow(text, key, types) {
+            var item = document.createElement('div'); item.className = 'hd-map-item';
+            var lab = document.createElement('span'); lab.className = 'lbl';
+            lab.textContent = text; lab.title = text;
+            var ms = ncFieldSelect(seed[key] || '', types);
+            ncSelects[key] = ms;
+            item.appendChild(lab); item.appendChild(ms); ncBox.appendChild(item);
+          }
+          if (wantShp) addRow('Shapefile field', 'shapefile', ['shapefile']);
+          if (wantTime) { addRow('Start date field', 'start', ['date']); addRow('End date field', 'end', ['date']); }
+          var hint = document.createElement('div');
+          hint.className = 'frappe-help';
+          hint.textContent = 'Each record’s chosen field feeds the connector: the shapefile is the region, the dates are the time window.';
+          ncBox.appendChild(hint);
+        }
+
         var seedOutputs = rowOutputsSeed(wrap);     // [{output,label,field_type}]
         function seededFor(name) {
           for (var i = 0; i < seedOutputs.length; i++) {
@@ -1247,12 +1325,15 @@
               mapBox.innerHTML = '<div class="hd-cfg-note hd-cfg-warn">Could not load connector inputs.</div>';
             });
         }
-        sel.addEventListener('change', function () { renderInputs(sel.value); });
-        if (currentConn) renderInputs(currentConn);
+        sel.addEventListener('change', function () { renderInputs(sel.value); renderNcMap(sel.value); });
+        if (currentConn) { renderInputs(currentConn); renderNcMap(currentConn); }
 
         applyFns.push(function () {
           var conn = sel.value.trim();
           if (p.opt) p.opt.value = conn;          // connector name verbatim (NOT slugified)
+          var ncmap = {};
+          Object.keys(ncSelects).forEach(function (k) { var v = ncSelects[k].value; if (v) ncmap[k] = v; });
+          writeRowNcMap(wrap, ncmap);             // field_ncmap_<i> hidden JSON carrier
           var mapping = {};
           Object.keys(mapSelects).forEach(function (inputName) {
             var v = mapSelects[inputName].value;

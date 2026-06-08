@@ -4821,8 +4821,29 @@ def _render_image_block(result, label="map"):
         url, url, label or "map")
 
 
+def _apply_nc_map(cfg, attrs, nc_map):
+    """Apply a netcdf API field's per-record parameter mapping (x-nc-map). Returns
+    (cfg, attrs) where the record's mapped Shapefile field is exposed as _shapefile
+    (the shapefile spatial source) and the connector's date window is pointed at the
+    record's mapped start/end date fields. No-op when nc_map is empty."""
+    nc_map = nc_map or {}
+    if not nc_map:
+        return cfg, attrs
+    cfg = dict(cfg or {})
+    attrs = dict(attrs or {})
+    if nc_map.get("shapefile"):
+        attrs["_shapefile"] = attrs.get(nc_map["shapefile"]) or attrs.get("_shapefile")
+    if nc_map.get("start"):
+        cfg["time_source"] = "range"
+        cfg["time_start"] = "{%s}" % nc_map["start"]
+    if nc_map.get("end"):
+        cfg["time_source"] = "range"
+        cfg["time_end"] = "{%s}" % nc_map["end"]
+    return cfg, attrs
+
+
 def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
-                      field_map=None, api_outputs=None):
+                      field_map=None, api_outputs=None, nc_map=None):
     """Render an API field's LIVE result as safe HTML for the detail view.
 
     Resolves the connector (already loaded), and renders by the field's
@@ -4844,6 +4865,10 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
             '<span class="frappe-muted frappe-text-sm">'
             'No connector named &ldquo;{}&rdquo; found.</span>', connector_name or "")
 
+    # Honor the netcdf per-record parameter mapping (x-nc-map): the record's mapped
+    # shapefile + date fields drive the fetch (cloned cfg/attrs; never mutates the row).
+    _cfg, attrs = _apply_nc_map(connector.config, attrs, nc_map)
+
     # The cached/live pill + Refresh link are computed from the FIRST fetch and
     # shown once for the whole field (all outputs share one cached `data`).
     refresh = ""
@@ -4863,7 +4888,7 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
             oname = (entry.get("output") or "").strip()
             label = (entry.get("label") or oname or "").strip()
             ft = (entry.get("field_type") or "Text").strip()
-            result = fetch_api(connector.config, attrs,
+            result = fetch_api(_cfg, attrs,
                                connector_name=connector_name,
                                field_map=field_map, output=oname)
             last_result = result
@@ -4890,7 +4915,7 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
             + str(refresh) + "".join(blocks) + note + "</div>")
 
     # ---- BACK-COMPAT single-output render (no x-api-outputs ticked). ----
-    result = fetch_api(connector.config, attrs, connector_name=connector_name,
+    result = fetch_api(_cfg, attrs, connector_name=connector_name,
                        field_map=field_map)
     kind = result.get("kind")
     cached = result.get("cached")
@@ -5017,7 +5042,8 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
                     connector_name, connector, attrs.get(name), attrs,
                     refresh_url=refresh_urls.get(name),
                     field_map=prop.get("x-api-map"),
-                    api_outputs=prop.get("x-api-outputs")),
+                    api_outputs=prop.get("x-api-outputs"),
+                    nc_map=prop.get("x-nc-map")),
             })
             seen.add(name)
             continue
@@ -5448,6 +5474,7 @@ def _schema_to_builder_rows(field_schema):
         else:
             dflt = str(dflt)
         si = prop.get("x-show-if") or {}
+        nc_map = prop.get("x-nc-map") or {}
         rows.append({
             "label": prop.get("title") or key.replace("_", " ").title(),
             "type": bt,
@@ -5455,6 +5482,8 @@ def _schema_to_builder_rows(field_schema):
             "required": key in required,
             "field_map": field_map,
             "api_outputs": list(prop.get("x-api-outputs") or []),
+            "nc_map": nc_map,
+            "nc_map_json": json.dumps(nc_map) if nc_map else "",
             "default": dflt,
             "showif": si,
             "showif_json": json.dumps(si) if si.get("field") else "",
@@ -5506,6 +5535,18 @@ def _parse_builder_rows(post):
                     api_outputs = parsed
             except (ValueError, TypeError):
                 api_outputs = []
+        # NetCDF API field: the per-record parameter mapping (x-nc-map) carried as a
+        # single JSON blob field_ncmap_<i> = {shapefile,start,end} -> field slugs.
+        nc_map = {}
+        raw_ncmap = (post.get(f"field_ncmap_{i}") or "").strip()
+        if raw_ncmap:
+            try:
+                parsed_nc = json.loads(raw_ncmap)
+                if isinstance(parsed_nc, dict):
+                    nc_map = {k: str(v).strip() for k, v in parsed_nc.items()
+                              if k in ("shapefile", "start", "end") and str(v).strip()}
+            except (ValueError, TypeError):
+                nc_map = {}
         # Common per-field options: a default value + a structured "show only if"
         # (depends-on) carried as field_default_<i> / field_showif_<i> (JSON).
         default_val = (post.get(f"field_default_{i}") or "").strip()
@@ -5520,7 +5561,7 @@ def _parse_builder_rows(post):
             except (ValueError, TypeError):
                 showif = {}
         has_any = (bool(label) or bool(options) or is_req or bool(field_map)
-                   or bool(api_outputs) or bool(default_val) or bool(showif))
+                   or bool(api_outputs) or bool(nc_map) or bool(default_val) or bool(showif))
         if has_any:
             submitted_count = i + 1
         rows.append({
@@ -5530,6 +5571,7 @@ def _parse_builder_rows(post):
             "required": is_req,
             "field_map": field_map,
             "api_outputs": api_outputs,
+            "nc_map": nc_map,
             "default": default_val,
             "showif": showif,
         })
@@ -5564,6 +5606,7 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         if isinstance(row, dict):
             row["field_map_json"] = json.dumps(row.get("field_map") or {})
             row["api_outputs_json"] = json.dumps(row.get("api_outputs") or [])
+            row["nc_map_json"] = json.dumps(row.get("nc_map") or {}) if row.get("nc_map") else ""
             si = row.get("showif") or {}
             row["showif_json"] = json.dumps(si) if si.get("field") else ""
     is_edit = mode == "edit"
@@ -5693,7 +5736,8 @@ def _assemble_type_spec(post, force_slug=None):
             # row's connector + submitted mapping selections + ticked outputs.
             api_rows.append((idx + 1, prop_name, conn_name,
                              dict(row.get("field_map") or {}),
-                             list(row.get("api_outputs") or [])))
+                             list(row.get("api_outputs") or []),
+                             dict(row.get("nc_map") or {})))
         seen.add(prop_name)
         prop = _schema_for(row["type"], row["options"])
         prop["title"] = label  # _build_widgets/_derive_columns use title as the label
@@ -5721,7 +5765,19 @@ def _assemble_type_spec(post, force_slug=None):
     # required source==field input with no mapping is an error; an empty optional
     # mapping is silently dropped (the connector input's own default applies). ---
     valid_field_slugs = set(properties.keys())
-    for row_no, prop_name, conn_name, raw_map, raw_outputs in api_rows:
+    for row_no, prop_name, conn_name, raw_map, raw_outputs, raw_ncmap in api_rows:
+        # x-nc-map: the netcdf per-record parameter mapping (shapefile/start/end ->
+        # field slugs). Validate the targets exist; unknown targets are dropped.
+        nc_map = {}
+        for _k in ("shapefile", "start", "end"):
+            _sel = (raw_ncmap.get(_k) or "").strip()
+            if not _sel:
+                continue
+            _slug = _sel if _sel in valid_field_slugs else _slugify_underscore(_sel)
+            if _slug in valid_field_slugs:
+                nc_map[_k] = _slug
+        if nc_map:
+            properties[prop_name]["x-nc-map"] = nc_map
         field_inputs = _connector_field_inputs(conn_name)
         parsed_map = {}
         for input_name, required_flag in field_inputs:
@@ -7238,6 +7294,12 @@ def connectors_json(request):
                 "name": name,
                 "result_kind": cfg.get("result_kind", "value"),
                 "url_template": cfg.get("url_template", ""),
+                # NetCDF query shape — so the doctype API-field modal can offer the
+                # parameter mapping (shapefile field, date-range fields) above the
+                # outputs checklist when the connector needs them.
+                "kind": cfg.get("kind", "rest"),
+                "spatial": cfg.get("spatial", ""),
+                "time_source": cfg.get("time_source", "none"),
                 # The outputs catalog (synthesized for legacy connectors). This is
                 # the SOURCE the doctype modal's OUTPUT CHECKLIST reads — one
                 # checkbox per output (a series output is ONE checkbox, not two).
