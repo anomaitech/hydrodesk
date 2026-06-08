@@ -336,17 +336,29 @@ def _connector_outputs(cfg):
     # dimension) + a latest value, keyed off the configured variable + x_dim.
     knd = (cfg.get("kind") or "rest").lower()
     if knd in ("netcdf", "thredds"):
-        var = (cfg.get("variable") or "").strip()
-        if not var:
+        # One or MORE variables (the Variable field is a comma list). Synthesize: a
+        # combined 'table' series (all variables as columns along x_dim) when there
+        # are several, plus per-variable a series + a 'latest' value. The doctype
+        # field checklist then picks which outputs to show.
+        var_list = [v for v in (cfg.get("variables")
+                                or ([cfg.get("variable")] if cfg.get("variable") else []))
+                    if (v or "").strip()]
+        if not var_list:
             return []
         x_dim = (cfg.get("x_dim") or "time").strip()
         unit = (cfg.get("unit") or "").strip()
-        return [
-            {"name": var, "kind": "series", "type": "series", "primary": True,
-             "var": var, "x_dim": x_dim, "unit": unit},
-            {"name": "latest", "kind": "value", "type": "number",
-             "var": var, "unit": unit},
-        ]
+        outs = []
+        multi = len(var_list) > 1
+        if multi:
+            outs.append({"name": "table", "kind": "series", "type": "series",
+                         "primary": True, "vars": var_list, "x_dim": x_dim, "unit": unit})
+        for i, var in enumerate(var_list):
+            outs.append({"name": var, "kind": "series", "type": "series",
+                         "var": var, "x_dim": x_dim, "unit": unit,
+                         "primary": (not multi and i == 0)})
+            outs.append({"name": var + "_latest", "kind": "value", "type": "number",
+                         "var": var, "unit": unit})
+        return outs
     if knd == "csv":
         # CSV: the whole table is ONE series (every column becomes a variable, so it
         # reuses the existing multi-column table render); plus a 'latest' value of
@@ -731,11 +743,60 @@ def _netcdf_series_xy(ds, v, x_dim):
     return [x for x, _ in pairs], [y for _, y in pairs]
 
 
+def _netcdf_var_along(ds, v, x_dim):
+    """Reduce a variable to a 1-D series along ``x_dim`` (masked spatial mean over the
+    other dims, size-guarded), WITHOUT dropping masked steps — so several variables
+    stay row-aligned for a combined table. Returns the ys list (None for masked)."""
+    import numpy as np
+    dims = list(v.dimensions)
+    xd = x_dim if x_dim in dims else (dims[0] if dims else "")
+    nonx = tuple(i for i, d in enumerate(dims) if d != xd)
+    if not dims or not nonx:
+        return _netcdf_to_list(v[:])
+    if v.size and v.size <= 5_000_000:
+        return _netcdf_to_list(np.ma.mean(np.ma.asarray(v[:]), axis=nonx))
+    idx = tuple(slice(None) if d == xd else (v.shape[k] // 2)
+                for k, d in enumerate(dims))
+    return _netcdf_to_list(v[idx])
+
+
+def _netcdf_multivar_columns(ds, var_names, x_dim):
+    """Build aligned table columns for several variables along ``x_dim``: the x_dim
+    coordinate first, then one column per existing variable (each reduced over its
+    non-x dims). Columns are truncated to the shortest so rows stay aligned."""
+    per = []
+    for vn in var_names:
+        v = ds.variables.get(vn)
+        if v is not None:
+            per.append((vn, _netcdf_var_along(ds, v, x_dim)))
+    if not per:
+        return []
+    n = min(len(ys) for _vn, ys in per)
+    cvar = ds.variables.get(x_dim) if x_dim else None
+    xs = _netcdf_coord_values(cvar) if cvar is not None else None
+    if xs is None or len(xs) < n:
+        xs = [str(i) for i in range(n)]
+    cols = [{"name": x_dim or "index", "values": xs[:n]}]
+    for vn, ys in per:
+        cols.append({"name": vn, "values": ys[:n]})
+    return cols
+
+
 def _netcdf_extract(ds, out_entry):
-    """Extract ONE output from an open netCDF4 Dataset. 'series' -> the variable
-    along its x_dim (other dims spatially averaged); 'value' -> the last point of
-    that same series (a consistent latest scalar)."""
+    """Extract ONE output from an open netCDF4 Dataset. A 'table' output (carrying a
+    ``vars`` list) -> one multi-column series (x_dim + each variable); a 'series'
+    output -> the variable along its x_dim (other dims spatially averaged); a 'value'
+    output -> the last point of that variable's series (a consistent latest scalar)."""
     out_entry = out_entry or {}
+    multi = out_entry.get("vars")
+    if multi:
+        cols = _netcdf_multivar_columns(ds, multi, (out_entry.get("x_dim") or "").strip())
+        if not cols:
+            return None
+        n = max((len(c["values"]) for c in cols), default=0)
+        xs = cols[0]["values"] if cols else []
+        ys = cols[1]["values"] if len(cols) > 1 else []
+        return {"kind": "series", "columns": cols, "n": n, "x": xs, "y": ys}
     var_name = (out_entry.get("var") or out_entry.get("name") or "").strip()
     v = ds.variables.get(var_name)
     if v is None:
@@ -871,7 +932,12 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
 
     ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
     timeout = int(cfg.get("timeout") or 30)
-    cache_key = (connector_name, url + "::" + (out_entry.get("name") or ""))
+    # Include the output's variable signature so the same output NAME (notably the
+    # combined 'table') doesn't return a stale result when the connector's variable
+    # list changes (the name alone would collide across different variable sets).
+    _sig = ",".join((out_entry.get("vars") or [out_entry.get("var") or ""]))
+    cache_key = (connector_name,
+                 url + "::" + (out_entry.get("name") or "") + "::" + _sig)
     now = time.time()
     hit = _API_CACHE.get(cache_key)
     if hit and (now - hit[0]) < ttl:
@@ -5291,17 +5357,23 @@ def _connector_config_from_post(post):
         "timeout": timeout,
     }
     if kind in ("netcdf", "thredds"):
-        # NetCDF / THREDDS source fields. A series + a latest value are synthesized
-        # from the variable (+ x_dim) at fetch time; no outputs[] editor needed.
+        # NetCDF / THREDDS source fields. The Variable field accepts a COMMA list of
+        # variables; outputs are synthesized at fetch time — a combined table (all
+        # variables along x_dim) when there are several, plus a series + a latest
+        # value per variable. ``inputs`` (the shared editor) substitute {field} into
+        # the dataset_url / catalog_url.
         config["dataset_url"] = (post.get("dataset_url") or "").strip()
-        config["variable"] = (post.get("variable") or "").strip()
+        var_list = [v.strip() for v in (post.get("variable") or "").split(",")
+                    if v.strip()]
+        config["variables"] = var_list
+        config["variable"] = var_list[0] if var_list else ""   # back-compat / describe
         config["x_dim"] = (post.get("x_dim") or "time").strip()
         config["unit"] = (post.get("nc_unit") or "").strip()
         if kind == "thredds":
             config["catalog_url"] = (post.get("catalog_url") or "").strip()
             config["dataset"] = (post.get("dataset") or "").strip()
-        if not config["variable"]:
-            errors.append("A NetCDF/THREDDS connector needs a Variable name.")
+        if not var_list:
+            errors.append("A NetCDF/THREDDS connector needs at least one Variable name.")
         if kind == "netcdf" and not config["dataset_url"]:
             errors.append("A NetCDF connector needs a Dataset URL (.nc file or OPeNDAP/dodsC URL).")
         if kind == "thredds" and not config.get("catalog_url"):
@@ -5432,7 +5504,8 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "name": name,
         "kind": (config or {}).get("kind", "rest"),
         "dataset_url": (config or {}).get("dataset_url", ""),
-        "variable": (config or {}).get("variable", ""),
+        "variable": (", ".join((config or {}).get("variables") or [])
+                     or (config or {}).get("variable", "")),
         "x_dim": (config or {}).get("x_dim", "time"),
         "nc_unit": (config or {}).get("unit", ""),
         "catalog_url": (config or {}).get("catalog_url", ""),

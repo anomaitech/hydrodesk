@@ -115,9 +115,9 @@
         </div>
         <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px;">
           <div class="frappe-form-group">
-            <label class="frappe-label" for="id_variable">Variable<span class="req">*</span></label>
+            <label class="frappe-label" for="id_variable">Variable(s)<span class="req">*</span></label>
             <input class="form-control" type="text" id="id_variable" name="variable"
-                   value="{{ variable }}" placeholder="e.g. streamflow">
+                   value="{{ variable }}" placeholder="e.g. SST, AIRT, SLP">
           </div>
           <div class="frappe-form-group">
             <label class="frappe-label" for="id_x_dim">Time dim</label>
@@ -130,7 +130,7 @@
                    value="{{ nc_unit }}" placeholder="optional">
           </div>
         </div>
-        <div class="frappe-help">Click <strong>Test</strong> below to list the dataset's variables. The variable is averaged over its non-time dimensions to make one series + a latest value.</div>
+        <div class="frappe-help">Comma-separate several variables (e.g. <code>SST, AIRT, SLP</code>) to get a combined table plus a per-variable series + latest value. Click <strong>Test</strong> below to list the dataset's variables. Each is averaged over its non-time dimensions. Declare <strong>Inputs</strong> below to substitute <code>{field}</code> into the dataset/catalog URL.</div>
       </div>
 
       {# ---- CSV source ---- #}
@@ -394,7 +394,10 @@
       </div>
     </div>
 
-    {# ---- Inputs editor (the sourced-inputs model) ---- #}
+    </div>{# /hd-kind-rest — Headers & Query are REST-only #}
+
+    {# ---- Inputs editor — shown for REST + NetCDF/THREDDS (any {field}-substituting kind) ---- #}
+    <div class="hd-kind-inputs">
     <div class="frappe-form-section">
       <div class="frappe-section-head">Inputs
         <span class="frappe-muted frappe-text-sm">
@@ -490,7 +493,9 @@
         <i class="bi bi-plus-lg"></i> Add input
       </button>
     </div>
+    </div>{# /hd-kind-inputs #}
 
+    <div class="hd-kind-rest">
     {# ---- Outputs editor (the multi-output catalog) ---- #}
     <div class="frappe-form-section">
       <div class="frappe-section-head">Outputs
@@ -730,6 +735,8 @@
       // REST sections (URL/method + headers/query + inputs/outputs editors) show
       // only for REST; each non-REST kind shows its own source block.
       show('.hd-kind-rest', k === 'rest');
+      // Inputs editor applies to any {field}-substituting kind (REST + NetCDF/THREDDS).
+      show('.hd-kind-inputs', k === 'rest' || k === 'netcdf' || k === 'thredds');
       show('.hd-kind-netcdf', k === 'netcdf' || k === 'thredds');
       show('.hd-thredds-only', k === 'thredds');
       show('.hd-netcdf-only', k === 'netcdf');
