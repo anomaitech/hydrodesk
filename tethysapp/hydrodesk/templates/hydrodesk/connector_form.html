@@ -142,11 +142,12 @@
         <div class="frappe-form-group" style="margin-top:10px;">
           <label class="frappe-label" for="id_nc_spatial">Spatial filter</label>
           <select class="form-select" id="id_nc_spatial" name="nc_spatial">
-            <option value="mean"  {% if nc_spatial == 'mean' or not nc_spatial %}selected{% endif %}>Whole-grid mean (default)</option>
-            <option value="point" {% if nc_spatial == 'point' %}selected{% endif %}>Nearest point (a single grid cell)</option>
-            <option value="bbox"  {% if nc_spatial == 'bbox' %}selected{% endif %}>Bounding box (mean over a window)</option>
+            <option value="mean"    {% if nc_spatial == 'mean' or not nc_spatial %}selected{% endif %}>Whole-grid mean (default)</option>
+            <option value="point"   {% if nc_spatial == 'point' %}selected{% endif %}>Nearest point (a single grid cell)</option>
+            <option value="bbox"    {% if nc_spatial == 'bbox' %}selected{% endif %}>Bounding box (mean over a window)</option>
+            <option value="polygon" {% if nc_spatial == 'polygon' %}selected{% endif %}>Polygon / shapefile (mean inside a region)</option>
           </select>
-          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average only inside a lat/lon window.</div>
+          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average inside a lat/lon window (leave the bounds blank to centre it on the record ± buffer). Polygon = average the cells inside a shapefile/WKT region.</div>
         </div>
         <div class="hd-nc-spatial" style="display:none;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -180,6 +181,19 @@
               <input class="form-control" type="text" id="id_nc_lat_min" name="nc_lat_min" value="{{ nc_lat_min }}"></div>
             <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lat_max">Lat max</label>
               <input class="form-control" type="text" id="id_nc_lat_max" name="nc_lat_max" value="{{ nc_lat_max }}"></div>
+          </div>
+          <div class="hd-nc-polygon" style="display:none;">
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_nc_polygon">Polygon <span class="frappe-muted frappe-text-sm">(WKT or GeoJSON)</span></label>
+              <textarea class="form-control" id="id_nc_polygon" name="nc_polygon" rows="2"
+                        placeholder="POLYGON((-175 -15, -145 -15, -145 15, -175 15, -175 -15))">{{ nc_polygon }}</textarea>
+            </div>
+            <div class="frappe-form-group">
+              <label class="frappe-label" for="id_nc_shapefile">…or shapefile path <span class="frappe-muted frappe-text-sm">(.shp on the server)</span></label>
+              <input class="form-control" type="text" id="id_nc_shapefile" name="nc_shapefile"
+                     value="{{ nc_shapefile }}" placeholder="/path/to/region.shp">
+              <div class="frappe-help">The grid cells inside the polygon's first ring (holes excluded) are averaged. Lon is normalised to −180…180; a polygon crossing the antimeridian isn't supported yet.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -816,9 +830,11 @@
       var wrap = document.querySelector('.hd-nc-spatial');
       var pt = document.querySelector('.hd-nc-point');
       var bx = document.querySelector('.hd-nc-bbox');
-      if (wrap) wrap.style.display = (m === 'point' || m === 'bbox') ? '' : 'none';
+      var pg = document.querySelector('.hd-nc-polygon');
+      if (wrap) wrap.style.display = (m === 'point' || m === 'bbox' || m === 'polygon') ? '' : 'none';
       if (pt) pt.style.display = (m === 'point') ? 'grid' : 'none';
       if (bx) bx.style.display = (m === 'bbox') ? 'grid' : 'none';
+      if (pg) pg.style.display = (m === 'polygon') ? '' : 'none';
     }
     if (sp) sp.addEventListener('change', applySpatial);
     applySpatial();
@@ -1128,6 +1144,7 @@
       lat: numOrUndef('id_nc_lat'), lon: numOrUndef('id_nc_lon'),
       lat_min: numOrUndef('id_nc_lat_min'), lat_max: numOrUndef('id_nc_lat_max'),
       lon_min: numOrUndef('id_nc_lon_min'), lon_max: numOrUndef('id_nc_lon_max'),
+      polygon: val('id_nc_polygon'), shapefile: val('id_nc_shapefile'),
       catalog_url: val('id_catalog_url'),
       dataset: val('id_dataset'),
       csv_url: val('id_csv_url'),

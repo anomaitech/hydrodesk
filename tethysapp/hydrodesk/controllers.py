@@ -772,12 +772,158 @@ def _range_slice(coord_var, lo, hi, circular=False):
     return slice(None)
 
 
+def _bbox_bounds(cfg, is_lon, target):
+    """Resolve a bbox axis's (lo, hi): the connector's fixed lon/lat-min/max when set,
+    else the RECORD'S point ± bbox_buffer degrees — so the box is DYNAMIC per record
+    (centred on each record's geometry). (None, None) when neither is available."""
+    def _num(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+    lo = _num(cfg.get("lon_min" if is_lon else "lat_min"))
+    hi = _num(cfg.get("lon_max" if is_lon else "lat_max"))
+    if lo is not None and hi is not None:
+        return lo, hi
+    if target is not None:
+        buf = _wms_num(cfg.get("bbox_buffer")) or 5.0
+        return target - buf, target + buf
+    return None, None
+
+
+def _norm_lon(x):
+    """Wrap longitude(s) into (-180, 180] so a polygon's coords and the grid agree."""
+    import numpy as np
+    return ((np.asarray(x, dtype="float64") + 180.0) % 360.0) - 180.0
+
+
+def _parse_polygon_text(s):
+    """Parse a polygon from WKT (``POLYGON((lon lat, ...),(hole...))``) or GeoJSON
+    (Polygon/MultiPolygon) into rings ``[[(lon,lat), ...], ...]``. None if unparseable."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    if s.startswith("{"):
+        try:
+            g = json.loads(s)
+            t = (g.get("type") or "").lower()
+            c = g.get("coordinates")
+            if t == "polygon" and c:
+                return [[(float(p[0]), float(p[1])) for p in ring] for ring in c]
+            if t == "multipolygon" and c:
+                return [[(float(p[0]), float(p[1])) for p in ring]
+                        for poly in c for ring in poly]
+        except Exception:
+            return None
+        return None
+    m = re.search(r"POLYGON\s*\((.*)\)\s*$", s, re.I | re.S)
+    if not m:
+        return None
+    rings = []
+    for ring_txt in re.findall(r"\(([^()]*)\)", m.group(1)):
+        pts = []
+        for pair in ring_txt.split(","):
+            xy = pair.split()
+            if len(xy) >= 2:
+                try:
+                    pts.append((float(xy[0]), float(xy[1])))
+                except ValueError:
+                    pass
+        if pts:
+            rings.append(pts)
+    return rings or None
+
+
+def _polygon_rings(cfg):
+    """The connector's polygon region as rings ``[[(lon,lat), ...], ...]`` — from a
+    SHAPEFILE path (pyshp, first polygon) or a pasted WKT/GeoJSON ``polygon``. None
+    when neither is set/readable."""
+    sp = (cfg.get("shapefile") or "").strip()
+    if sp:
+        try:
+            import shapefile
+            for shp in shapefile.Reader(sp).shapes():
+                pts = shp.points or []
+                parts = list(shp.parts) + [len(pts)]
+                rings = [[(p[0], p[1]) for p in pts[parts[i]:parts[i + 1]]]
+                         for i in range(len(parts) - 1)]
+                rings = [r for r in rings if len(r) >= 3]
+                if rings:
+                    return rings
+        except Exception:
+            pass
+    return _parse_polygon_text(cfg.get("polygon"))
+
+
+def _points_in_polygon(lon2d, lat2d, rings):
+    """Boolean mask of which (lon,lat) grid points fall inside the polygon (numpy
+    ray-cast; rings XOR'd so holes are excluded). Longitudes are normalised to
+    (-180,180] on both sides — a polygon crossing the antimeridian isn't supported."""
+    import numpy as np
+    x = _norm_lon(lon2d)
+    y = np.asarray(lat2d, dtype="float64")
+    inside = np.zeros(x.shape, dtype=bool)
+    for ring in rings:
+        rx = _norm_lon([p[0] for p in ring])
+        ry = np.asarray([p[1] for p in ring], dtype="float64")
+        n = len(ring)
+        j = n - 1
+        w = np.zeros(x.shape, dtype=bool)
+        for i in range(n):
+            cond = (((ry[i] > y) != (ry[j] > y)) &
+                    (x < (rx[j] - rx[i]) * (y - ry[i]) / ((ry[j] - ry[i]) + 1e-300) + rx[i]))
+            w ^= cond
+            j = i
+        inside ^= w
+    return inside
+
+
+def _netcdf_polygon_ys(ds, v, xd, lat_dim, lon_dim, rings):
+    """Series along ``xd`` = the masked mean over the grid cells INSIDE ``rings``.
+    Subsets to the polygon's bbox first (cheap), builds a lat×lon point-in-polygon
+    mask, applies it, and means the lat/lon axes — for any dimension order."""
+    import numpy as np
+    latc, lonc = ds.variables.get(lat_dim), ds.variables.get(lon_dim)
+    if latc is None or lonc is None:
+        return None
+    allx = [p[0] for r in rings for p in r]
+    ally = [p[1] for r in rings for p in r]
+    lat_sl = _range_slice(latc, min(ally), max(ally), circular=False)
+    lon_sl = _range_slice(lonc, min(allx), max(allx), circular=True)
+    lat_sub = np.asarray(latc[:], dtype="float64")[lat_sl]
+    lon_sub = np.asarray(lonc[:], dtype="float64")[lon_sl]
+    if not lat_sub.size or not lon_sub.size:
+        return None
+    LON, LAT = np.meshgrid(lon_sub, lat_sub)        # (nlat, nlon)
+    mask_in = _points_in_polygon(LON, LAT, rings)   # True INSIDE
+    if not mask_in.any():
+        return None
+    dims = list(v.dimensions)
+    index = [lat_sl if d == lat_dim else lon_sl if d == lon_dim else slice(None)
+             for d in dims]
+    arr = np.ma.asarray(v[tuple(index)])
+    sliced = [d for d in dims if d in (xd, lat_dim, lon_dim) or True]  # all kept (slices)
+    lat_ax, lon_ax = dims.index(lat_dim), dims.index(lon_dim)
+    arr = np.moveaxis(arr, [lat_ax, lon_ax], [-2, -1])   # (..., nlat, nlon)
+    outside = np.broadcast_to(~mask_in, arr.shape)
+    arr = np.ma.masked_array(arr, mask=(np.ma.getmaskarray(arr) | outside))
+    reduced = np.ma.mean(arr, axis=(-2, -1))             # leading dims (xd + others)
+    remaining = [d for d in dims if d not in (lat_dim, lon_dim)]
+    if xd not in remaining:
+        return _netcdf_to_list(reduced)
+    xpos = remaining.index(xd)
+    other = tuple(i for i in range(reduced.ndim) if i != xpos)
+    return _netcdf_to_list(np.ma.mean(reduced, axis=other) if other else reduced)
+
+
 def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
     """Reduce a variable to a 1-D series along ``x_dim``, applying the connector's
     SPATIAL FILTER to the lat/lon axes before averaging any remaining non-x axes:
-      spatial 'point' -> the grid cell NEAREST (lon, lat);
-      spatial 'bbox'  -> the mean over a lat/lon window;
-      'mean' / default -> the whole-grid masked mean (size-guarded).
+      spatial 'point'   -> the grid cell NEAREST (lon, lat);
+      spatial 'bbox'    -> the mean over a lat/lon window (fixed, or DYNAMIC = the
+                           record's point ± buffer);
+      spatial 'polygon' -> the mean over the cells inside a shapefile/WKT region;
+      'mean' / default  -> the whole-grid masked mean (size-guarded).
     (lon, lat) come from the config, or — when blank — the record's geometry
     (_lon/_lat) / a longitude|latitude field. Returns the ys list (None for masked)."""
     import numpy as np
@@ -791,6 +937,15 @@ def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
     lon_dim = (cfg.get("lon_dim") or "").strip()
     tlat = _wms_num(cfg.get("lat"), attrs.get("_lat"), attrs.get("latitude"), attrs.get("lat"))
     tlon = _wms_num(cfg.get("lon"), attrs.get("_lon"), attrs.get("longitude"), attrs.get("lon"))
+
+    if mode == "polygon" and lat_dim in dims and lon_dim in dims:
+        rings = _polygon_rings(cfg)
+        if rings:
+            ys = _netcdf_polygon_ys(ds, v, xd, lat_dim, lon_dim, rings)
+            if ys is not None:
+                return ys
+        # no usable polygon -> fall through to whole-grid mean
+
     use_point = (mode == "point" and lat_dim and lon_dim
                  and tlat is not None and tlon is not None)
     use_bbox = (mode == "bbox" and (lat_dim or lon_dim))
@@ -813,8 +968,7 @@ def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
         elif use_bbox and d in (lat_dim, lon_dim):
             coord = ds.variables.get(d)
             is_lon = (d == lon_dim)
-            lo, hi = ((cfg.get("lon_min"), cfg.get("lon_max")) if is_lon
-                      else (cfg.get("lat_min"), cfg.get("lat_max")))
+            lo, hi = _bbox_bounds(cfg, is_lon, tlon if is_lon else tlat)
             index.append(_range_slice(coord, lo, hi, circular=is_lon)
                          if coord is not None else slice(None))
         else:
@@ -1042,16 +1196,22 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
     _sig = ",".join((out_entry.get("vars") or [out_entry.get("var") or ""]))
     _sig += "|" + ";".join((d.get("name", "") + "=" + d.get("formula", ""))
                            for d in (out_entry.get("derived") or []))
-    # Spatial filter signature: the same url+var can resolve to a different series per
-    # location (point/bbox + the record's lon/lat), so it must key the cache.
+    # Spatial filter signature: the same url+var resolves to a different series per
+    # location/region, so the spatial mode + its RESOLVED parameters must key the
+    # cache (a dynamic bbox uses the record's lon/lat, so two records mustn't collide).
     _sp = (cfg.get("spatial") or "mean").lower()
+    _rlon = _wms_num(cfg.get("lon"), attrs.get("_lon"), attrs.get("longitude"), attrs.get("lon"))
+    _rlat = _wms_num(cfg.get("lat"), attrs.get("_lat"), attrs.get("latitude"), attrs.get("lat"))
     if _sp == "point":
-        _sig += "|pt:%s,%s" % (
-            _wms_num(cfg.get("lon"), attrs.get("_lon"), attrs.get("longitude"), attrs.get("lon")),
-            _wms_num(cfg.get("lat"), attrs.get("_lat"), attrs.get("latitude"), attrs.get("lat")))
+        _sig += "|pt:%s,%s" % (_rlon, _rlat)
     elif _sp == "bbox":
-        _sig += "|bx:%s,%s,%s,%s" % (cfg.get("lon_min"), cfg.get("lon_max"),
-                                     cfg.get("lat_min"), cfg.get("lat_max"))
+        _sig += "|bx:%s,%s,%s,%s|loc:%s,%s" % (
+            cfg.get("lon_min"), cfg.get("lon_max"), cfg.get("lat_min"), cfg.get("lat_max"),
+            _rlon, _rlat)
+    elif _sp == "polygon":
+        _sig += "|pg:%s|%s" % ((cfg.get("polygon") or "")[:120], cfg.get("shapefile") or "")
+    else:
+        _sig += "|mean"
     cache_key = (connector_name,
                  url + "::" + (out_entry.get("name") or "") + "::" + _sig)
     now = time.time()
@@ -5614,9 +5774,10 @@ def _connector_config_from_post(post):
         config["derived"] = derived
         # Spatial filter: how the lat/lon axes are reduced. 'mean' (whole grid),
         # 'point' (nearest cell to lon/lat — blank lon/lat uses the record geometry),
-        # or 'bbox' (mean over a lat/lon window). lat_dim/lon_dim name the coord dims.
+        # 'bbox' (mean over a window — fixed, or DYNAMIC = the record's point ± buffer),
+        # or 'polygon' (mean over the cells inside a shapefile/WKT region).
         spatial = (post.get("nc_spatial") or "mean").strip().lower()
-        if spatial not in ("mean", "point", "bbox"):
+        if spatial not in ("mean", "point", "bbox", "polygon"):
             spatial = "mean"
         config["spatial"] = spatial
         config["lat_dim"] = (post.get("nc_lat_dim") or "").strip()
@@ -5628,8 +5789,12 @@ def _connector_config_from_post(post):
                     config[k] = float(raw)
                 except ValueError:
                     pass
-        if spatial in ("point", "bbox") and not (config["lat_dim"] and config["lon_dim"]):
-            errors.append("A point/bbox spatial filter needs the Lat dim and Lon dim names.")
+        config["polygon"] = (post.get("nc_polygon") or "").strip()      # WKT / GeoJSON
+        config["shapefile"] = (post.get("nc_shapefile") or "").strip()  # server .shp path
+        if spatial in ("point", "bbox", "polygon") and not (config["lat_dim"] and config["lon_dim"]):
+            errors.append("A point/bbox/polygon spatial filter needs the Lat dim and Lon dim names.")
+        if spatial == "polygon" and not (config["polygon"] or config["shapefile"]):
+            errors.append("A polygon spatial filter needs a WKT/GeoJSON polygon or a shapefile path.")
         if kind == "thredds":
             config["catalog_url"] = (post.get("catalog_url") or "").strip()
             config["dataset"] = (post.get("dataset") or "").strip()
@@ -5782,6 +5947,8 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "nc_lat_max": (config or {}).get("lat_max", ""),
         "nc_lon_min": (config or {}).get("lon_min", ""),
         "nc_lon_max": (config or {}).get("lon_max", ""),
+        "nc_polygon": (config or {}).get("polygon", ""),
+        "nc_shapefile": (config or {}).get("shapefile", ""),
         "catalog_url": (config or {}).get("catalog_url", ""),
         "dataset": (config or {}).get("dataset", ""),
         # CSV
