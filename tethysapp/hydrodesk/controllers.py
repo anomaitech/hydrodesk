@@ -4,6 +4,7 @@ This is the data-driven 'one code-time class, request-time content' pattern.
 """
 import base64
 import json
+import logging
 import re
 import time
 import urllib.parse
@@ -27,6 +28,12 @@ from tethys_sdk.layouts import MapLayout
 from .app import App
 from . import model as m
 from . import registry
+
+logger = logging.getLogger(__name__)
+
+# Upper bound on a decompressed shapefile upload (sum of the .shp/.shx/.dbf members),
+# a guard against zip-decompression bombs exhausting memory.
+_SHP_MAX_BYTES = 200 * 1024 * 1024
 
 # The installed JSON-Schema validator in the Tethys env is `fastjsonschema`
 # (2.21.2). Prefer it; fall back to the classic `jsonschema` package only if
@@ -855,25 +862,18 @@ def _polygon_rings(cfg):
     return _parse_polygon_text(cfg.get("polygon"))
 
 
-def _shapefile_upload_to_geojson(file_obj):
-    """IMPORT an uploaded shapefile — a zipped bundle (.shp+.shx+.dbf[+.prj]) or a
-    bare .shp — and return its FIRST polygon as a GeoJSON string. We convert at
-    upload time so the geometry is stored INLINE in the connector's ``polygon``
-    config (a pure-JSON row): no server file to keep, and the existing polygon
-    machinery (_parse_polygon_text -> _polygon_rings -> _netcdf_polygon_ys) handles
-    it unchanged. None if pyshp is missing or nothing polygonal is found."""
+def _open_shapefile_reader(data):
+    """Open a pyshp ``Reader`` from raw uploaded bytes — a zip bundle (.shp/.shx/.dbf)
+    or a bare .shp — with a DECOMPRESSION-BOMB guard (refuse if the members would
+    inflate past ``_SHP_MAX_BYTES``). None if pyshp is missing or the bytes are
+    unreadable/too large."""
     import io
-    import json as _json
     import zipfile
     try:
         import shapefile  # pyshp
     except Exception:
         return None
-    try:
-        data = file_obj.read()
-    except Exception:
-        return None
-    if not data:
+    if not data or len(data) > _SHP_MAX_BYTES:
         return None
     try:
         buf = io.BytesIO(data)
@@ -888,24 +888,258 @@ def _shapefile_upload_to_geojson(file_obj):
                         return n
                 return None
 
-            shp_n = _pick(".shp")
+            shp_n, shx_n, dbf_n = _pick(".shp"), _pick(".shx"), _pick(".dbf")
             if not shp_n:
                 return None
-            kw = {"shp": io.BytesIO(zf.read(shp_n))}
-            for ext, key in ((".shx", "shx"), (".dbf", "dbf")):
-                nm = _pick(ext)
+            total = 0                                  # uncompressed size of the members
+            for nm in (shp_n, shx_n, dbf_n):
                 if nm:
-                    kw[key] = io.BytesIO(zf.read(nm))
-            reader = shapefile.Reader(**kw)
-        else:
-            # A bare .shp carries the geometry on its own (shx is only an index).
-            reader = shapefile.Reader(shp=io.BytesIO(data))
+                    try:
+                        total += zf.getinfo(nm).file_size
+                    except KeyError:
+                        pass
+            if total > _SHP_MAX_BYTES:
+                logger.warning("shapefile upload rejected: decompresses to %d bytes (> %d)",
+                               total, _SHP_MAX_BYTES)
+                return None
+            kw = {"shp": io.BytesIO(zf.read(shp_n))}
+            if shx_n:
+                kw["shx"] = io.BytesIO(zf.read(shx_n))
+            if dbf_n:
+                kw["dbf"] = io.BytesIO(zf.read(dbf_n))
+            return shapefile.Reader(**kw)
+        # A bare .shp carries the geometry on its own (shx is only an index).
+        return shapefile.Reader(shp=io.BytesIO(data))
+    except Exception:
+        return None
+
+
+def _shapefile_upload_to_geojson(file_obj):
+    """IMPORT an uploaded shapefile — a zipped bundle (.shp+.shx+.dbf[+.prj]) or a
+    bare .shp — and return its FIRST polygon as a GeoJSON string. We convert at
+    upload time so the geometry is stored INLINE in the connector's ``polygon``
+    config (a pure-JSON row): no server file to keep, and the existing polygon
+    machinery (_parse_polygon_text -> _polygon_rings -> _netcdf_polygon_ys) handles
+    it unchanged. None if pyshp is missing or nothing polygonal is found."""
+    import json as _json
+    try:
+        data = file_obj.read()
+    except Exception:
+        return None
+    reader = _open_shapefile_reader(data)
+    if reader is None:
+        return None
+    try:
         for shp in reader.iterShapes():
             gj = getattr(shp, "__geo_interface__", None)
             if gj and (gj.get("type") or "") in ("Polygon", "MultiPolygon"):
                 return _json.dumps(gj)
     except Exception:
         return None
+    return None
+
+
+def _shapefile_to_featurecollection(file_obj):
+    """IMPORT a multi-polygon shapefile (a GRID / CELL / ZONE layer — fishnet, model
+    grid, HUC subbasins, admin units) and return a GeoJSON **FeatureCollection** string
+    keeping EVERY polygon + its .dbf attributes as feature properties. Unlike
+    _shapefile_upload_to_geojson (which keeps only the first polygon, for a single
+    region), this preserves the per-cell structure so each polygon can become its own
+    zonal column. None if pyshp is missing or no polygons are found."""
+    import json as _json
+
+    def _jsonable(val):
+        if isinstance(val, (str, int, float, bool)) or val is None:
+            return val
+        try:
+            return val.isoformat()          # dates/datetimes from the .dbf
+        except Exception:
+            return str(val)
+
+    try:
+        data = file_obj.read()
+    except Exception:
+        return None
+    reader = _open_shapefile_reader(data)
+    if reader is None:
+        return None
+    try:
+        fields = [f[0] for f in reader.fields[1:]] if reader.fields else []
+        try:
+            recs = list(reader.shapeRecords())
+        except Exception:
+            recs = None
+        feats = []
+        if recs:
+            for sr in recs:
+                gj = getattr(sr.shape, "__geo_interface__", None)
+                if not gj or (gj.get("type") or "") not in ("Polygon", "MultiPolygon"):
+                    continue
+                try:
+                    props = {k: _jsonable(v) for k, v in dict(sr.record.as_dict()).items()}
+                except Exception:
+                    try:
+                        props = {k: _jsonable(v) for k, v in zip(fields, list(sr.record))}
+                    except Exception:
+                        props = {}
+                feats.append({"type": "Feature", "geometry": gj, "properties": props})
+        else:
+            for shp in reader.iterShapes():
+                gj = getattr(shp, "__geo_interface__", None)
+                if gj and (gj.get("type") or "") in ("Polygon", "MultiPolygon"):
+                    feats.append({"type": "Feature", "geometry": gj, "properties": {}})
+        if not feats:
+            return None
+        return _json.dumps({"type": "FeatureCollection", "features": feats})
+    except Exception:
+        return None
+
+
+def _geom_rings(geom):
+    """A GeoJSON geometry dict -> flat rings ``[[(lon,lat), ...], ...]`` (a Polygon's
+    exterior+holes, or ALL rings of a MultiPolygon). [] when not polygonal."""
+    if not isinstance(geom, dict):
+        return []
+    t = (geom.get("type") or "").lower()
+    c = geom.get("coordinates")
+    rings = []
+    try:
+        if t == "polygon" and c:
+            for ring in c:
+                rings.append([(float(p[0]), float(p[1])) for p in ring])
+        elif t == "multipolygon" and c:
+            for poly in c:
+                for ring in poly:
+                    rings.append([(float(p[0]), float(p[1])) for p in ring])
+    except (TypeError, ValueError, IndexError):
+        return []
+    return [r for r in rings if len(r) >= 3]
+
+
+def _ring_centroid_label(rings):
+    """A short ``'lat,lon'`` label = the average of a zone's first (exterior) ring."""
+    pts = rings[0] if rings else []
+    if not pts:
+        return "zone"
+    lon = sum(p[0] for p in pts) / len(pts)
+    lat = sum(p[1] for p in pts) / len(pts)
+    return "%.2f,%.2f" % (lat, lon)
+
+
+# .dbf attribute names that commonly identify a zone/cell, tried (case-insensitively)
+# when no explicit label field is set.
+_ZONE_LABEL_KEYS = ("name", "label", "id", "zone", "zone_id", "zone_name",
+                    "huc", "huc12", "huc8", "huc10", "gridid", "grid_id",
+                    "cellid", "cell_id", "fid", "objectid", "gridcode")
+
+
+def _zone_label_from_props(props, label_field, idx, rings):
+    """Pick a human label for one zone: the chosen ``label_field`` (case-insensitive),
+    else a well-known id attribute, else the ring centroid, else ``zone_<n>``."""
+    if isinstance(props, dict) and props:
+        if label_field:
+            for k in props:
+                if k.lower() == label_field.lower() and props[k] not in (None, ""):
+                    return str(props[k])
+        low = {k.lower(): k for k in props}
+        for key in _ZONE_LABEL_KEYS:
+            if key in low and props[low[key]] not in (None, ""):
+                return str(props[low[key]])
+    return _ring_centroid_label(rings) if rings else ("zone_%d" % (idx + 1))
+
+
+def _zones_from_geojson(s, label_field=None):
+    """Parse a GeoJSON string into per-zone ``[(label, rings), ...]`` — a
+    FeatureCollection (one zone per feature, labelled from properties), a single
+    Feature, a MultiPolygon (one zone per constituent polygon), or a Polygon. None
+    when ``s`` isn't usable GeoJSON."""
+    s = (s or "").strip()
+    if not s.startswith("{"):
+        return None
+    try:
+        g = json.loads(s)
+    except (ValueError, TypeError):
+        return None
+    t = (g.get("type") or "").lower()
+    zones = []
+    if t == "featurecollection":
+        for i, feat in enumerate(g.get("features") or []):
+            rings = _geom_rings((feat or {}).get("geometry") or {})
+            if rings:
+                zones.append((_zone_label_from_props((feat or {}).get("properties"),
+                                                     label_field, i, rings), rings))
+    elif t == "feature":
+        rings = _geom_rings(g.get("geometry") or {})
+        if rings:
+            zones.append((_zone_label_from_props(g.get("properties"), label_field, 0, rings), rings))
+    elif t == "multipolygon":
+        for i, poly in enumerate(g.get("coordinates") or []):
+            rings = []
+            for ring in poly:
+                try:
+                    rings.append([(float(p[0]), float(p[1])) for p in ring])
+                except (TypeError, ValueError, IndexError):
+                    pass
+            rings = [r for r in rings if len(r) >= 3]
+            if rings:
+                zones.append((_ring_centroid_label(rings), rings))
+    elif t == "polygon":
+        rings = _geom_rings(g)
+        if rings:
+            zones.append((_ring_centroid_label(rings), rings))
+    return zones or None
+
+
+def _zone_polygons(cfg):
+    """The connector's ZONES as ``[(label, rings), ...]`` — each entry is ONE polygon
+    (a cell/zone) with its exterior+hole rings. Source priority: an inline ``zones``
+    FeatureCollection (imported from a multi-polygon shapefile, or pasted) -> the
+    ``polygon`` text parsed as FeatureCollection/MultiPolygon/Polygon/WKT -> a server
+    ``shapefile`` path (every polygon in it). None when nothing usable is configured."""
+    cfg = cfg or {}
+    label_field = (cfg.get("zone_label") or "").strip() or None
+    z = _zones_from_geojson(cfg.get("zones"), label_field)
+    if z:
+        return z
+    z = _zones_from_geojson(cfg.get("polygon"), label_field)
+    if z:
+        return z
+    rings = _parse_polygon_text(cfg.get("polygon"))     # WKT single polygon
+    if rings:
+        return [(_ring_centroid_label(rings), rings)]
+    sp = (cfg.get("shapefile") or "").strip()
+    if sp:
+        try:
+            import shapefile
+            reader = shapefile.Reader(sp)
+            fields = [f[0] for f in reader.fields[1:]] if reader.fields else []
+            zones = []
+            try:
+                recs = list(reader.shapeRecords())
+            except Exception:
+                recs = None
+            if recs:
+                for i, sr in enumerate(recs):
+                    rings = _geom_rings(getattr(sr.shape, "__geo_interface__", {}) or {})
+                    if not rings:
+                        continue
+                    try:
+                        props = dict(sr.record.as_dict())
+                    except Exception:
+                        try:
+                            props = dict(zip(fields, list(sr.record)))
+                        except Exception:
+                            props = {}
+                    zones.append((_zone_label_from_props(props, label_field, i, rings), rings))
+            else:
+                for i, shp in enumerate(reader.iterShapes()):
+                    rings = _geom_rings(getattr(shp, "__geo_interface__", {}) or {})
+                    if rings:
+                        zones.append((_ring_centroid_label(rings), rings))
+            if zones:
+                return zones
+        except Exception:
+            pass
     return None
 
 
@@ -1023,6 +1257,94 @@ def _netcdf_cells_columns(ds, v, x_dim, cfg=None, attrs=None, max_cells=24):
             cols.append({"name": "%.1f,%.1f" % (float(lat_vals[i]), float(lon_vals[j])),
                          "values": _netcdf_to_list(sub[:, i, j])})
     return cols
+
+
+def _netcdf_zones_columns(ds, v, x_dim, cfg=None, attrs=None, max_zones=60):
+    """PER-ZONE columns (zonal statistics): each polygon in a multi-polygon source (an
+    imported grid/cell/zone shapefile, a pasted FeatureCollection/MultiPolygon, or a
+    server shapefile path) becomes its OWN column = the variable's masked MEAN over the
+    grid cells inside that polygon, along x_dim, labelled by the polygon's attribute.
+    Downloads the union bounding box ONCE and masks each zone against it (so N zones
+    cost one fetch, not N). Returns [{name,values}] (x_dim first) or None."""
+    import numpy as np
+    cfg, attrs = cfg or {}, attrs or {}
+    dims = list(v.dimensions)
+    xd = x_dim if x_dim in dims else (dims[0] if dims else "")
+    lat_dim = (cfg.get("lat_dim") or "").strip()
+    lon_dim = (cfg.get("lon_dim") or "").strip()
+    if lat_dim not in dims or lon_dim not in dims:
+        return None
+    latc, lonc = ds.variables.get(lat_dim), ds.variables.get(lon_dim)
+    if latc is None or lonc is None:
+        return None
+    zones = _zone_polygons(cfg)
+    if not zones:
+        return None
+    cap = max(1, int(max_zones or 60))
+    if len(zones) > cap:                                   # surface the dropped count
+        logger.warning("netcdf zones: keeping %d of %d polygons (zones_max=%d); %d dropped",
+                       cap, len(zones), cap, len(zones) - cap)
+        zones = zones[:cap]
+    allx = [p[0] for _l, rings in zones for r in rings for p in r]
+    ally = [p[1] for _l, rings in zones for r in rings for p in r]
+    if not allx or not ally:
+        return None
+    lat_sl = _range_slice(latc, min(ally), max(ally), circular=False)
+    lon_sl = _range_slice(lonc, min(allx), max(allx), circular=True)
+    lat_sub = np.asarray(latc[:], dtype="float64")[lat_sl]
+    lon_sub = np.asarray(lonc[:], dtype="float64")[lon_sl]
+    if not lat_sub.size or not lon_sub.size:
+        return None
+    LON, LAT = np.meshgrid(lon_sub, lat_sub)            # (nlat, nlon)
+    index = [lat_sl if d == lat_dim else lon_sl if d == lon_dim else slice(None)
+             for d in dims]
+    arr0 = np.ma.asarray(v[tuple(index)])
+    lat_ax, lon_ax = dims.index(lat_dim), dims.index(lon_dim)
+    arr0 = np.moveaxis(arr0, [lat_ax, lon_ax], [-2, -1])   # (..., nlat, nlon)
+    base_mask = np.ma.getmaskarray(arr0)
+    remaining = [d for d in dims if d not in (lat_dim, lon_dim)]
+    cols = []
+    seen = {xd or "index": 1}                              # x column already takes this name
+
+    def _uniq(name):
+        # Two zones can share a label (same .dbf value, or centroids that round equal);
+        # a downstream consumer keying columns by name would clobber one. Disambiguate.
+        name = name or "zone"
+        if name not in seen:
+            seen[name] = 1
+            return name
+        seen[name] += 1
+        return "%s #%d" % (name, seen[name])
+
+    for label, rings in zones:
+        nm = _uniq(label)
+        mask_in = _points_in_polygon(LON, LAT, rings)      # True INSIDE this zone
+        if not mask_in.any():
+            cols.append({"name": nm, "values": []})
+            continue
+        outside = np.broadcast_to(~mask_in, arr0.shape)
+        arr = np.ma.masked_array(arr0, mask=(base_mask | outside))
+        reduced = np.ma.mean(arr, axis=(-2, -1))           # collapse lat/lon
+        if xd not in remaining:
+            ys = _netcdf_to_list(reduced)
+        else:
+            xpos = remaining.index(xd)
+            other = tuple(i for i in range(reduced.ndim) if i != xpos)
+            ys = _netcdf_to_list(np.ma.mean(reduced, axis=other) if other else reduced)
+        cols.append({"name": nm, "values": ys})
+    n = max((len(c["values"]) for c in cols), default=0)
+    if not n:
+        return None
+    for c in cols:                                          # pad empty zones to align
+        if len(c["values"]) < n:
+            c["values"] = list(c["values"]) + [None] * (n - len(c["values"]))
+    cvar = ds.variables.get(xd)
+    xs = _netcdf_coord_values(cvar) if cvar is not None else None
+    if xs is None or len(xs) < n:
+        xs = [str(i) for i in range(n)]
+    else:
+        xs = xs[:n]
+    return [{"name": xd or "index", "values": xs}] + cols
 
 
 def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
@@ -1172,17 +1494,27 @@ def _netcdf_extract(ds, out_entry, cfg=None, attrs=None):
     x_dim = (out_entry.get("x_dim") or "").strip() or (dims[0] if dims else "")
     if x_dim not in dims:
         x_dim = dims[0] if dims else ""
-    # PER-CELL mode: a SERIES output becomes one column per grid cell (not the mean).
-    if (cfg or {}).get("spatial") == "cells" and \
-            (out_entry.get("kind") or "value").lower() == "series":
-        cols = _netcdf_cells_columns(ds, v, x_dim, cfg, attrs,
-                                     int((cfg or {}).get("cells_max") or 24))
+    is_series = (out_entry.get("kind") or "value").lower() == "series"
+    # PER-CELL / PER-ZONE: a SERIES output becomes one column per grid cell / per polygon
+    # (NOT the mean). When the columns can't be built (e.g. all zones fall outside the
+    # grid, or no zones are configured) return a soft-EMPTY series rather than falling
+    # through to the whole-grid mean — silently mislabelling a global mean as the
+    # requested per-cell/zone output would be worse than showing no data.
+    if is_series and (cfg or {}).get("spatial") in ("cells", "zones"):
+        if (cfg or {}).get("spatial") == "cells":
+            cols = _netcdf_cells_columns(ds, v, x_dim, cfg, attrs,
+                                         int((cfg or {}).get("cells_max") or 24))
+        else:
+            cols = _netcdf_zones_columns(ds, v, x_dim, cfg, attrs,
+                                         int((cfg or {}).get("zones_max") or 60))
         if cols:
             n = max((len(c["values"]) for c in cols), default=0)
             return {"kind": "series", "columns": cols, "n": n,
                     "x": cols[0]["values"], "y": cols[1]["values"] if len(cols) > 1 else []}
+        return {"kind": "series", "n": 0, "x": [], "y": [],
+                "columns": [{"name": x_dim or "index", "values": []}]}
     xs, ys = _netcdf_series_xy(ds, v, x_dim, cfg, attrs)
-    if (out_entry.get("kind") or "value").lower() == "series":
+    if is_series:
         return {"kind": "series",
                 "columns": [{"name": x_dim or "index", "values": xs},
                             {"name": var_name, "values": ys}],
@@ -1332,6 +1664,11 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
         _sig += "|cells:%s,%s,%s,%s|loc:%s,%s|%s" % (
             cfg.get("lon_min"), cfg.get("lon_max"), cfg.get("lat_min"), cfg.get("lat_max"),
             _rlon, _rlat, cfg.get("cells_max"))
+    elif _sp == "zones":
+        import hashlib
+        _zsrc = (cfg.get("zones") or cfg.get("polygon") or cfg.get("shapefile") or "")
+        _zh = hashlib.md5(_zsrc.encode("utf-8", "replace")).hexdigest()[:12]
+        _sig += "|zones:%s,%s,%s" % (_zh, cfg.get("zone_label") or "", cfg.get("zones_max"))
     else:
         _sig += "|mean"
     cache_key = (connector_name,
@@ -5903,7 +6240,7 @@ def _connector_config_from_post(post, files=None):
         # 'bbox' (mean over a window — fixed, or DYNAMIC = the record's point ± buffer),
         # or 'polygon' (mean over the cells inside a shapefile/WKT region).
         spatial = (post.get("nc_spatial") or "mean").strip().lower()
-        if spatial not in ("mean", "point", "bbox", "polygon", "cells"):
+        if spatial not in ("mean", "point", "bbox", "polygon", "cells", "zones"):
             spatial = "mean"
         config["spatial"] = spatial
         config["lat_dim"] = (post.get("nc_lat_dim") or "").strip()
@@ -5912,6 +6249,10 @@ def _connector_config_from_post(post, files=None):
             config["cells_max"] = max(1, min(200, int(post.get("nc_cells_max") or 24)))
         except (TypeError, ValueError):
             config["cells_max"] = 24
+        try:
+            config["zones_max"] = max(1, min(500, int(post.get("nc_zones_max") or 60)))
+        except (TypeError, ValueError):
+            config["zones_max"] = 60
         for k in ("lat", "lon", "lat_min", "lat_max", "lon_min", "lon_max"):
             raw = (post.get("nc_" + k) or "").strip()
             if raw:
@@ -5921,21 +6262,38 @@ def _connector_config_from_post(post, files=None):
                     pass
         config["polygon"] = (post.get("nc_polygon") or "").strip()      # WKT / GeoJSON
         config["shapefile"] = (post.get("nc_shapefile") or "").strip()  # server .shp path
-        # IMPORT an uploaded shapefile (zip or .shp): convert to inline GeoJSON now
-        # and store it in polygon, so the connector stays a pure-JSON row.
+        # 'zones' carries a GeoJSON FeatureCollection of MANY polygons (one zonal column
+        # each); it round-trips through a hidden field so an edit without a re-upload
+        # keeps it, and so the Test button (JSON fetch) can read it back.
+        config["zones"] = (post.get("nc_zones") or "").strip()
+        config["zone_label"] = (post.get("nc_zone_label") or "").strip()  # .dbf attr to label by
+        # IMPORT an uploaded shapefile (zip or .shp). In 'zones' mode keep EVERY polygon
+        # as a FeatureCollection (a grid/cell layer); otherwise keep the first polygon as
+        # an inline GeoJSON region. Either way the connector stays a pure-JSON row.
         up = files.get("nc_shapefile_file")
         if up is not None:
-            gj = _shapefile_upload_to_geojson(up)
-            if gj:
-                config["polygon"] = gj
+            if spatial == "zones":
+                fc = _shapefile_to_featurecollection(up)
+                if fc:
+                    config["zones"] = fc
+                else:
+                    errors.append("Could not read polygons from the uploaded shapefile "
+                                  "(expected a .zip bundle of .shp/.shx/.dbf, or a .shp).")
             else:
-                errors.append("Could not read a polygon from the uploaded shapefile "
-                              "(expected a .zip bundle of .shp/.shx/.dbf, or a .shp).")
-        if spatial in ("point", "bbox", "polygon", "cells") and not (config["lat_dim"] and config["lon_dim"]):
-            errors.append("A point/bbox/polygon/cells spatial filter needs the Lat dim and Lon dim names.")
+                gj = _shapefile_upload_to_geojson(up)
+                if gj:
+                    config["polygon"] = gj
+                else:
+                    errors.append("Could not read a polygon from the uploaded shapefile "
+                                  "(expected a .zip bundle of .shp/.shx/.dbf, or a .shp).")
+        if spatial in ("point", "bbox", "polygon", "cells", "zones") and not (config["lat_dim"] and config["lon_dim"]):
+            errors.append("A point/bbox/polygon/cells/zones spatial filter needs the Lat dim and Lon dim names.")
         if spatial == "polygon" and not (config["polygon"] or config["shapefile"]):
             errors.append("A polygon spatial filter needs a WKT/GeoJSON polygon, "
                           "an uploaded shapefile, or a shapefile path.")
+        if spatial == "zones" and not (config["zones"] or config["polygon"] or config["shapefile"]):
+            errors.append("A per-zone spatial filter needs an imported multi-polygon "
+                          "shapefile, a pasted FeatureCollection/MultiPolygon, or a shapefile path.")
         if kind == "thredds":
             config["catalog_url"] = (post.get("catalog_url") or "").strip()
             config["dataset"] = (post.get("dataset") or "").strip()
@@ -6090,6 +6448,9 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "nc_lon_max": (config or {}).get("lon_max", ""),
         "nc_polygon": (config or {}).get("polygon", ""),
         "nc_shapefile": (config or {}).get("shapefile", ""),
+        "nc_zones": (config or {}).get("zones", ""),
+        "nc_zone_label": (config or {}).get("zone_label", ""),
+        "nc_zones_max": (config or {}).get("zones_max", 60),
         "nc_cells_max": (config or {}).get("cells_max", 24),
         "catalog_url": (config or {}).get("catalog_url", ""),
         "dataset": (config or {}).get("dataset", ""),

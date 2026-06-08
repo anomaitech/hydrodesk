@@ -147,8 +147,9 @@
             <option value="bbox"    {% if nc_spatial == 'bbox' %}selected{% endif %}>Bounding box (mean over a window)</option>
             <option value="polygon" {% if nc_spatial == 'polygon' %}selected{% endif %}>Polygon / shapefile (mean inside a region)</option>
             <option value="cells"   {% if nc_spatial == 'cells' %}selected{% endif %}>Per-cell (every cell in a box as its own column)</option>
+            <option value="zones"   {% if nc_spatial == 'zones' %}selected{% endif %}>Per-zone (each polygon in a grid/shapefile a column)</option>
           </select>
-          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average inside a lat/lon window (leave the bounds blank to centre it on the record ± buffer). Polygon = average the cells inside a shapefile/WKT region. Per-cell = NO averaging — each cell in the box becomes its own column.</div>
+          <div class="frappe-help">Whole-grid = average every cell. Point = the cell nearest a lon/lat (leave blank to use the record's geometry). Bbox = average inside a lat/lon window (leave the bounds blank to centre it on the record ± buffer). Polygon = average the cells inside a shapefile/WKT region. Per-cell = NO averaging — each grid cell in the box is its own column. Per-zone = import a MULTI-polygon shapefile (a grid/cells/subbasins layer) and get the mean inside EACH polygon as its own column.</div>
         </div>
         <div class="hd-nc-spatial" style="display:none;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
@@ -193,13 +194,13 @@
               <label class="frappe-label" for="id_nc_shapefile_file">…or import a shapefile <span class="frappe-muted frappe-text-sm">(upload a .zip bundle, or a .shp)</span></label>
               <input class="form-control" type="file" id="id_nc_shapefile_file" name="nc_shapefile_file"
                      accept=".zip,.shp,application/zip">
-              <div class="frappe-help">Upload a zipped shapefile (<code>.shp</code> + <code>.shx</code> + <code>.dbf</code>) or a bare <code>.shp</code>. On save it is converted to an inline GeoJSON polygon — no file is kept on the server. (Then re-open to Test, which reads the stored polygon.)</div>
+              <div class="frappe-help">Upload a zipped shapefile (<code>.shp</code> + <code>.shx</code> + <code>.dbf</code>) or a bare <code>.shp</code>. On save it is converted to inline GeoJSON — no file is kept on the server. In <strong>Polygon</strong> mode the first polygon becomes the region; in <strong>Per-zone</strong> mode EVERY polygon is imported (one column each). (Then re-open to Test, which reads the stored geometry.)</div>
             </div>
             <div class="frappe-form-group">
               <label class="frappe-label" for="id_nc_shapefile">…or shapefile path <span class="frappe-muted frappe-text-sm">(.shp already on the server)</span></label>
               <input class="form-control" type="text" id="id_nc_shapefile" name="nc_shapefile"
                      value="{{ nc_shapefile }}" placeholder="/path/to/region.shp">
-              <div class="frappe-help">The grid cells inside the polygon's first ring (holes excluded) are averaged. Lon is normalised to −180…180; a polygon crossing the antimeridian isn't supported yet.</div>
+              <div class="frappe-help">In <strong>Polygon</strong> mode the grid cells inside the first polygon (holes excluded) are averaged; in <strong>Per-zone</strong> mode every polygon in the file becomes its own column. Lon is normalised to −180…180; a polygon crossing the antimeridian isn't supported yet.</div>
             </div>
           </div>
           <div class="hd-nc-cells" style="display:none;">
@@ -209,6 +210,25 @@
                      value="{{ nc_cells_max|default:'24' }}" placeholder="24">
               <div class="frappe-help">Per-cell uses the <strong>Bounding box</strong> bounds above to pick the region (or the record ± buffer when blank). Each cell becomes a column labelled <code>lat,lon</code>; if the box has more than this many cells, evenly-spaced ones are sampled.</div>
             </div>
+          </div>
+          <div class="hd-nc-zones" style="display:none;">
+            <input type="hidden" id="id_nc_zones" name="nc_zones" value="{{ nc_zones }}">
+            <div class="frappe-help" id="hd-zones-status" style="margin-bottom:10px;"></div>
+            <div style="display:grid;grid-template-columns:1fr 220px;gap:14px;">
+              <div class="frappe-form-group">
+                <label class="frappe-label" for="id_nc_zone_label">Label field <span class="frappe-muted frappe-text-sm">(.dbf attribute)</span></label>
+                <input class="form-control" type="text" id="id_nc_zone_label" name="nc_zone_label"
+                       value="{{ nc_zone_label }}" placeholder="e.g. NAME, HUC12, GRIDID (blank = auto)">
+                <div class="frappe-help">Which shapefile attribute names each zone's column. Blank = a well-known id field (name/id/huc/gridid…) or the polygon centroid.</div>
+              </div>
+              <div class="frappe-form-group">
+                <label class="frappe-label" for="id_nc_zones_max">Max zones</label>
+                <input class="form-control" type="text" id="id_nc_zones_max" name="nc_zones_max"
+                       value="{{ nc_zones_max|default:'60' }}" placeholder="60">
+                <div class="frappe-help">Caps how many polygons become columns (extras dropped).</div>
+              </div>
+            </div>
+            <div class="frappe-help">Per-zone imports a <strong>multi-polygon</strong> shapefile (above) — a grid, cells, or subbasins layer. Each polygon → one column = the variable's mean over the cells inside it. (You can also paste a GeoJSON <code>FeatureCollection</code>/<code>MultiPolygon</code> in the Polygon box.)</div>
           </div>
         </div>
       </div>
@@ -847,12 +867,32 @@
       var bx = document.querySelector('.hd-nc-bbox');
       var pg = document.querySelector('.hd-nc-polygon');
       var cl = document.querySelector('.hd-nc-cells');
+      var zn = document.querySelector('.hd-nc-zones');
       if (wrap) wrap.style.display = (m !== 'mean') ? '' : 'none';
       if (pt) pt.style.display = (m === 'point') ? 'grid' : 'none';
       // per-cell reuses the bbox bounds to define the region.
       if (bx) bx.style.display = (m === 'bbox' || m === 'cells') ? 'grid' : 'none';
-      if (pg) pg.style.display = (m === 'polygon') ? '' : 'none';
+      // polygon block holds the shapefile upload — shared by polygon + per-zone.
+      if (pg) pg.style.display = (m === 'polygon' || m === 'zones') ? '' : 'none';
       if (cl) cl.style.display = (m === 'cells') ? '' : 'none';
+      if (zn) zn.style.display = (m === 'zones') ? '' : 'none';
+      updateZonesStatus();
+    }
+    // Show how many zones are loaded (parse the hidden FeatureCollection carrier).
+    function updateZonesStatus() {
+      var el = document.getElementById('hd-zones-status');
+      var hidden = document.getElementById('id_nc_zones');
+      if (!el) return;
+      var n = 0;
+      try {
+        var g = JSON.parse((hidden && hidden.value) || 'null');
+        if (g && g.type === 'FeatureCollection') n = (g.features || []).length;
+        else if (g && (g.type === 'MultiPolygon')) n = (g.coordinates || []).length;
+        else if (g && (g.type === 'Polygon' || g.type === 'Feature')) n = 1;
+      } catch (e) { n = 0; }
+      el.innerHTML = n ? ('<strong>' + n + '</strong> zone' + (n === 1 ? '' : 's') +
+                          ' loaded. Upload a new shapefile to replace them.')
+                       : 'No zones loaded yet — upload a multi-polygon shapefile above (or paste a FeatureCollection in the Polygon box).';
     }
     if (sp) sp.addEventListener('change', applySpatial);
     applySpatial();
@@ -1164,6 +1204,8 @@
       lon_min: numOrUndef('id_nc_lon_min'), lon_max: numOrUndef('id_nc_lon_max'),
       polygon: val('id_nc_polygon'), shapefile: val('id_nc_shapefile'),
       cells_max: numOrUndef('id_nc_cells_max'),
+      zones: val('id_nc_zones'), zone_label: val('id_nc_zone_label'),
+      zones_max: numOrUndef('id_nc_zones_max'),
       catalog_url: val('id_catalog_url'),
       dataset: val('id_dataset'),
       csv_url: val('id_csv_url'),
