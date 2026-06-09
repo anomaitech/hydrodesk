@@ -1,0 +1,72 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
+{% block nav_active_schedules %} active{% endblock %}
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
+    <a href="{{ schedules_url }}">Schedules</a><span class="sep">/</span>{{ page_title }}
+  </div>
+  <div class="frappe-page-head"><div class="frappe-title-area"><h1 class="frappe-title">{{ page_title }}</h1></div></div>
+
+  {% if errors %}
+  <div class="frappe-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:16px;">
+    <ul style="margin:0;padding-left:18px;color:#b42318;">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ form_action }}">{% csrf_token %}
+    <div class="frappe-form-card" style="padding:18px 20px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_name">Schedule name</label>
+          <input class="form-control" id="id_name" name="name" value="{{ name }}" placeholder="e.g. flow_watch">
+        </div>
+        <div class="frappe-form-group">
+          <label class="frappe-label" for="id_target">Target doctype</label>
+          <select class="form-select" id="id_target" name="target_slug">
+            <option value="">— pick a doctype —</option>
+            {% for s in slugs %}<option value="{{ s.slug }}"{% if s.slug == target_slug %} selected{% endif %}>{{ s.name }} ({{ s.slug }})</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:24px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+        <div class="frappe-form-group" style="margin:0;max-width:180px;">
+          <label class="frappe-label">Every (minutes)</label>
+          <input class="form-control form-control-sm" name="interval_minutes" type="number" min="1" max="10080" value="{{ interval_minutes }}">
+        </div>
+        <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;">
+          <input type="checkbox" name="enabled" {% if enabled %}checked{% endif %}> Enabled</label>
+        <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;">
+          <input type="checkbox" name="refresh" {% if refresh %}checked{% endif %}> Refresh computed fields each run</label>
+      </div>
+
+      <div style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="frappe-section-head">Alert rules <span class="frappe-muted frappe-text-sm">(raise an alert when a field crosses a threshold)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 90px 1fr 110px 1.4fr;gap:8px;margin-bottom:6px;">
+          <span class="frappe-label">Field</span><span class="frappe-label">Op</span><span class="frappe-label">Value</span>
+          <span class="frappe-label">Severity</span><span class="frappe-label">Message</span>
+        </div>
+        {% for r in alert_rows %}
+        <div style="display:grid;grid-template-columns:1fr 90px 1fr 110px 1.4fr;gap:8px;margin-bottom:6px;">
+          <input class="form-control form-control-sm" name="alert_field_{{ r.i }}" value="{{ r.field }}" placeholder="e.g. discharge">
+          <select class="form-select form-select-sm" name="alert_op_{{ r.i }}">
+            {% for o in ops %}<option value="{{ o }}"{% if o == r.op %} selected{% endif %}>{{ o }}</option>{% endfor %}
+          </select>
+          <input class="form-control form-control-sm" name="alert_value_{{ r.i }}" value="{{ r.value }}" placeholder="e.g. 100">
+          <select class="form-select form-select-sm" name="alert_sev_{{ r.i }}">
+            {% for sv in severities %}<option value="{{ sv }}"{% if sv == r.severity %} selected{% endif %}>{{ sv }}</option>{% endfor %}
+          </select>
+          <input class="form-control form-control-sm" name="alert_msg_{{ r.i }}" value="{{ r.message }}" placeholder="e.g. High flow exceeded">
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="frappe-form-actions" style="margin-top:16px;">
+        <a class="btn btn-default" href="{{ schedules_url }}">Cancel</a>
+        <button class="btn btn-primary" type="submit">{{ submit_label }}</button>
+      </div>
+    </div>
+  </form>
+</div>
+{% endblock %}

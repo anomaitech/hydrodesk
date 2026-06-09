@@ -9167,6 +9167,381 @@ def models_json(request):
     return JsonResponse({"ok": True, "models": out})
 
 
+# ===========================================================================
+# SCHEDULES + ALERTS. A HydroSchedule runs over a doctype's records every
+# interval_minutes: REFRESH (re-run formulas + scripts -> re-materialize live
+# connector data) and evaluate ALERT rules (a value crossing a threshold -> a
+# HydroAlert). Triggered by the cron management command, the in-app ticker, or a
+# per-schedule "Run now" button.
+# ===========================================================================
+
+def _alert_op(actual, op, threshold):
+    """True if ``actual op threshold``. Numeric when both parse as float; else string
+    (== / != exact, ':' / contains substring)."""
+    op = (op or ">").strip()
+    try:
+        a, t = float(actual), float(threshold)
+        return {">": a > t, "<": a < t, ">=": a >= t, "<=": a <= t,
+                "==": a == t, "=": a == t, "!=": a != t}.get(op, False)
+    except (TypeError, ValueError):
+        s = "" if actual is None else str(actual)
+        ts = "" if threshold is None else str(threshold)
+        if op in ("==", "="):
+            return s == ts
+        if op == "!=":
+            return s != ts
+        if op in (":", "contains"):
+            return ts.lower() in s.lower()
+        return False
+
+
+def _evaluate_alerts(rules, attrs):
+    """The alert rules a record currently breaches -> [{field,op,threshold,actual,...}]."""
+    out = []
+    for r in (rules or []):
+        if not isinstance(r, dict):
+            continue
+        field = (r.get("field") or "").strip()
+        if not field or field not in (attrs or {}):
+            continue
+        actual = attrs.get(field)
+        if actual is None:
+            continue
+        if _alert_op(actual, r.get("op"), r.get("value")):
+            out.append({"field": field, "op": (r.get("op") or ">").strip(),
+                        "threshold": r.get("value"), "actual": actual,
+                        "message": (r.get("message") or "").strip(),
+                        "severity": (r.get("severity") or "warning").strip()})
+    return out
+
+
+def _run_schedule(session, sched):
+    """Refresh a schedule's records (optional) + raise alerts. Returns (n_refreshed,
+    n_alerts). De-dups: an UNacknowledged alert for the same record+field+op is not
+    re-raised, so a persistent breach isn't logged every interval."""
+    from django.utils import timezone
+    meta = _load_hydrotype(session, sched.target_slug)
+    if meta is None:
+        sched.last_run_at = timezone.now()
+        session.commit()
+        return (0, 0)
+    _dn, field_schema, _gk = meta
+    recs = session.execute(select(m.HydroRecord).where(
+        m.HydroRecord.hydrotype_slug == sched.target_slug)).scalars().all()
+    rules = sched.alerts or []
+    n_refreshed = n_alerts = 0
+    for rec in recs:
+        attrs = dict(rec.attributes or {})
+        if sched.refresh:
+            _compute_formulas(field_schema, attrs)
+            _compute_scripts(field_schema, attrs, session)   # re-materializes connectors
+            rec.attributes = attrs
+            n_refreshed += 1
+        for b in _evaluate_alerts(rules, attrs):
+            dup = session.execute(select(m.HydroAlert.id).where(
+                m.HydroAlert.record_id == rec.id, m.HydroAlert.field == b["field"],
+                m.HydroAlert.op == b["op"], m.HydroAlert.acknowledged.is_(False))).first()
+            if dup is not None:
+                continue
+            session.add(m.HydroAlert(
+                schedule_name=sched.name, slug=sched.target_slug, record_id=rec.id,
+                record_title=(_label_for(field_schema, attrs) or str(rec.id)[:8]),
+                field=b["field"], op=b["op"], threshold=str(b["threshold"]),
+                actual=str(b["actual"]), message=b["message"], severity=b["severity"]))
+            n_alerts += 1
+    sched.last_run_at = timezone.now()
+    session.commit()
+    return (n_refreshed, n_alerts)
+
+
+def _run_due_schedules(force=False):
+    """Run every enabled schedule that is due (or ALL enabled when ``force``). Each runs
+    in its own session. Returns a summary list (used by the cron command + ticker)."""
+    from django.utils import timezone
+    import datetime as _dt
+    engine = App.get_persistent_store_database("hydro_db")
+    now = timezone.now()
+    due_ids = []
+    with Session(engine) as session:
+        for s in session.execute(select(m.HydroSchedule)
+                                 .where(m.HydroSchedule.enabled.is_(True))).scalars().all():
+            interval = max(1, s.interval_minutes or 60)
+            if (force or s.last_run_at is None
+                    or (now - s.last_run_at) >= _dt.timedelta(minutes=interval)):
+                due_ids.append(s.id)
+    summary = []
+    for sid in due_ids:
+        with Session(engine) as session:
+            s = session.execute(select(m.HydroSchedule)
+                                .where(m.HydroSchedule.id == sid)).scalar_one_or_none()
+            if s is None:
+                continue
+            try:
+                nr, na = _run_schedule(session, s)
+                summary.append({"schedule": s.name, "refreshed": nr, "alerts": na})
+            except Exception as exc:
+                summary.append({"schedule": s.name, "error": str(exc)[:160]})
+    return summary
+
+
+# In-app ticker: ONE daemon thread runs due schedules every 60s, started lazily on the
+# first Schedules/Alerts page hit. Best-effort for the dev server; for production use the
+# `hydrodesk_run_schedules` management command from cron.
+_SCHED_TICKER = [False]
+
+def _ensure_scheduler():
+    if _SCHED_TICKER[0]:
+        return
+    _SCHED_TICKER[0] = True
+    import threading, time as _time
+    from django.db import connections as _conns
+
+    def _loop():
+        while True:
+            _time.sleep(60)
+            try:
+                _run_due_schedules()
+            except Exception:
+                pass
+            finally:
+                try:
+                    _conns.close_all()
+                except Exception:
+                    pass
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+# ---- Schedules + Alerts admin (superuser) ----------------------------------------
+_ALERT_OPS = (">", "<", ">=", "<=", "==", "!=", "contains")
+_ALERT_SEVERITIES = ("info", "warning", "critical")
+
+
+def _schedule_from_post(post):
+    name = (post.get("name") or "").strip()
+    target = (post.get("target_slug") or "").strip()
+    errors = []
+    if not name:
+        errors.append("Schedule name is required.")
+    if not target:
+        errors.append("Pick a target doctype.")
+    try:
+        interval = max(1, min(10080, int(post.get("interval_minutes") or 60)))
+    except (TypeError, ValueError):
+        interval = 60
+    alerts, seen = [], set()
+    for i in range(40):
+        f = (post.get("alert_field_%d" % i) or "").strip()
+        if not f:
+            continue
+        op = (post.get("alert_op_%d" % i) or ">").strip()
+        if op not in _ALERT_OPS:
+            op = ">"
+        sev = (post.get("alert_sev_%d" % i) or "warning").strip()
+        if sev not in _ALERT_SEVERITIES:
+            sev = "warning"
+        key = (f, op, (post.get("alert_value_%d" % i) or "").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        alerts.append({"field": f, "op": op, "value": (post.get("alert_value_%d" % i) or "").strip(),
+                       "severity": sev, "message": (post.get("alert_msg_%d" % i) or "").strip()})
+    return name, target, interval, alerts, errors
+
+
+def _schedule_form_context(mode, sched, errors, schedule_id=None, slugs=None):
+    sched = sched or {}
+    alerts = list(sched.get("alerts") or [])
+    rows = []
+    for i in range(max(4, len(alerts) + 2)):
+        a = alerts[i] if i < len(alerts) else {}
+        rows.append({"i": i, "field": a.get("field", ""), "op": a.get("op", ">"),
+                     "value": a.get("value", ""), "severity": a.get("severity", "warning"),
+                     "message": a.get("message", "")})
+    is_edit = mode == "edit"
+    action = (reverse("hydrodesk:schedule_edit", kwargs={"schedule_id": schedule_id})
+              if is_edit else reverse("hydrodesk:schedules"))
+    return {"is_edit": is_edit, "form_action": action, "name": sched.get("name", ""),
+            "target_slug": sched.get("target_slug", ""),
+            "interval_minutes": sched.get("interval_minutes", 60),
+            "enabled": sched.get("enabled", True), "refresh": sched.get("refresh", True),
+            "alert_rows": rows, "errors": errors, "slugs": slugs or [],
+            "ops": list(_ALERT_OPS), "severities": list(_ALERT_SEVERITIES),
+            "page_title": ("Edit Schedule" if is_edit else "New Schedule"),
+            "submit_label": ("Save schedule" if is_edit else "Create schedule"),
+            "schedules_url": reverse("hydrodesk:schedules")}
+
+
+def _all_slugs(session):
+    return [{"slug": r[0], "name": r[1]} for r in session.execute(
+        select(m.HydroType.slug, m.HydroType.display_name)
+        .order_by(m.HydroType.display_name)).all()]
+
+
+@controller(name="schedules", url="schedules", title="Schedules")
+def schedules(request):
+    """List schedules + create one. Superuser-only (a refresh re-runs scripts/models)."""
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Schedules")
+    _ensure_scheduler()
+    engine = App.get_persistent_store_database("hydro_db")
+    if request.method == "POST":
+        name, target, interval, alerts, errors = _schedule_from_post(request.POST)
+        if not errors:
+            with Session(engine) as session:
+                if session.execute(select(m.HydroSchedule.id)
+                                   .where(m.HydroSchedule.name == name)).first() is not None:
+                    errors.append("A schedule named '%s' already exists." % name)
+                else:
+                    session.add(m.HydroSchedule(
+                        name=name, target_slug=target, interval_minutes=interval,
+                        enabled=bool(request.POST.get("enabled")),
+                        refresh=bool(request.POST.get("refresh")), alerts=alerts))
+                    session.commit()
+                    return redirect(reverse("hydrodesk:schedules"))
+        with Session(engine) as session:
+            slugs = _all_slugs(session)
+        return render(request, "hydrodesk/schedule_form.html", _schedule_form_context(
+            "new", {"name": name, "target_slug": target, "interval_minutes": interval,
+                    "alerts": alerts, "enabled": bool(request.POST.get("enabled")),
+                    "refresh": bool(request.POST.get("refresh"))}, errors, slugs=slugs))
+    if "new" in request.GET:
+        with Session(engine) as session:
+            slugs = _all_slugs(session)
+        return render(request, "hydrodesk/schedule_form.html", _schedule_form_context(
+            "new", {"enabled": True, "refresh": True}, [], slugs=slugs))
+    rows = []
+    with Session(engine) as session:
+        for s in session.execute(select(m.HydroSchedule)
+                                 .order_by(m.HydroSchedule.name)).scalars().all():
+            rows.append({"id": str(s.id), "name": s.name, "target_slug": s.target_slug,
+                         "interval": s.interval_minutes, "enabled": s.enabled,
+                         "refresh": s.refresh, "n_alerts": len(s.alerts or []),
+                         "last_run": s.last_run_at.strftime("%Y-%m-%d %H:%M") if s.last_run_at else "never",
+                         "edit_url": reverse("hydrodesk:schedule_edit", kwargs={"schedule_id": str(s.id)}),
+                         "run_url": reverse("hydrodesk:schedule_run", kwargs={"schedule_id": str(s.id)}),
+                         "delete_url": reverse("hydrodesk:schedule_delete", kwargs={"schedule_id": str(s.id)})})
+    return render(request, "hydrodesk/schedules.html", {
+        "rows": rows, "record_count": len(rows),
+        "new_url": reverse("hydrodesk:schedules") + "?new",
+        "alerts_url": reverse("hydrodesk:alerts")})
+
+
+@controller(name="schedule_edit", url="schedules/{schedule_id}/edit", title="Edit Schedule")
+def schedule_edit(request, schedule_id=None):
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Schedules")
+    engine = App.get_persistent_store_database("hydro_db")
+    if request.method == "POST":
+        name, target, interval, alerts, errors = _schedule_from_post(request.POST)
+        if not errors:
+            with Session(engine) as session:
+                s = session.execute(select(m.HydroSchedule)
+                                    .where(m.HydroSchedule.id == schedule_id)).scalar_one_or_none()
+                if s is None:
+                    return redirect(reverse("hydrodesk:schedules"))
+                if session.execute(select(m.HydroSchedule.id).where(m.HydroSchedule.name == name)
+                                   .where(m.HydroSchedule.id != schedule_id)).first() is not None:
+                    errors.append("A schedule named '%s' already exists." % name)
+                else:
+                    s.name, s.target_slug, s.interval_minutes = name, target, interval
+                    s.enabled = bool(request.POST.get("enabled"))
+                    s.refresh = bool(request.POST.get("refresh"))
+                    s.alerts = alerts
+                    session.commit()
+                    return redirect(reverse("hydrodesk:schedules"))
+        with Session(engine) as session:
+            slugs = _all_slugs(session)
+        return render(request, "hydrodesk/schedule_form.html", _schedule_form_context(
+            "edit", {"name": name, "target_slug": target, "interval_minutes": interval,
+                     "alerts": alerts, "enabled": bool(request.POST.get("enabled")),
+                     "refresh": bool(request.POST.get("refresh"))}, errors,
+            schedule_id=schedule_id, slugs=slugs))
+    with Session(engine) as session:
+        s = session.execute(select(m.HydroSchedule)
+                            .where(m.HydroSchedule.id == schedule_id)).scalar_one_or_none()
+        if s is None:
+            return redirect(reverse("hydrodesk:schedules"))
+        data = {"name": s.name, "target_slug": s.target_slug,
+                "interval_minutes": s.interval_minutes, "enabled": s.enabled,
+                "refresh": s.refresh, "alerts": s.alerts or []}
+        slugs = _all_slugs(session)
+    return render(request, "hydrodesk/schedule_form.html",
+                  _schedule_form_context("edit", data, [], schedule_id=schedule_id, slugs=slugs))
+
+
+@controller(name="schedule_delete", url="schedules/{schedule_id}/delete", title="Delete Schedule")
+def schedule_delete(request, schedule_id=None):
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Schedules")
+    if request.method == "POST":
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            s = session.execute(select(m.HydroSchedule)
+                                .where(m.HydroSchedule.id == schedule_id)).scalar_one_or_none()
+            if s is not None:
+                session.delete(s)
+                session.commit()
+    return redirect(reverse("hydrodesk:schedules"))
+
+
+@controller(name="schedule_run", url="schedules/{schedule_id}/run", title="Run Schedule")
+def schedule_run(request, schedule_id=None):
+    """Run one schedule immediately (the 'Run now' button), then back to the list."""
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Schedules")
+    if request.method == "POST":
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            s = session.execute(select(m.HydroSchedule)
+                                .where(m.HydroSchedule.id == schedule_id)).scalar_one_or_none()
+            if s is not None:
+                try:
+                    _run_schedule(session, s)
+                except Exception:
+                    pass
+    return redirect(reverse("hydrodesk:schedules"))
+
+
+@controller(name="alerts", url="alerts", title="Alerts")
+def alerts(request):
+    """The alerts log (most recent first), with an acknowledge action."""
+    if not _can_build(request):
+        return _denied(request, "view", "Alerts")
+    _ensure_scheduler()
+    engine = App.get_persistent_store_database("hydro_db")
+    rows = []
+    with Session(engine) as session:
+        for a in session.execute(select(m.HydroAlert)
+                                 .order_by(m.HydroAlert.created_at.desc()).limit(300)).scalars().all():
+            rows.append({"id": str(a.id), "severity": a.severity or "warning",
+                         "slug": a.slug, "record_title": a.record_title,
+                         "field": a.field, "op": a.op, "threshold": a.threshold,
+                         "actual": a.actual, "message": a.message,
+                         "acknowledged": a.acknowledged, "schedule_name": a.schedule_name,
+                         "when": a.created_at.strftime("%Y-%m-%d %H:%M") if a.created_at else "",
+                         "record_url": reverse("hydrodesk:detail",
+                                               kwargs={"slug": a.slug, "record_id": str(a.record_id)}),
+                         "ack_url": reverse("hydrodesk:alert_ack", kwargs={"alert_id": str(a.id)})})
+    unack = sum(1 for r in rows if not r["acknowledged"])
+    return render(request, "hydrodesk/alerts.html", {
+        "rows": rows, "record_count": len(rows), "unack": unack})
+
+
+@controller(name="alert_ack", url="alerts/{alert_id}/ack", title="Acknowledge Alert")
+def alert_ack(request, alert_id=None):
+    if not _can_build(request):
+        return _denied(request, "view", "Alerts")
+    if request.method == "POST":
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            a = session.execute(select(m.HydroAlert)
+                                .where(m.HydroAlert.id == alert_id)).scalar_one_or_none()
+            if a is not None:
+                a.acknowledged = True
+                session.commit()
+    return redirect(reverse("hydrodesk:alerts"))
+
+
 @controller(name="connector_test", url="connectors/test", title="Test Connector")
 def connector_test(request):
     """JSON test endpoint for the connector builder's 'Test' button.

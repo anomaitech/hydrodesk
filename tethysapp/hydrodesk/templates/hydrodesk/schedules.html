@@ -1,0 +1,68 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Schedules — periodic refresh + threshold alerts over a doctype's records. #}
+{% block title %}Schedules - {{ block.super }}{% endblock %}
+{% block nav_active_schedules %} active{% endblock %}
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Schedules</div>
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Schedules</h1>
+      <span class="indicator-pill gray">{{ record_count }} schedule{{ record_count|pluralize }}</span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{{ alerts_url }}"><i class="bi bi-bell"></i> Alerts</a>
+      <a class="btn btn-primary btn-sm" href="{{ new_url }}"><i class="bi bi-plus-lg"></i> New Schedule</a>
+    </div>
+  </div>
+  <p class="frappe-muted frappe-text-sm" style="margin:-10px 0 14px;">
+    Every interval, a schedule can <strong>refresh</strong> a doctype's records (re-run formulas + scripts &rarr;
+    re-fetch live connector data) and raise <strong>alerts</strong> when a field crosses a threshold.
+    Due schedules fire automatically (an in-app scheduler checks ~every minute); <strong>Run now</strong>
+    triggers immediately. For production, the <code>hydrodesk_run_schedules</code> command can also be driven by cron.
+  </p>
+
+  {% if rows %}
+  <div class="frappe-list">
+    <div class="frappe-list-head">
+      <span class="frappe-list-check" style="visibility:hidden;"></span>
+      <span class="frappe-list-subject head">Name</span>
+      <span class="frappe-list-col head">Target</span>
+      <span class="frappe-list-col head">Every</span>
+      <span class="frappe-list-col head">Alerts</span>
+      <span class="frappe-list-col head">Last run</span>
+      <span class="frappe-list-activity">&nbsp;</span>
+    </div>
+    {% for row in rows %}
+    <div class="frappe-list-row">
+      <input type="checkbox" class="frappe-list-check" aria-label="Select row">
+      <span class="frappe-list-subject">
+        <a href="{{ row.edit_url }}">{{ row.name }}</a>
+        {% if not row.enabled %}<span class="indicator-pill gray" style="margin-left:6px;">disabled</span>{% endif %}
+        {% if row.refresh %}<span class="indicator-pill blue" style="margin-left:6px;">refresh</span>{% endif %}
+      </span>
+      <span class="frappe-list-col"><code>{{ row.target_slug }}</code></span>
+      <span class="frappe-list-col">{{ row.interval }} min</span>
+      <span class="frappe-list-col">{{ row.n_alerts }}</span>
+      <span class="frappe-list-col frappe-text-sm">{{ row.last_run }}</span>
+      <span class="frappe-list-activity">
+        <form method="post" action="{{ row.run_url }}" style="display:inline;">{% csrf_token %}
+          <button type="submit" class="btn btn-link btn-sm" style="color:#1a7f37;">Run now</button>
+        </form>
+        <a class="btn btn-link btn-sm" href="{{ row.edit_url }}">Edit</a>
+        <form method="post" action="{{ row.delete_url }}" style="display:inline;"
+              onsubmit="return confirm('Delete schedule &quot;{{ row.name }}&quot;?');">{% csrf_token %}
+          <button type="submit" class="btn btn-link btn-sm" style="color:#e24c4c;">Delete</button>
+        </form>
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="frappe-list"><div class="frappe-list-empty">
+    <span class="ico"><i class="bi bi-clock-history"></i></span>
+    No schedules yet. <a href="{{ new_url }}">Create one</a> to auto-refresh records and raise alerts.
+  </div></div>
+  {% endif %}
+</div>
+{% endblock %}

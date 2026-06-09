@@ -10,7 +10,7 @@ storage surface of the engine.
 """
 import uuid
 from sqlalchemy import (Column, String, Integer, Text, DateTime, SmallInteger,
-                        Float, ForeignKey, func, Index)
+                        Float, Boolean, ForeignKey, func, Index)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import declarative_base
 from geoalchemy2 import Geometry
@@ -131,6 +131,43 @@ class HydroModel(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, unique=True, nullable=False)   # referenced by a doctype's x-model
     config = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class HydroSchedule(Base):
+    """A scheduled job over a doctype's records: every ``interval_minutes``, optionally
+    REFRESH each record's computed fields (re-run formulas + scripts -> re-materialize
+    live connector data) and evaluate ALERT rules (a value crossing a threshold raises a
+    HydroAlert). Driven by the cron management command (or the in-app ticker / Run-now)."""
+    __tablename__ = 'hydro_schedule'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, unique=True, nullable=False)
+    target_slug = Column(String, nullable=False)               # doctype to act on
+    interval_minutes = Column(Integer, nullable=False, default=60)
+    enabled = Column(Boolean, nullable=False, default=True)
+    refresh = Column(Boolean, nullable=False, default=True)    # re-run computed fields
+    alerts = Column(JSONB, default=list)                       # [{field,op,value,message,severity}]
+    last_run_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class HydroAlert(Base):
+    """A threshold breach raised by a schedule run: which record/field, the rule, the
+    observed value, and a message. Shown in the Alerts view; de-duplicated while
+    unacknowledged so a recurring breach isn't logged every interval."""
+    __tablename__ = 'hydro_alert'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schedule_name = Column(String)
+    slug = Column(String, index=True)
+    record_id = Column(UUID(as_uuid=True), index=True)
+    record_title = Column(Text)
+    field = Column(Text)
+    op = Column(Text)
+    threshold = Column(Text)
+    actual = Column(Text)
+    message = Column(Text)
+    severity = Column(Text, default="warning")               # info | warning | critical
+    acknowledged = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
