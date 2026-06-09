@@ -98,6 +98,15 @@
                value="{{ naming_series }}" placeholder="e.g. INV-#####">
         <div class="frappe-help">Auto-number new records into the <strong>title field</strong>: the <code>#</code> run is a zero-padded counter, so <code>INV-#####</code> &rarr; <code>INV-00001</code>, <code>INV-00002</code>, … Leave blank for no auto-numbering. (Needs a Record title field set above.)</div>
       </div>
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_model">Model <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+        <select class="form-select" id="id_model" name="model"
+                data-current="{{ model }}" data-url="{{ models_json_url }}">
+          <option value="">(none)</option>
+        </select>
+        <div class="frappe-help">Bind a <a href="{% url 'hydrodesk:models' %}">Model</a> so each record gets a <strong>Run</strong> button — it runs the model as a Tethys job and writes the model's outputs back into fields.</div>
+      </div>
     </div>
 
     <div class="frappe-form-section">
@@ -1600,6 +1609,22 @@
 // Record-title dropdown: populate from the current field labels (skipping layout/
 // table/api fields, which have no scalar title value). Keeps the selection across
 // label edits; pre-selects the stored title field (data-current) when editing.
+// Populate the Model picker from models.json; pre-select the bound model (data-current).
+(function () {
+  var ms = document.getElementById('id_model');
+  if (!ms) return;
+  var cur = ms.getAttribute('data-current') || '';
+  fetch(ms.getAttribute('data-url')).then(function (r) { return r.json(); })
+    .then(function (d) {
+      (d.models || []).forEach(function (mo) {
+        var o = document.createElement('option');
+        o.value = mo.name; o.textContent = mo.name;
+        if (mo.name === cur) o.selected = true;
+        ms.appendChild(o);
+      });
+    }).catch(function () {});
+})();
+
 (function () {
   var sel = document.getElementById('id_title_field');
   if (!sel) return;

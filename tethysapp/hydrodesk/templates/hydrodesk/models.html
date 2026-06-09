@@ -1,0 +1,68 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Models — saved HydroModel definitions (a pre script + shell command + post script,
+   run as a Tethys job). Context: rows:[{name,command,n_outputs,edit_url,delete_url}],
+   record_count, new_url. #}
+{% block title %}Models - {{ block.super }}{% endblock %}
+{% block nav_active_models %} active{% endblock %}
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Models
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Models</h1>
+      <span class="indicator-pill gray">{{ record_count }} model{{ record_count|pluralize }}</span>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-primary btn-sm" href="{{ new_url }}"><i class="bi bi-plus-lg"></i> New Model</a>
+    </div>
+  </div>
+
+  <p class="frappe-muted frappe-text-sm" style="margin:-10px 0 14px;">
+    A model runs (per record) as a Tethys job: an optional Python <strong>pre</strong> step stages inputs,
+    a <strong>command</strong> runs the model, an optional Python <strong>post</strong> step parses outputs back
+    into record fields. A doctype binds to a model in its builder; the record gets a <strong>Run</strong> button.
+  </p>
+  <div class="frappe-help" style="margin:0 0 18px;padding:8px 12px;background:#fff7ed;border-radius:8px;border:1px solid #fed7aa;">
+    <i class="bi bi-shield-exclamation"></i> Models run <strong>trusted, unsandboxed</strong> shell + Python as the app —
+    only superusers can define them. Use this for your own models on your own portal.
+  </div>
+
+  {% if rows %}
+  <div class="frappe-list">
+    <div class="frappe-list-head">
+      <span class="frappe-list-check" style="visibility:hidden;"></span>
+      <span class="frappe-list-subject head">Name</span>
+      <span class="frappe-list-col head">Command</span>
+      <span class="frappe-list-col head">Outputs</span>
+      <span class="frappe-list-activity">&nbsp;</span>
+    </div>
+    {% for row in rows %}
+    <div class="frappe-list-row">
+      <input type="checkbox" class="frappe-list-check" aria-label="Select row">
+      <span class="frappe-list-subject"><a href="{{ row.edit_url }}">{{ row.name }}</a></span>
+      <span class="frappe-list-col" title="{{ row.command }}"><code style="font-size:11px;">{{ row.command|default:"—" }}</code></span>
+      <span class="frappe-list-col">{{ row.n_outputs }}</span>
+      <span class="frappe-list-activity">
+        <a class="btn btn-link btn-sm" href="{{ row.edit_url }}">Edit</a>
+        <form method="post" action="{{ row.delete_url }}" style="display:inline;"
+              onsubmit="return confirm('Delete model &quot;{{ row.name }}&quot;? Doctypes bound to it will stop running.');">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-link btn-sm" style="color:#e24c4c;">Delete</button>
+        </form>
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="frappe-list">
+    <div class="frappe-list-empty">
+      <span class="ico"><i class="bi bi-cpu"></i></span>
+      No models yet. <a href="{{ new_url }}">Create one</a> to run a model from a record.
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

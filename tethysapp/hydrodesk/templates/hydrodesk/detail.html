@@ -29,7 +29,14 @@
         <i class="bi bi-arrow-left"></i> Back to list
       </a>
       {% if record_found %}
-      <a class="btn btn-primary btn-sm" href="{{ edit_url }}">
+      {% if model_name and can_run_model %}
+      <button type="button" id="hd-run-model" class="btn btn-primary btn-sm"
+              data-run-url="{{ run_model_url }}" data-job-base="{{ model_job_base }}">
+        <i class="bi bi-play-fill"></i> Run {{ model_name }}
+      </button>
+      <span id="hd-model-status" class="frappe-text-sm" style="margin:0 6px;"></span>
+      {% endif %}
+      <a class="btn btn-default btn-sm" href="{{ edit_url }}">
         <i class="bi bi-pencil"></i> Edit
       </a>
       <form method="post" action="{{ delete_url }}" style="display:inline;"
@@ -261,4 +268,51 @@
     </div>
   </form>
 </div>
+
+{# ---- Model Run: POST to run_model, then poll model_job_status until done ---- #}
+<script>
+(function () {
+  var btn = document.getElementById("hd-run-model");
+  if (!btn) return;
+  var status = document.getElementById("hd-model-status");
+  function getCookie(n) {
+    var m = document.cookie.match("(^|;)\\s*" + n + "\\s*=\\s*([^;]+)");
+    return m ? decodeURIComponent(m.pop()) : "";
+  }
+  function set(html) { status.innerHTML = html; }
+  function poll(base, jobId) {
+    fetch(base.replace(/0\/?$/, jobId + "/"), { credentials: "same-origin",
+          headers: { "Accept": "application/json" } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { set('<span style="color:#c0392b;">' + (d.error || "error") + "</span>"); btn.disabled = false; return; }
+        if (d.done) {
+          btn.disabled = false;
+          if (d.status === "Complete") {
+            set('<span style="color:#1a7f37;">&#10003; Complete &mdash; reloading&hellip;</span>');
+            setTimeout(function () { location.reload(); }, 800);
+          } else {
+            set('<span style="color:#c0392b;">' + d.status + (d.message ? " &mdash; " + d.message : "") + "</span>");
+          }
+        } else {
+          set('<span class="frappe-muted">' + d.status + (d.message ? " &mdash; " + d.message : "") + "&hellip;</span>");
+          setTimeout(function () { poll(base, jobId); }, 1000);
+        }
+      })
+      .catch(function () { set("status check failed"); btn.disabled = false; });
+  }
+  btn.addEventListener("click", function () {
+    btn.disabled = true;
+    set('<span class="frappe-muted">starting&hellip;</span>');
+    fetch(btn.getAttribute("data-run-url"), { method: "POST", credentials: "same-origin",
+          headers: { "X-CSRFToken": getCookie("csrftoken"), "Accept": "application/json" } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { set('<span style="color:#c0392b;">' + (d.error || "failed") + "</span>"); btn.disabled = false; return; }
+        poll(btn.getAttribute("data-job-base"), d.job_id);
+      })
+      .catch(function () { set("request failed"); btn.disabled = false; });
+  });
+})();
+</script>
 {% endblock %}

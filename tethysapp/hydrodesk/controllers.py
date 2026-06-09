@@ -6950,6 +6950,13 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         "list_url": reverse("hydrodesk:list", kwargs={"slug": slug}),
         "edit_url": reverse("hydrodesk:edit", kwargs={"slug": slug, "record_id": record_id}),
         "delete_url": reverse("hydrodesk:delete", kwargs={"slug": slug, "record_id": record_id}),
+        # Model Run: a bound model (x-model) gives the record a Run button; running
+        # mutates the record so it's gated to write permission.
+        "model_name": (field_schema or {}).get("x-model") or "",
+        "can_run_model": (record_found and _user_can(request, field_schema, "write")),
+        "run_model_url": reverse("hydrodesk:run_model",
+                                 kwargs={"slug": slug, "record_id": record_id}),
+        "model_job_base": reverse("hydrodesk:model_job_status", kwargs={"job_id": 0}),
     }
     return render(request, "hydrodesk/detail.html", context)
 
@@ -7374,7 +7381,7 @@ def _builder_perm_groups(perms):
 
 def _builder_context(form_errors, type_name, geometry, rows, row_count,
                      mode="new", slug=None, title_field="", perms=None,
-                     naming_series=""):
+                     naming_series="", model=""):
     """Build the template context. row_indexes drives the fixed rows; rows holds
     re-fill values keyed by index (template loops row_indexes and reads rows[i]).
     ``mode`` ('new'|'edit') + ``slug`` drive the form action, title, and submit
@@ -7420,6 +7427,9 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         "connectors_json_url": reverse("hydrodesk:connectors_json"),
         # The Python-Script field's Test-run endpoint (runs the sandbox on sample inputs).
         "script_test_url": reverse("hydrodesk:script_test"),
+        # Model binding: the current x-model + the model list for the picker.
+        "model": model or "",
+        "models_json_url": reverse("hydrodesk:models_json"),
         # Convenience deep-links for the modal's empty-state hints.
         "connectors_url": reverse("hydrodesk:connectors"),
         "new_type_url": reverse("hydrodesk:new_type"),
@@ -7733,6 +7743,11 @@ def _assemble_type_spec(post, force_slug=None):
         naming = (post.get("naming_series") or "").strip()
         if naming and "#" in naming and field_schema.get("x-title-field"):
             field_schema["x-naming"] = naming
+        # Model binding: a HydroModel name (x-model) -> records get a "Run" button that
+        # executes the model as a Tethys job. Stored verbatim (matched to HydroModel.name).
+        model_name = (post.get("model") or "").strip()
+        if model_name:
+            field_schema["x-model"] = model_name
         # Role permissions: read/write group allow-lists. Stored only when non-empty
         # (an absent action = open to every logged-in user; superuser/staff bypass).
         getlist = getattr(post, "getlist", None)
@@ -7791,6 +7806,7 @@ def new_hydrotype(request):
                                mode="new",
                                title_field=request.POST.get("title_field", ""),
                                naming_series=request.POST.get("naming_series", ""),
+                               model=request.POST.get("model", ""),
                                perms={"read": request.POST.getlist("perm_read"),
                                       "write": request.POST.getlist("perm_write")})
     return render(request, "hydrodesk/new_type.html", context)
@@ -7835,6 +7851,7 @@ def edit_hydrotype(request, slug="monitoring_station"):
                                    mode="edit", slug=slug,
                                    title_field=request.POST.get("title_field", ""),
                                naming_series=request.POST.get("naming_series", ""),
+                                   model=request.POST.get("model", ""),
                                    perms={"read": request.POST.getlist("perm_read"),
                                           "write": request.POST.getlist("perm_write")})
         return render(request, "hydrodesk/new_type.html", context)
@@ -7847,6 +7864,7 @@ def edit_hydrotype(request, slug="monitoring_station"):
                                mode="edit", slug=slug,
                                title_field=(field_schema or {}).get("x-title-field", ""),
                                naming_series=(field_schema or {}).get("x-naming", ""),
+                               model=(field_schema or {}).get("x-model", ""),
                                perms=(field_schema or {}).get("x-permissions"))
     return render(request, "hydrodesk/new_type.html", context)
 
@@ -8989,6 +9007,164 @@ def connector_delete(request, conn_id=None):
                 session.delete(conn)
                 session.commit()
     return redirect(reverse("hydrodesk:connectors"))
+
+
+# ---- MODELS admin (superuser-only: a model runs trusted shell + Python) -----------
+def _model_config_from_post(post):
+    """Assemble a HydroModel config from the Models form -> (name, config, errors)."""
+    name = (post.get("name") or "").strip()
+    errors = []
+    if not name:
+        errors.append("Model name is required.")
+    try:
+        timeout = max(1, min(3600, int(post.get("timeout") or 300)))
+    except (TypeError, ValueError):
+        timeout = 300
+    config = {"pre_script": (post.get("pre_script") or "").strip(),
+              "command": (post.get("command") or "").strip(),
+              "post_script": (post.get("post_script") or "").strip(),
+              "timeout": timeout, "outputs": []}
+    seen = set()
+    for i in range(60):
+        raw = post.get("out_name_%d" % i)
+        if not raw:
+            continue
+        nm = _slugify_underscore(raw)
+        if not nm or nm in seen:
+            continue
+        seen.add(nm)
+        ft = (post.get("out_type_%d" % i) or "Text").strip()
+        if ft not in _SCRIPT_OUTPUT_FIELD_TYPES:
+            ft = "Text"
+        config["outputs"].append({
+            "name": nm, "field_type": ft,
+            "label": (post.get("out_label_%d" % i) or nm.replace("_", " ").title()).strip()})
+    if not (config["command"] or config["pre_script"] or config["post_script"]):
+        errors.append("Give the model something to run — a command or a pre/post script.")
+    return name, config, errors
+
+
+def _model_form_context(mode, name, config, errors, model_id=None):
+    config = config or {}
+    outs = list(config.get("outputs") or [])
+    rows = []
+    for i in range(max(6, len(outs) + 2)):     # existing outputs + a couple blank rows
+        o = outs[i] if i < len(outs) else {}
+        rows.append({"i": i, "name": o.get("name", ""), "label": o.get("label", ""),
+                     "field_type": o.get("field_type", "Number")})
+    is_edit = mode == "edit"
+    action = (reverse("hydrodesk:model_edit", kwargs={"model_id": model_id})
+              if is_edit else reverse("hydrodesk:models"))
+    return {"mode": mode, "is_edit": is_edit, "form_action": action, "name": name or "",
+            "errors": errors, "pre_script": config.get("pre_script", ""),
+            "command": config.get("command", ""), "post_script": config.get("post_script", ""),
+            "timeout": config.get("timeout", 300), "output_rows": rows,
+            "output_types": list(_SCRIPT_OUTPUT_FIELD_TYPES),
+            "page_title": ("Edit Model" if is_edit else "New Model"),
+            "submit_label": ("Save model" if is_edit else "Create model"),
+            "models_url": reverse("hydrodesk:models")}
+
+
+@controller(name="models", url="models", title="Models")
+def models(request):
+    """List models + create a new one. SUPERUSER-only — a model runs trusted shell +
+    unsandboxed Python as the app."""
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Models")
+    engine = App.get_persistent_store_database("hydro_db")
+    if request.method == "POST":
+        name, config, errors = _model_config_from_post(request.POST)
+        if not errors:
+            with Session(engine) as session:
+                if session.execute(select(m.HydroModel.id)
+                                   .where(m.HydroModel.name == name)).first() is not None:
+                    errors.append("A model named '%s' already exists." % name)
+                else:
+                    session.add(m.HydroModel(name=name, config=config))
+                    session.commit()
+                    return redirect(reverse("hydrodesk:models"))
+        return render(request, "hydrodesk/model_form.html",
+                      _model_form_context("new", name, config, errors))
+    if "new" in request.GET:
+        return render(request, "hydrodesk/model_form.html",
+                      _model_form_context("new", "", {"timeout": 300, "outputs": []}, []))
+    rows = []
+    with Session(engine) as session:
+        for mid, name, config, _created in session.execute(
+                select(m.HydroModel.id, m.HydroModel.name, m.HydroModel.config,
+                       m.HydroModel.created_at).order_by(m.HydroModel.name)).all():
+            cfg = config or {}
+            rows.append({"id": str(mid), "name": name, "command": cfg.get("command", ""),
+                         "n_outputs": len(cfg.get("outputs") or []),
+                         "edit_url": reverse("hydrodesk:model_edit", kwargs={"model_id": str(mid)}),
+                         "delete_url": reverse("hydrodesk:model_delete", kwargs={"model_id": str(mid)})})
+    return render(request, "hydrodesk/models.html", {
+        "rows": rows, "record_count": len(rows),
+        "new_url": reverse("hydrodesk:models") + "?new"})
+
+
+@controller(name="model_edit", url="models/{model_id}/edit", title="Edit Model")
+def model_edit(request, model_id=None):
+    """Edit a model (superuser-only)."""
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Models")
+    engine = App.get_persistent_store_database("hydro_db")
+    if request.method == "POST":
+        name, config, errors = _model_config_from_post(request.POST)
+        if not errors:
+            with Session(engine) as session:
+                mod = session.execute(select(m.HydroModel)
+                                      .where(m.HydroModel.id == model_id)).scalar_one_or_none()
+                if mod is None:
+                    return redirect(reverse("hydrodesk:models"))
+                if session.execute(select(m.HydroModel.id).where(m.HydroModel.name == name)
+                                   .where(m.HydroModel.id != model_id)).first() is not None:
+                    errors.append("A model named '%s' already exists." % name)
+                else:
+                    mod.name = name
+                    mod.config = config
+                    session.commit()
+                    return redirect(reverse("hydrodesk:models"))
+        return render(request, "hydrodesk/model_form.html",
+                      _model_form_context("edit", name, config, errors, model_id=model_id))
+    with Session(engine) as session:
+        mod = session.execute(select(m.HydroModel)
+                              .where(m.HydroModel.id == model_id)).scalar_one_or_none()
+        if mod is None:
+            return redirect(reverse("hydrodesk:models"))
+        name, config = mod.name, mod.config or {}
+    return render(request, "hydrodesk/model_form.html",
+                  _model_form_context("edit", name, config, [], model_id=model_id))
+
+
+@controller(name="model_delete", url="models/{model_id}/delete", title="Delete Model")
+def model_delete(request, model_id=None):
+    """Delete a model (POST only, superuser-only)."""
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Models")
+    if request.method == "POST":
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            mod = session.execute(select(m.HydroModel)
+                                  .where(m.HydroModel.id == model_id)).scalar_one_or_none()
+            if mod is not None:
+                session.delete(mod)
+                session.commit()
+    return redirect(reverse("hydrodesk:models"))
+
+
+@controller(name="models_json", url="models.json", title="Models JSON")
+def models_json(request):
+    """Every model name, for the DocType builder's model picker."""
+    out = []
+    try:
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            out = [{"name": r[0]} for r in session.execute(
+                select(m.HydroModel.name).order_by(m.HydroModel.name)).all()]
+    except Exception:
+        out = []
+    return JsonResponse({"ok": True, "models": out})
 
 
 @controller(name="connector_test", url="connectors/test", title="Test Connector")

@@ -1,0 +1,88 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Define / edit a HydroModel: pre-script, command, post-script, outputs, timeout. #}
+{% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
+{% block nav_active_models %} active{% endblock %}
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
+    <a href="{{ models_url }}">Models</a><span class="sep">/</span>{{ page_title }}
+  </div>
+  <div class="frappe-page-head"><div class="frappe-title-area"><h1 class="frappe-title">{{ page_title }}</h1></div></div>
+
+  {% if errors %}
+  <div class="frappe-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:16px;">
+    <ul style="margin:0;padding-left:18px;color:#b42318;">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ form_action }}">
+    {% csrf_token %}
+    <div class="frappe-form-card" style="padding:18px 20px;">
+
+      <div class="frappe-form-group">
+        <label class="frappe-label" for="id_name">Model name</label>
+        <input class="form-control" id="id_name" name="name" value="{{ name }}"
+               placeholder="e.g. rational_runoff" {% if is_edit %}{% endif %}>
+        <div class="frappe-help">Referenced by a doctype's <strong>Model</strong> binding in the builder.</div>
+      </div>
+
+      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="frappe-section-head">1 · Pre-process <span class="frappe-muted frappe-text-sm">(Python, optional)</span></div>
+        <div class="frappe-help" style="margin-bottom:6px;">Stage inputs into the run <code>workspace</code>. Available:
+          <code>record</code> (this record's fields), <code>data</code> (<code>data.records(slug)</code>,
+          <code>data.series(field)</code>, <code>data.fetch(url, path)</code> for DEM/coverage), <code>workspace</code>,
+          plus <code>os/json/csv/np/pd/open</code>.</div>
+        <textarea class="form-control" name="pre_script" rows="6"
+                  style="font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre;">{{ pre_script }}</textarea>
+      </div>
+
+      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="frappe-section-head">2 · Command <span class="frappe-muted frappe-text-sm">(shell)</span></div>
+        <div class="frappe-help" style="margin-bottom:6px;">Runs in the workspace. <code>{field}</code> (record fields, shell-quoted)
+          and <code>{workspace}</code> are substituted. e.g. <code>python3 solve.py {region}</code> or
+          <code>taudem -z {workspace}/dem.tif</code>.</div>
+        <input class="form-control" name="command" value="{{ command }}"
+               style="font-family:ui-monospace,Menlo,monospace;font-size:12px;" placeholder="python3 solve.py">
+      </div>
+
+      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="frappe-section-head">3 · Post-process <span class="frappe-muted frappe-text-sm">(Python, optional)</span></div>
+        <div class="frappe-help" style="margin-bottom:6px;">Parse outputs. Available: <code>stdout</code>, <code>stderr</code>,
+          <code>returncode</code>, <code>workspace</code>, <code>record</code>, <code>data</code>. Assign a variable per declared
+          output below.</div>
+        <textarea class="form-control" name="post_script" rows="6"
+                  style="font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre;">{{ post_script }}</textarea>
+      </div>
+
+      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="frappe-section-head">Outputs <span class="frappe-muted frappe-text-sm">(written back to record fields)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:8px;margin-bottom:6px;">
+          <span class="frappe-label">Variable name</span><span class="frappe-label">Label</span><span class="frappe-label">Type</span>
+        </div>
+        {% for r in output_rows %}
+        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:8px;margin-bottom:6px;">
+          <input class="form-control form-control-sm" name="out_name_{{ r.i }}" value="{{ r.name }}" placeholder="e.g. discharge">
+          <input class="form-control form-control-sm" name="out_label_{{ r.i }}" value="{{ r.label }}" placeholder="Label">
+          <select class="form-select form-select-sm" name="out_type_{{ r.i }}">
+            {% for t in output_types %}<option value="{{ t }}"{% if t == r.field_type %} selected{% endif %}>{% if t == "Time-Series" %}Table{% else %}{{ t }}{% endif %}</option>{% endfor %}
+          </select>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="frappe-form-group" style="max-width:200px;">
+          <label class="frappe-label">Timeout (seconds)</label>
+          <input class="form-control form-control-sm" name="timeout" value="{{ timeout }}" type="number" min="1" max="3600">
+        </div>
+      </div>
+
+      <div class="frappe-form-actions" style="margin-top:16px;">
+        <a class="btn btn-default" href="{{ models_url }}">Cancel</a>
+        <button class="btn btn-primary" type="submit">{{ submit_label }}</button>
+      </div>
+    </div>
+  </form>
+</div>
+{% endblock %}
