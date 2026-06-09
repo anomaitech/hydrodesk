@@ -5030,6 +5030,34 @@ def _materialize_connector_for_script(session, prop, attrs, cache):
     return None
 
 
+def _connector_input_problem(prop, attrs):
+    """A human message if a connector field's mapped nc-map inputs (region/dates) are
+    PRESENT-but-unparseable in ``attrs`` — None when they look OK. Guards the bridge
+    against the connector layer silently substituting a fallback (a widened date window
+    on a bad date, an empty series on bad-region JSON) and the script persisting a
+    silently-wrong value. Only flags malformed-when-present inputs (an absent mapped
+    input legitimately falls back to the connector's own default)."""
+    nc = prop.get("x-nc-map") or {}
+    shp = nc.get("shapefile")
+    if shp and attrs.get(shp) not in (None, ""):
+        raw = attrs.get(shp)
+        if isinstance(raw, str):
+            try:
+                json.loads(raw)
+            except (ValueError, TypeError):
+                return "region field '%s' is not valid GeoJSON" % shp
+    import datetime as _dt
+    for k in ("start", "end"):
+        f = nc.get(k)
+        if f and attrs.get(f) not in (None, ""):
+            s = str(attrs.get(f)).strip()
+            try:
+                _dt.date.fromisoformat(s[:10])      # accepts YYYY-MM-DD / ISO datetimes
+            except ValueError:
+                return "%s date field '%s' = %r is not a valid date" % (k, f, attrs.get(f))
+    return None
+
+
 def _compute_scripts(field_schema, attrs, session=None):
     """Run every Python-script field (x-field == 'script') and store its declared outputs
     in ``attrs``. Runs after _compute_formulas.
@@ -5039,9 +5067,12 @@ def _compute_scripts(field_schema, attrs, session=None):
     same fetch the detail view uses) and bound as its fetched series — so the sandboxed
     script can compute over live NetCDF/REST/THREDDS/etc. data at save time WITHOUT itself
     touching the network (it receives the already-fetched plain data). ``session`` is
-    required for that fetch; without it, connector free vars bind to None (e.g. a unit
-    test). A script that errors records ``_<key>_error`` (reserved) and never blocks the
-    save."""
+    required for that fetch; without it a connector free var is NOT bound at all (the
+    script sees a NameError — more conservative than binding None: no fetch, no value).
+    A script that errors records ``_<key>_error``; a connector input whose mapped
+    region/dates are present-but-unparseable is bound None + flagged in ``_<key>_warning``
+    (so a silently-substituted fallback series is never persisted as if correct). Neither
+    ever blocks the save."""
     scripts = [(k, p) for k, p in _ordered_props(field_schema)
                if (p or {}).get("x-field") == "script"]
     if not scripts:
@@ -5050,17 +5081,29 @@ def _compute_scripts(field_schema, attrs, session=None):
     conn_cache = {}
     for key, prop in scripts:
         src = (prop.get("x-script") or "").strip()
-        errkey = "_%s_error" % key
+        errkey, warnkey = "_%s_error" % key, "_%s_warning" % key
         if not src:
             attrs.pop(errkey, None)
+            attrs.pop(warnkey, None)
             continue
-        inputs = {}
+        inputs, warnings = {}, []
         for v in _script_free_vars(src):
             if v in conn_fields:                        # a LIVE connector-output field
-                inputs[v] = _materialize_connector_for_script(
-                    session, conn_fields[v], attrs, conn_cache)
+                problem = _connector_input_problem(conn_fields[v], attrs)
+                if problem:
+                    # The connector would silently substitute a fallback (e.g. a widened
+                    # window) — bind None instead so no wrong value is computed + persisted.
+                    inputs[v] = None
+                    warnings.append("input '%s': %s" % (v, problem))
+                else:
+                    inputs[v] = _materialize_connector_for_script(
+                        session, conn_fields[v], attrs, conn_cache)
             elif v in attrs:
                 inputs[v] = attrs.get(v)
+        if warnings:
+            attrs[warnkey] = "; ".join(warnings)[:400]
+        else:
+            attrs.pop(warnkey, None)
         try:
             out = _run_python_script(src, inputs)
         except Exception as exc:
