@@ -5140,12 +5140,90 @@ def _load_model(session, name):
         select(m.HydroModel).where(m.HydroModel.name == name)).scalar_one_or_none()
 
 
-def _model_namespace(attrs, workspace):
+class _ModelData:
+    """In-process access to HydroDesk data for a model's pre/post Python (TRUSTED). Lets a
+    model import its inputs from your data — other doctypes' records, a live connector
+    output (NetCDF/REST/WCS series or value) for THIS record, or a raster/coverage/DEM
+    file fetched into the run workspace."""
+
+    def __init__(self, slug, record_id):
+        self.slug = slug
+        self.record_id = record_id
+
+    @staticmethod
+    def _eng():
+        return App.get_persistent_store_database("hydro_db")
+
+    def records(self, slug, limit=5000, **equals):
+        """All records of a doctype as attr dicts (id included). Optional ==field filters,
+        e.g. data.records('gage_site', region='Provo')."""
+        with Session(self._eng()) as s:
+            stmt = select(m.HydroRecord.id, m.HydroRecord.attributes).where(
+                m.HydroRecord.hydrotype_slug == slug)
+            for k, v in (equals or {}).items():
+                stmt = stmt.where(m.HydroRecord.attributes[k].astext == str(v))
+            rows = s.execute(stmt.limit(int(limit))).all()
+        out = []
+        for rid, a in rows:
+            d = {k: v for k, v in (a or {}).items() if not k.startswith("_")}
+            d["id"] = str(rid)
+            out.append(d)
+        return out
+
+    def get(self, slug, record_id):
+        """One record's attr dict (or None)."""
+        import uuid as _uuid
+        try:
+            rid = _uuid.UUID(str(record_id))
+        except (ValueError, TypeError):
+            return None
+        with Session(self._eng()) as s:
+            r = s.execute(select(m.HydroRecord.attributes).where(
+                m.HydroRecord.id == rid, m.HydroRecord.hydrotype_slug == slug)).first()
+        return ({k: v for k, v in (r[0] or {}).items() if not k.startswith("_")} if r else None)
+
+    def series(self, field):
+        """Materialize a connector-output field (x-api-connector) of THIS record's doctype
+        LIVE — the parsed NetCDF/REST/WCS series (list of row dicts) or scalar value."""
+        import uuid as _uuid
+        with Session(self._eng()) as s:
+            meta = _load_hydrotype(s, self.slug)
+            if not meta:
+                return None
+            prop = ((meta[1] or {}).get("properties") or {}).get(field) or {}
+            if not prop.get("x-api-connector"):
+                return None
+            try:
+                rid = _uuid.UUID(str(self.record_id))
+            except (ValueError, TypeError):
+                return None
+            r = s.execute(select(m.HydroRecord.attributes).where(
+                m.HydroRecord.id == rid)).first()
+            attrs = dict(r[0]) if r else {}
+            return _materialize_connector_for_script(s, prop, attrs, {})
+
+    def fetch(self, url, out_path, timeout=120):
+        """Download a URL — a DEM tile, a WCS GetCoverage request, any raster/file — to
+        ``out_path`` (under the run workspace) and return the path. TRUSTED network: the
+        model author (superuser) constructs the URL, typically from record fields (bbox,
+        region, dates)."""
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "HydroDesk-Model/1.0"})
+        with urllib.request.urlopen(req, timeout=int(timeout)) as resp:
+            data = resp.read()
+        with open(out_path, "wb") as f:
+            f.write(data)
+        return out_path
+
+
+def _model_namespace(attrs, workspace, slug=None, record_id=None):
     """The TRUSTED namespace for a model's pre/post Python: full stdlib + numpy/pandas +
-    file access (by convention scoped to ``workspace``). This is NOT the sandbox — model
-    authoring is superuser-only, so the pre/post can stage input files and parse outputs."""
+    file access (by convention scoped to ``workspace``) + a ``data`` accessor over HydroDesk
+    data. NOT the sandbox — model authoring is superuser-only, so the pre/post can stage
+    input files (incl. fetched DEM/coverage rasters) and parse outputs."""
     import os, io, csv, math, subprocess, pathlib, datetime, shutil, tempfile
-    ns = {"record": dict(attrs or {}), "workspace": workspace, "os": os, "io": io,
+    ns = {"record": dict(attrs or {}), "workspace": workspace,
+          "data": _ModelData(slug, record_id), "os": os, "io": io,
           "json": json, "csv": csv, "math": math, "re": re, "subprocess": subprocess,
           "pathlib": pathlib, "datetime": datetime, "shutil": shutil, "tempfile": tempfile,
           "open": open, "print": print, "len": len, "range": range, "float": float,
@@ -5219,14 +5297,14 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id):
         pre = (model_config.get("pre_script") or "").strip()
         if pre:                                  # 1) stage inputs
             exec(compile(pre, "<hydrodesk-model-pre>", "exec"),
-                 _model_namespace(attrs, workspace))
+                 _model_namespace(attrs, workspace, slug, record_id))
         proc = None                              # 2) run the command
         cmd = _render_model_command(model_config.get("command") or "", attrs, workspace)
         if cmd.strip():
             timeout = max(1, min(3600, int(model_config.get("timeout") or 300)))
             proc = subprocess.run(cmd, shell=True, cwd=workspace, capture_output=True,
                                   text=True, timeout=timeout)
-        post_ns = _model_namespace(attrs, workspace)   # 3) parse outputs
+        post_ns = _model_namespace(attrs, workspace, slug, record_id)   # 3) parse outputs
         post_ns.update({"stdout": (proc.stdout if proc else ""),
                         "stderr": (proc.stderr if proc else ""),
                         "returncode": (proc.returncode if proc else None)})
