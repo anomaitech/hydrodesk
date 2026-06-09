@@ -114,6 +114,26 @@ class HydroConnector(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class HydroModel(Base):
+    """A no-code MODEL definition: an optional Python pre-step, a shell command, and an
+    optional Python post-step — executed (per record) as a Tethys ``BasicJob`` in a run
+    workspace, with the model's outputs written back to record fields. The whole
+    definition rides in a single JSONB ``config`` so adding a model is a pure INSERT
+    (like a Connector); a doctype binds to one by name (x-model).
+
+    config keys: pre_script (Python; stages inputs into ``workspace`` from ``record``),
+    command (shell template with {field}/{workspace} substitution), post_script (Python;
+    parses stdout / workspace files into output variables), outputs[{name,label,
+    field_type}], timeout. PRIVILEGED + TRUSTED: command + pre/post run UNSANDBOXED as
+    the app (the pre/post must touch files), so a model is SUPERUSER-defined only.
+    """
+    __tablename__ = 'hydro_model'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, unique=True, nullable=False)   # referenced by a doctype's x-model
+    config = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 def init_hydro_db(engine, first_time):
     """Tethys persistent-store initializer. Enables PostGIS, then creates the
     fixed schema (the geom column + its GiST index come from the geoalchemy2

@@ -5120,6 +5120,219 @@ def _compute_scripts(field_schema, attrs, session=None):
     return attrs
 
 
+# ===========================================================================
+# MODEL RUN -> Tethys Job Manager. A doctype binds to a HydroModel (field_schema
+# 'x-model'); a record's "Run" creates a Tethys BasicJob and executes, in a per-run
+# workspace: pre Python -> shell command -> post Python, writing the model's typed
+# outputs back to the record (filterable in the Data API like script/connector fields).
+# PRIVILEGED + TRUSTED: the command + pre/post Python run UNSANDBOXED as the app (the
+# pre/post must read/write files) -> a model is SUPERUSER-defined only; running one is
+# gated to the doctype's write permission. (BasicJob + a daemon worker thread, since no
+# Condor/Dask scheduler is configured; the Job Manager gives status tracking + the Jobs
+# table for free.)
+# ===========================================================================
+
+def _load_model(session, name):
+    """Load a HydroModel by name (the value a doctype's x-model references), or None."""
+    if not name:
+        return None
+    return session.execute(
+        select(m.HydroModel).where(m.HydroModel.name == name)).scalar_one_or_none()
+
+
+def _model_namespace(attrs, workspace):
+    """The TRUSTED namespace for a model's pre/post Python: full stdlib + numpy/pandas +
+    file access (by convention scoped to ``workspace``). This is NOT the sandbox — model
+    authoring is superuser-only, so the pre/post can stage input files and parse outputs."""
+    import os, io, csv, math, subprocess, pathlib, datetime, shutil, tempfile
+    ns = {"record": dict(attrs or {}), "workspace": workspace, "os": os, "io": io,
+          "json": json, "csv": csv, "math": math, "re": re, "subprocess": subprocess,
+          "pathlib": pathlib, "datetime": datetime, "shutil": shutil, "tempfile": tempfile,
+          "open": open, "print": print, "len": len, "range": range, "float": float,
+          "int": int, "str": str, "list": list, "dict": dict, "sorted": sorted,
+          "sum": sum, "min": min, "max": max, "abs": abs, "round": round, "enumerate": enumerate}
+    try:
+        import numpy as _np
+        ns["np"] = _np; ns["numpy"] = _np
+    except Exception:
+        pass
+    try:
+        import pandas as _pd
+        ns["pd"] = _pd; ns["pandas"] = _pd
+    except Exception:
+        pass
+    return ns
+
+
+def _render_model_command(template, attrs, workspace):
+    """Substitute {field} (from attrs) and {workspace} in a command template. Field
+    values are shlex.quote'd so record data can never break out of the (trusted,
+    superuser-authored) command; {workspace} is a path we control."""
+    import shlex
+
+    def sub(mo):
+        k = mo.group(1)
+        if k == "workspace":
+            return shlex.quote(workspace)
+        v = attrs.get(k)
+        return shlex.quote("" if v is None else str(v))
+
+    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", sub, template or "")
+
+
+def _write_model_outputs(slug, record_id, updates):
+    """Merge a model run's outputs into the record's attributes — a FRESH session (this
+    runs in a worker thread)."""
+    if not updates:
+        return
+    import uuid as _uuid
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        rid = record_id if isinstance(record_id, _uuid.UUID) else _uuid.UUID(str(record_id))
+        rec = session.execute(
+            select(m.HydroRecord).where(m.HydroRecord.id == rid)).scalar_one_or_none()
+        if rec is None:
+            return
+        a = dict(rec.attributes or {})
+        a.update(updates)
+        rec.attributes = a                 # reassign so JSONB change is tracked
+        session.add(rec)
+        session.commit()
+
+
+def _run_model_async(job_id, model_config, attrs, slug, record_id):
+    """Worker thread: pre -> command -> post -> write outputs -> job status. Never raises
+    out — records ERR on the job and a status_message."""
+    import subprocess, tempfile, shutil
+    from django.utils import timezone
+    from django.db import connections as _dj_conns
+    from tethys_compute.models import BasicJob
+    try:
+        job = BasicJob.objects.get(id=job_id)
+    except Exception:
+        return
+    workspace = tempfile.mkdtemp(prefix="hd_model_")
+    job._status = "RUN"
+    job.start_time = timezone.now()
+    job.save()
+    try:
+        pre = (model_config.get("pre_script") or "").strip()
+        if pre:                                  # 1) stage inputs
+            exec(compile(pre, "<hydrodesk-model-pre>", "exec"),
+                 _model_namespace(attrs, workspace))
+        proc = None                              # 2) run the command
+        cmd = _render_model_command(model_config.get("command") or "", attrs, workspace)
+        if cmd.strip():
+            timeout = max(1, min(3600, int(model_config.get("timeout") or 300)))
+            proc = subprocess.run(cmd, shell=True, cwd=workspace, capture_output=True,
+                                  text=True, timeout=timeout)
+        post_ns = _model_namespace(attrs, workspace)   # 3) parse outputs
+        post_ns.update({"stdout": (proc.stdout if proc else ""),
+                        "stderr": (proc.stderr if proc else ""),
+                        "returncode": (proc.returncode if proc else None)})
+        post = (model_config.get("post_script") or "").strip()
+        if post:
+            exec(compile(post, "<hydrodesk-model-post>", "exec"), post_ns)
+        updates = {}
+        for o in (model_config.get("outputs") or []):
+            if not isinstance(o, dict):
+                continue
+            name = (o.get("name") or "").strip()
+            if name and name in post_ns:
+                updates[name] = _coerce_script_output(post_ns[name], o.get("field_type"))
+        if proc is not None and proc.returncode != 0 and not updates:
+            raise RuntimeError("command exited %d: %s"
+                               % (proc.returncode, (proc.stderr or "")[:300]))
+        _write_model_outputs(slug, record_id, updates)
+        job._status = "COM"
+        job.completion_time = timezone.now()
+        rc = proc.returncode if proc else "n/a"
+        job.status_message = ("exit %s; %d output(s) written" % (rc, len(updates)))[:2000]
+        job.save()
+    except Exception as exc:
+        job._status = "ERR"
+        job.completion_time = timezone.now()
+        job.status_message = ("%s: %s" % (type(exc).__name__, exc))[:2000]
+        job.save()
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+        try:
+            _dj_conns.close_all()
+        except Exception:
+            pass
+
+
+def _start_model_run(slug, record_id, model_name, model_config, attrs, user):
+    """Create a Tethys BasicJob + spawn the run worker thread; return the saved job."""
+    import threading
+    from tethys_compute.models import BasicJob
+    jm = App.get_job_manager()
+    job = jm.create_job(name=("%s @ %s" % (model_name, str(record_id)[:8]))[:1024],
+                        user=user, job_type=BasicJob,
+                        description="HydroDesk model '%s' on %s" % (model_name, slug))
+    job._status = "PEN"
+    job.extended_properties = {"hydrodesk": {"slug": slug, "record_id": str(record_id),
+                                             "model": model_name}}
+    job.save()
+    threading.Thread(target=_run_model_async,
+                     args=(job.id, dict(model_config or {}), dict(attrs or {}),
+                           slug, str(record_id)),
+                     daemon=True).start()
+    return job
+
+
+@controller(name="run_model", url="run-model/{slug}/{record_id}", title="Run Model")
+def run_model(request, slug=None, record_id=None):
+    """Trigger a doctype's bound model (x-model) for one record -> a BasicJob. Gated to
+    the doctype's WRITE permission (running a model mutates the record)."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST required"}, status=405)
+    import uuid as _uuid
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return JsonResponse({"ok": False, "error": "unknown doctype"}, status=404)
+        _dn, field_schema, _gk = meta
+        if not _user_can(request, field_schema, "write"):
+            return JsonResponse({"ok": False, "error": "write permission required"}, status=403)
+        model_name = (field_schema or {}).get("x-model")
+        if not model_name:
+            return JsonResponse({"ok": False, "error": "this doctype has no model bound"}, status=400)
+        model = _load_model(session, model_name)
+        if model is None:
+            return JsonResponse({"ok": False, "error": "model '%s' not found" % model_name}, status=404)
+        try:
+            rid = _uuid.UUID(str(record_id))
+        except (ValueError, TypeError):
+            return JsonResponse({"ok": False, "error": "bad record id"}, status=400)
+        rec = session.execute(
+            select(m.HydroRecord).where(m.HydroRecord.id == rid)).scalar_one_or_none()
+        if rec is None:
+            return JsonResponse({"ok": False, "error": "record not found"}, status=404)
+        attrs = dict(rec.attributes or {})
+        model_config = dict(model.config or {})
+    job = _start_model_run(slug, record_id, model_name, model_config, attrs, request.user)
+    return JsonResponse({"ok": True, "job_id": job.id, "status": job.status})
+
+
+@controller(name="model_job_status", url="model-job/{job_id}", title="Model Job Status")
+def model_job_status(request, job_id=None):
+    """Poll a model run's BasicJob status (for the record's Run badge)."""
+    from tethys_compute.models import BasicJob
+    try:
+        job = BasicJob.objects.get(id=int(job_id))
+    except (BasicJob.DoesNotExist, ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "job not found"}, status=404)
+    if not (request.user.is_staff or request.user.is_superuser
+            or getattr(job, "user_id", None) == request.user.id):
+        return JsonResponse({"ok": False, "error": "not authorized"}, status=403)
+    status = job.status
+    return JsonResponse({"ok": True, "job_id": job.id, "status": status,
+                         "message": job.status_message or "",
+                         "done": status in ("Complete", "Error", "Aborted")})
+
+
 def _parse_point(post):
     """Parse and range-check Longitude/Latitude from POST -> (WKTElement, None)
     or (None, message). Axis order is POINT(lon lat), srid 4326 to match the
