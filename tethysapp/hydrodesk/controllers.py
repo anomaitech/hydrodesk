@@ -11898,22 +11898,33 @@ def _dashboard_widget_view(session, fs_cache, w):
         field = w.get("field")
         fprop = props.get(field) or {}
         if field and fprop.get("x-widget") == "table":
-            # EXPAND a child/inline table: flatten its rows across all parent records, so a
-            # dashboard can show the child-table data itself (not just a count).
-            rows_data = [row for r in recs for row in (r.get(field) or []) if isinstance(row, dict)]
+            # EXPAND a child/inline table: flatten its rows across all parent records — with a
+            # leading column naming the parent when there's more than one — so a dashboard can
+            # show the child-table data itself, not just a count.
+            tf = (fs or {}).get("x-title-field")
+            rec_col = ((props.get(tf) or {}).get("title") if tf else None) or "Record"
+            rows_data = []
+            for r in recs:
+                rlabel = _label_for(fs, r) or ""
+                for row in (r.get(field) or []):
+                    if isinstance(row, dict):
+                        rows_data.append((rlabel, row))
             itemprops = ((fprop.get("items") or {}).get("properties")) or {}
             colkeys = list(itemprops.keys())
             if not colkeys:                       # no declared columns -> infer from the data
                 seen = set()
-                for row in rows_data:
+                for _, row in rows_data:
                     for k in row:
                         if k not in seen:
                             seen.add(k)
                             colkeys.append(k)
-            colkeys = colkeys[:8]
-            out["columns"] = [(itemprops.get(k) or {}).get("title") or k for k in colkeys]
-            out["rows"] = [[_dash_cell(row.get(k), itemprops.get(k)) for k in colkeys]
-                           for row in rows_data[:50]]
+            colkeys = colkeys[:7]                  # leave room for the parent column
+            multi = len({rl for rl, _ in rows_data}) > 1
+            out["columns"] = (([rec_col] if multi else [])
+                              + [(itemprops.get(k) or {}).get("title") or k for k in colkeys])
+            out["rows"] = [(([rl] if multi else [])
+                            + [_dash_cell(row.get(k), itemprops.get(k)) for k in colkeys])
+                           for rl, row in rows_data[:50]]
             out["row_total"] = len(rows_data)
             if not out["title"]:
                 out["title"] = fprop.get("title") or field
