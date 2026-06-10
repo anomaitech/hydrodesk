@@ -46,6 +46,16 @@
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:import_records' slug=slug %}">
         <i class="bi bi-upload"></i> Import CSV / Excel
       </a>
+      <details style="display:inline-block;position:relative;">
+        <summary class="btn btn-default btn-sm" style="list-style:none;cursor:pointer;display:inline-block;">
+          <i class="bi bi-download"></i> Export
+        </summary>
+        <div style="position:absolute;right:0;z-index:20;background:#fff;border:1px solid var(--fr-border,#e2e6ea);border-radius:8px;padding:6px;min-width:140px;box-shadow:0 6px 18px rgba(0,0,0,.10);">
+          <a style="display:block;padding:6px 10px;border-radius:6px;" href="{% url 'hydrodesk:export_records' slug=slug %}?format=csv">CSV</a>
+          <a style="display:block;padding:6px 10px;border-radius:6px;" href="{% url 'hydrodesk:export_records' slug=slug %}?format=xlsx">Excel (.xlsx)</a>
+          <a style="display:block;padding:6px 10px;border-radius:6px;" href="{% url 'hydrodesk:export_records' slug=slug %}?format=geojson">GeoJSON</a>
+        </div>
+      </details>
       <a class="btn btn-primary btn-sm" href="{% url 'hydrodesk:new' slug=slug %}">
         <i class="bi bi-plus-lg"></i> New {{ display_name }}
       </a>

@@ -7120,6 +7120,74 @@ def _read_tabular_upload(upload):
     return headers, list(reader)
 
 
+@controller(name="export_records", url="export/{slug}", title="Export records")
+def export_records(request, slug=None):
+    """Download a doctype's records as CSV, Excel (.xlsx), or GeoJSON. Read-gated.
+    Child/inline tables and lists serialize as JSON in the tabular formats."""
+    from django.http import HttpResponse
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(reverse("hydrodesk:home"))
+        dn, fs, gk = meta
+        if not _user_can(request, fs, "read"):
+            return _denied(request, "export", dn)
+
+    fmt = (request.GET.get("format") or "csv").lower()
+    if fmt == "geojson":
+        body = json.dumps(_records_geojson(slug))
+        resp = HttpResponse(body, content_type="application/geo+json")
+        resp["Content-Disposition"] = 'attachment; filename="%s.geojson"' % slug
+        return resp
+
+    # Tabular columns: ordered, non-layout/image fields (child tables -> JSON cell).
+    props = (fs or {}).get("properties") or {}
+    order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+    cols = [(k, (props[k] or {}).get("title") or k) for k in order
+            if not ((props[k] or {}).get("x-layout") or (props[k] or {}).get("x-widget") == "image")]
+    with Session(engine) as session:
+        rows = [dict(a or {}) for a in session.execute(
+            select(m.HydroRecord.attributes)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalars().all()]
+
+    def _cell(v):
+        if isinstance(v, (list, dict)):
+            return json.dumps(v, ensure_ascii=False)
+        return "" if v is None else v
+
+    if fmt == "xlsx":
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            return HttpResponse("Excel export needs the 'openpyxl' package installed.", status=501)
+        import io
+        wb = Workbook()
+        ws = wb.active
+        ws.title = (dn or slug)[:31]
+        ws.append([t for _, t in cols])
+        for r in rows:
+            ws.append([_cell(r.get(k)) for k, _ in cols])
+        buf = io.BytesIO()
+        wb.save(buf)
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        resp["Content-Disposition"] = 'attachment; filename="%s.xlsx"' % slug
+        return resp
+
+    import csv as _csv
+    import io
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow([t for _, t in cols])
+    for r in rows:
+        w.writerow([_cell(r.get(k)) for k, _ in cols])
+    resp = HttpResponse(buf.getvalue(), content_type="text/csv; charset=utf-8")
+    resp["Content-Disposition"] = 'attachment; filename="%s.csv"' % slug
+    return resp
+
+
 @controller(name="import_records", url="import/{slug}", title="Import records")
 def import_records(request, slug="monitoring_station"):
     """Bulk-create HydroRecords of one HydroType from an uploaded CSV, auto-mapped by
@@ -11655,7 +11723,42 @@ def _run_schedule(session, sched):
     session.commit()
     if new_breaches and (sched.notify_email or "").strip():
         _send_alert_email(sched, new_breaches)
+    if new_breaches and (getattr(sched, "webhook_url", "") or "").strip():
+        _send_alert_webhook(sched, new_breaches)
     return (n_refreshed, n_alerts)
+
+
+def _send_alert_webhook(sched, breaches):
+    """POST a schedule's NEW breaches to its webhook_url. The payload carries BOTH a
+    Slack/Teams-compatible ``text`` and a structured ``breaches`` array, so it drives a
+    Slack/Teams incoming webhook or any generic JSON endpoint. Never raises."""
+    try:
+        import urllib.request as _u
+        url = (getattr(sched, "webhook_url", "") or "").strip()
+        if not url:
+            return
+        worst = "critical" if any(b.get("severity") == "critical" for b in breaches) else "warning"
+        lines = ["[HydroDesk %s] %d new alert%s on %s (%s):" % (
+            worst.upper(), len(breaches), "" if len(breaches) == 1 else "s",
+            sched.name, sched.target_slug)]
+        for b in breaches:
+            lines.append("• %s — %s %s %s (now %s)" % (
+                b.get("record_title", "?"), b.get("field"), b.get("op"),
+                b.get("threshold"), b.get("actual")))
+        payload = {
+            "text": "\n".join(lines),                 # Slack / Teams incoming-webhook field
+            "schedule": sched.name, "slug": sched.target_slug,
+            "severity": worst, "count": len(breaches),
+            "breaches": [{"record": b.get("record_title"), "field": b.get("field"),
+                          "op": b.get("op"), "threshold": b.get("threshold"),
+                          "actual": b.get("actual"), "severity": b.get("severity"),
+                          "message": b.get("message")} for b in breaches],
+        }
+        req = _u.Request(url, data=json.dumps(payload).encode("utf-8"),
+                         method="POST", headers={"Content-Type": "application/json"})
+        _u.urlopen(req, timeout=10).read()
+    except Exception:
+        pass
 
 
 def _send_alert_email(sched, breaches):
@@ -11797,6 +11900,7 @@ def _schedule_form_context(mode, sched, errors, schedule_id=None, slugs=None):
             "interval_minutes": sched.get("interval_minutes", 60),
             "enabled": sched.get("enabled", True), "refresh": sched.get("refresh", True),
             "notify_email": sched.get("notify_email", ""),
+            "webhook_url": sched.get("webhook_url", ""),
             "alert_rows": rows, "errors": errors, "slugs": slugs or [],
             "field_index": _doctype_field_index(),
             "ops": list(_ALERT_OPS), "severities": list(_ALERT_SEVERITIES),
@@ -12107,7 +12211,8 @@ def schedules(request):
                         name=name, target_slug=target, interval_minutes=interval,
                         enabled=bool(request.POST.get("enabled")),
                         refresh=bool(request.POST.get("refresh")), alerts=alerts,
-                        notify_email=(request.POST.get("notify_email") or "").strip()))
+                        notify_email=(request.POST.get("notify_email") or "").strip(),
+                        webhook_url=(request.POST.get("webhook_url") or "").strip()))
                     session.commit()
                     return redirect(reverse("hydrodesk:schedules"))
         with Session(engine) as session:
@@ -12116,7 +12221,8 @@ def schedules(request):
             "new", {"name": name, "target_slug": target, "interval_minutes": interval,
                     "alerts": alerts, "enabled": bool(request.POST.get("enabled")),
                     "refresh": bool(request.POST.get("refresh")),
-                    "notify_email": (request.POST.get("notify_email") or "").strip()},
+                    "notify_email": (request.POST.get("notify_email") or "").strip(),
+                    "webhook_url": (request.POST.get("webhook_url") or "").strip()},
             errors, slugs=slugs))
     if "new" in request.GET:
         with Session(engine) as session:
@@ -12162,6 +12268,7 @@ def schedule_edit(request, schedule_id=None):
                     s.refresh = bool(request.POST.get("refresh"))
                     s.alerts = alerts
                     s.notify_email = (request.POST.get("notify_email") or "").strip()
+                    s.webhook_url = (request.POST.get("webhook_url") or "").strip()
                     session.commit()
                     return redirect(reverse("hydrodesk:schedules"))
         with Session(engine) as session:
@@ -12170,7 +12277,8 @@ def schedule_edit(request, schedule_id=None):
             "edit", {"name": name, "target_slug": target, "interval_minutes": interval,
                      "alerts": alerts, "enabled": bool(request.POST.get("enabled")),
                      "refresh": bool(request.POST.get("refresh")),
-                     "notify_email": (request.POST.get("notify_email") or "").strip()}, errors,
+                     "notify_email": (request.POST.get("notify_email") or "").strip(),
+                     "webhook_url": (request.POST.get("webhook_url") or "").strip()}, errors,
             schedule_id=schedule_id, slugs=slugs))
     with Session(engine) as session:
         s = session.execute(select(m.HydroSchedule)
@@ -12180,7 +12288,8 @@ def schedule_edit(request, schedule_id=None):
         data = {"name": s.name, "target_slug": s.target_slug,
                 "interval_minutes": s.interval_minutes, "enabled": s.enabled,
                 "refresh": s.refresh, "alerts": s.alerts or [],
-                "notify_email": s.notify_email or ""}
+                "notify_email": s.notify_email or "",
+                "webhook_url": s.webhook_url or ""}
         slugs = _all_slugs(session)
     return render(request, "hydrodesk/schedule_form.html",
                   _schedule_form_context("edit", data, [], schedule_id=schedule_id, slugs=slugs))

@@ -48,6 +48,13 @@
         <div class="frappe-help">Comma-separated. Emailed once per new breach (deduped while unacknowledged). Requires the portal's email settings to be configured.</div>
       </div>
 
+      <div class="frappe-form-group" style="margin-top:12px;max-width:480px;">
+        <label class="frappe-label">Webhook URL <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+        <input class="form-control form-control-sm" name="webhook_url" type="text"
+               value="{{ webhook_url }}" placeholder="https://hooks.slack.com/services/…">
+        <div class="frappe-help">POSTed a JSON payload on each new breach — works with a Slack / Teams incoming webhook (a <code>text</code> field) or any endpoint (a structured <code>breaches</code> array).</div>
+      </div>
+
       <div style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
         <div class="frappe-section-head">Alert rules <span class="frappe-muted frappe-text-sm">(raise an alert when a field crosses a threshold)</span></div>
         <div class="frappe-muted frappe-text-sm" style="margin:-2px 0 8px;">Field choices come from the <strong>target doctype's real fields</strong> — pick a target above to populate them.</div>

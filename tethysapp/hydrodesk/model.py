@@ -148,6 +148,7 @@ class HydroSchedule(Base):
     refresh = Column(Boolean, nullable=False, default=True)    # re-run computed fields
     alerts = Column(JSONB, default=list)                       # [{field,op,value,message,severity}]
     notify_email = Column(String)                              # comma-list; emailed on a NEW breach
+    webhook_url = Column(String)                               # Slack/Teams/generic POST on a NEW breach
     last_run_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
