@@ -72,6 +72,14 @@ It's no-code, spreadsheet-simple ergonomics, purpose-built for **water & environ
 <tr>
 <td colspan="2"><img src="docs/screenshots/history.png" alt="Record history and comments"><br><sub><b>Record history &amp; comments</b> — every change is versioned with a field-level diff and one-click restore, plus a per-record discussion thread.</sub></td>
 </tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/workflow.png" alt="Approval workflow"><br><sub><b>Approval workflows</b> — role-gated state transitions (Draft &rarr; In&nbsp;Review &rarr; Approved) with an audit trail.</sub></td>
+<td width="50%"><img src="docs/screenshots/permissions.png" alt="Role-based permissions"><br><sub><b>Role-based permissions</b> — choose which user groups can read or edit each doctype's records.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/export.png" alt="One-click export"><br><sub><b>One-click export</b> — download any doctype as CSV, Excel, or GeoJSON.</sub></td>
+<td width="50%"><img src="docs/screenshots/webhook.png" alt="Alerts via email and webhooks"><br><sub><b>Alerts &rarr; email &amp; webhooks</b> — threshold breaches notify by email and Slack/Teams/generic webhooks.</sub></td>
+</tr>
 </table>
 
 ---
@@ -127,6 +135,10 @@ Plus full record lifecycle: per-record CRUD, **bulk-delete** with select-all, **
 
 **History & collaboration:** every record keeps a **versioned history** — each create/edit/restore is an immutable snapshot, shown on the detail page as a **field-level diff** with **one-click Restore**. Records also carry a **comment thread** for discussion.
 
+**Governance:**
+- **Approval workflows** — give a doctype states (from a Select field) and **role-gated transitions** (e.g. Draft → In Review → Approved); the record page shows the actions available to the current user and keeps a workflow **audit trail**.
+- **Role-based access** — set per-doctype **read / write permissions by user group**; enforced everywhere (staff/admins always allowed; an empty list means everyone signed in).
+
 ### 4. Live data connectors
 
 A configurable integration engine — no glue code. A **connector** is a reusable, named data source; a doctype's **API field** binds to one and maps record fields to its inputs.
@@ -162,7 +174,7 @@ A configurable integration engine — no glue code. A **connector** is a reusabl
 ### 6. Scheduling & alerts
 
 - **Scheduled connectors** — refresh live data on a cadence.
-- **Threshold alerts** — define breach conditions; HydroDesk records breaches and can **send email notifications** (`notify_email`) when thresholds are crossed.
+- **Threshold alerts** — define breach conditions; HydroDesk records breaches and notifies on each new one via **email** and/or a **Slack / Teams / generic webhook** (a JSON payload with a ready-to-post `text` plus a structured `breaches` array).
 - **Alerts inbox** — review and **acknowledge** alerts.
 
 ### 7. Dashboards, reports, insights & maps
@@ -175,6 +187,8 @@ A configurable integration engine — no glue code. A **connector** is a reusabl
 ### 8. Data API & interoperability
 
 - **REST data API** — `GET /api/{slug}/records` returns records as JSON, with `?include=` to materialize live connector values (series/scalars/images) and `?name=`/field filters. A catalog endpoint lists available types.
+- **OGC API - Features** — every spatial doctype is also served as a standards-based **OGC API - Features** collection (GeoJSON) at `/ogc`, so **QGIS, ArcGIS, and OpenLayers** can consume HydroDesk data directly (`/ogc/collections/{slug}/items`, with `bbox` + paging). Same read-token auth.
+- **One-click export** — download any doctype's records as **CSV, Excel (.xlsx), or GeoJSON** from the list view.
 - **Read tokens** — a global read token gates programmatic access (see [Security model](#security-model)).
 - **Portable export/import** — export a doctype (and optionally its data) as **JSON** and re-import elsewhere. Secrets never travel.
 - **Publish to TethysDash** — a per-field visualization mapper emits **import-ready TethysDash dashboards** (charts for series connectors, tables for value connectors), downloadable as JSON.
