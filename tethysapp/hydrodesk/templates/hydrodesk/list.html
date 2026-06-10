@@ -34,8 +34,11 @@
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:map' %}">
         <i class="bi bi-geo-alt"></i> Map View
       </a>
+      <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:insights' slug=slug %}">
+        <i class="bi bi-bar-chart-line"></i> Insights
+      </a>
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:import_records' slug=slug %}">
-        <i class="bi bi-upload"></i> Import CSV
+        <i class="bi bi-upload"></i> Import CSV / Excel
       </a>
       <a class="btn btn-primary btn-sm" href="{% url 'hydrodesk:new' slug=slug %}">
         <i class="bi bi-plus-lg"></i> New {{ display_name }}

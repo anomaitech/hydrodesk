@@ -1,0 +1,52 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% block title %}Insights: {{ display_name }} - {{ block.super }}{% endblock %}
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
+    <a href="{{ list_url }}">{{ display_name }}</a><span class="sep">/</span>Insights
+  </div>
+  <div class="frappe-page-head"><div class="frappe-title-area">
+    <h1 class="frappe-title">{{ display_name }} &middot; Insights</h1>
+    <p class="frappe-muted">A live in-app dashboard over this doctype's records.</p>
+  </div>
+  <a class="btn btn-default" href="{{ list_url }}">&larr; Back to list</a></div>
+
+  {# --- Stat cards: record count + per-numeric-field totals --- #}
+  <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px;">
+    <div class="frappe-form-card" style="padding:14px 18px;min-width:150px;">
+      <div class="frappe-muted frappe-text-sm">Records</div>
+      <div style="font-size:26px;font-weight:600;color:#1a2533;">{{ count }}</div>
+    </div>
+    {% for s in num_stats %}
+    <div class="frappe-form-card" style="padding:14px 18px;min-width:170px;">
+      <div class="frappe-muted frappe-text-sm">{{ s.title }} &middot; total</div>
+      <div style="font-size:24px;font-weight:600;color:#2490ef;">{{ s.sum }}</div>
+      <div class="frappe-muted frappe-text-sm" style="margin-top:2px;">
+        avg {{ s.avg }} &middot; min {{ s.min }} &middot; max {{ s.max }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if not num_stats and not cat_charts %}
+  <div class="frappe-muted">No numeric or categorical fields to chart yet
+    {% if count == 0 %}&mdash; this doctype has no records{% endif %}.</div>
+  {% endif %}
+
+  <div style="display:flex;flex-wrap:wrap;gap:16px;">
+    {% if metric_chart %}
+    <div class="frappe-form-card" style="padding:16px 20px;flex:1;min-width:520px;">
+      <div class="frappe-section-head" style="margin:0 0 10px;">{{ metric_chart.title }}</div>
+      {{ metric_chart.svg }}
+    </div>
+    {% endif %}
+    {% for c in cat_charts %}
+    <div class="frappe-form-card" style="padding:16px 20px;flex:1;min-width:520px;">
+      <div class="frappe-section-head" style="margin:0 0 10px;">{{ c.title }} <span class="frappe-muted frappe-text-sm">(count by value)</span></div>
+      {{ c.svg }}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

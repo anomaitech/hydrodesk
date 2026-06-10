@@ -95,6 +95,119 @@ def desk_home(request):
                    "can_build": _can_build(request)})
 
 
+def _fmt_stat(v):
+    """Compact human number for a dashboard stat card (12.3M / 4.5k / 7.8 / 1,234)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    a = abs(v)
+    if a >= 1e9:
+        return "%.2fB" % (v / 1e9)
+    if a >= 1e6:
+        return "%.2fM" % (v / 1e6)
+    if a >= 1e3:
+        return "{:,.0f}".format(v) if a >= 1e4 else "%.1fk" % (v / 1e3)
+    if v == int(v):
+        return "{:,}".format(int(v))
+    return "%.2f" % v
+
+
+def _svg_hbar(pairs, color="#2490ef", unit="", width=560):
+    """Inline horizontal-bar SVG from [(label, value)] — server-rendered (no JS/CDN),
+    labels HTML-escaped. '' when empty. Used by the in-app Insights dashboards."""
+    from django.utils.safestring import mark_safe
+    from django.utils.html import escape
+    rows = [(str(l), float(v)) for l, v in pairs
+            if isinstance(v, (int, float)) and not isinstance(v, bool)][:12]
+    if not rows:
+        return ""
+    vmax = max((v for _, v in rows), default=0) or 1
+    label_w, bar_max, bh, gap = 168, width - 168 - 76, 22, 9
+    parts, y = [], 4
+    for label, v in rows:
+        bw = max(2, int(bar_max * (v / vmax)))
+        lbl = escape(label if len(label) <= 30 else label[:29] + "…")
+        vtxt = escape(_fmt_stat(v) + (" " + unit if unit else ""))
+        parts.append(
+            '<text x="0" y="%d" font-size="12" fill="#475467">%s</text>'
+            '<rect x="%d" y="%d" width="%d" height="15" rx="3" fill="%s"></rect>'
+            '<text x="%d" y="%d" font-size="11" fill="#667085">%s</text>'
+            % (y + 12, lbl, label_w, y, bw, color, label_w + bw + 6, y + 12, vtxt))
+        y += bh + gap
+    return mark_safe('<svg width="%d" height="%d" role="img" '
+                     'xmlns="http://www.w3.org/2000/svg">%s</svg>' % (width, y, "".join(parts)))
+
+
+def _insights_for(field_schema, records):
+    """Aggregate a doctype's records for the Insights dashboard: numeric-field stats
+    (count/sum/avg/min/max) + value-count charts for categorical (enum / low-cardinality
+    text) fields. Skips images, inline tables, live connectors, and layout markers."""
+    from collections import Counter
+    props = (field_schema or {}).get("properties") or {}
+    order = [k for k in ((field_schema or {}).get("x-order") or list(props.keys())) if k in props]
+    title_key = (field_schema or {}).get("x-title-field")
+    num_stats, cat_charts = [], []
+    for k in order:
+        p = props[k] or {}
+        if (p.get("x-layout") or p.get("x-widget") in ("image", "table")
+                or p.get("x-api-connector") or k == title_key):
+            continue
+        t = p.get("type")
+        if t in ("number", "integer"):
+            vals = [float(r.get(k)) for r in records
+                    if isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)]
+            if vals:
+                num_stats.append({
+                    "key": k, "title": p.get("title") or k, "n": len(vals),
+                    "sum": _fmt_stat(sum(vals)), "avg": _fmt_stat(sum(vals) / len(vals)),
+                    "min": _fmt_stat(min(vals)), "max": _fmt_stat(max(vals))})
+        elif t == "string":
+            vals = [str(r.get(k)).strip() for r in records if str(r.get(k) or "").strip()]
+            uniq = set(vals)
+            # A categorical field: an enum, or low-cardinality text that actually groups
+            # (skip pure identifiers where every value is distinct).
+            if vals and (p.get("enum") or len(uniq) <= 12) and not (len(uniq) == len(vals) and len(vals) > 2):
+                cat_charts.append({
+                    "title": p.get("title") or k,
+                    "svg": _svg_hbar(Counter(vals).most_common(12), color="#7c5cff")})
+    return {"count": len(records), "num_stats": num_stats, "cat_charts": cat_charts}
+
+
+@controller(name="insights", url="insights/{slug}", title="Insights")
+def hydrotype_insights(request, slug="monitoring_station"):
+    """Native in-app dashboard for one doctype: stat cards over its numeric fields + a
+    'metric by record' bar + value-count bars for categorical fields. All server-rendered
+    (no external JS), so it works offline and screenshots cleanly."""
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(reverse("hydrodesk:home"))
+        dn, fs, gk = meta
+        if not _user_can(request, fs, "read"):
+            return _denied(request, "read", dn)
+        rows = session.execute(select(m.HydroRecord.attributes)
+                               .where(m.HydroRecord.hydrotype_slug == slug)).scalars().all()
+    records = [dict(a or {}) for a in rows]
+    ins = _insights_for(fs, records)
+    metric_chart = None
+    if ins["num_stats"]:
+        primary = _td_primary_metric([s["key"] for s in ins["num_stats"]]) or ins["num_stats"][0]["key"]
+        ptitle = next((s["title"] for s in ins["num_stats"] if s["key"] == primary), primary)
+        pairs = [(_label_for(fs, r) or "?", float(r.get(primary)))
+                 for r in records
+                 if isinstance(r.get(primary), (int, float)) and not isinstance(r.get(primary), bool)]
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        if pairs:
+            metric_chart = {"title": "%s by record" % ptitle, "svg": _svg_hbar(pairs[:12])}
+    ctx = {"slug": slug, "display_name": dn, "count": ins["count"],
+           "num_stats": ins["num_stats"], "cat_charts": ins["cat_charts"],
+           "metric_chart": metric_chart,
+           "list_url": reverse("hydrodesk:list", kwargs={"slug": slug})}
+    return render(request, "hydrodesk/insights.html", ctx)
+
+
 def _records_geojson(slug):
     """Load every record of a HydroType from the generic store as a GeoJSON
     FeatureCollection (lon/lat EPSG:4326 — MapLayout reprojects for display)."""
