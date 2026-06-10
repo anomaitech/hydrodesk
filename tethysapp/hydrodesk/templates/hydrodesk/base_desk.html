@@ -871,6 +871,9 @@
     .hd-guide-input button { background:#2490ef; color:#fff; border:none; border-radius:8px; padding:7px 12px; cursor:pointer; }
     .hd-guide-foot { padding:0 12px 10px; color:#8a93a2; font-size:11px; display:flex; gap:10px; align-items:center; }
     .hd-guide-eg { color:#2490ef; cursor:pointer; }
+    .hd-guide-go { margin-top:8px; background:#0a9d6e; color:#fff; border:none; border-radius:8px;
+      padding:6px 12px; font-size:13px; cursor:pointer; }
+    .hd-guide-go:hover { background:#0c8a62; }
     @keyframes hdGuidePulse { 0%,100%{ box-shadow:0 0 0 0 rgba(36,144,239,.65);} 50%{ box-shadow:0 0 0 7px rgba(36,144,239,0);} }
     @keyframes hdGuideBob { 0%,100%{ transform:translateY(-50%) translateX(0);} 50%{ transform:translateY(-50%) translateX(5px);} }
     .hd-guide-pointed { position:relative; outline:2px solid #2490ef !important; outline-offset:2px; border-radius:6px;
@@ -913,6 +916,10 @@
       el.classList.add("hd-guide-pointed");
       setTimeout(function(){ el.classList.remove("hd-guide-pointed"); }, 7000);
     }
+    function navEl(sel){
+      return document.querySelector("a.nav-link[href$='"+sel+"']")||document.querySelector("a.nav-link[href*='"+sel+"']");
+    }
+    function goTo(sel){ var el=navEl(sel); if(el) el.click(); }   // the AI clicks it for you
     // --- Offline text-to-speech (browser voices, no network). Robust against the common
     //     pitfalls: voices load async, and audio must be primed inside a user gesture. ---
     var HD_VOICE=null;
@@ -943,6 +950,13 @@
         .then(function(r){return r.json();}).then(function(j){
           if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
           ans.textContent=j.answer; pointAt(j.selector);
+          if(j.selector && navEl(j.selector)){
+            ans.appendChild(document.createElement("br"));
+            var go=document.createElement("button");
+            go.textContent="Take me there →"; go.className="hd-guide-go"; go.type="button";
+            go.addEventListener("click", function(){ goTo(j.selector); });
+            ans.appendChild(go);
+          }
           if(tts.checked) speak(j.answer);
         }).catch(function(e){ ans.textContent="⚠ "+e; })
         .finally(function(){ ask.disabled=false; q.focus(); });
