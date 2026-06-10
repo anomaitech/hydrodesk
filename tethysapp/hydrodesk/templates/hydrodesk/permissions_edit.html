@@ -1,0 +1,58 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Role-based access editor for a doctype: choose which user groups may read / write its
+   records. Saved to field_schema['x-permissions']; enforced by _user_can everywhere. #}
+{% block title %}Permissions: {{ display_name }} - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
+    <a href="{{ list_url }}">{{ display_name }}</a><span class="sep">/</span>Permissions
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Permissions</h1>
+      <div class="frappe-sub-heading">{{ display_name }} &mdash; which roles (user groups) can read or edit these records.
+        Staff / admins always can; an empty list means <em>everyone signed in</em>.</div>
+    </div>
+    <div class="frappe-page-actions"><a class="btn btn-default btn-sm" href="{{ list_url }}">&larr; Back to list</a></div>
+  </div>
+
+  <style>
+    .hd-perm-grid { display:flex; flex-wrap:wrap; gap:10px; margin-top:6px; }
+    .hd-perm-grid label { display:flex; align-items:center; gap:6px; padding:6px 12px;
+      border:1px solid var(--fr-border,#e2e6ea); border-radius:8px; cursor:pointer; }
+  </style>
+
+  {% if all_groups %}
+  <form method="post">
+    {% csrf_token %}
+    <div class="frappe-form-card">
+      <div class="frappe-section-head">Read access</div>
+      <div class="frappe-muted frappe-text-sm">Who may view these records. Leave all unchecked to allow everyone signed in.</div>
+      <div class="hd-perm-grid">
+        {% for g in all_groups %}
+        <label><input type="checkbox" name="read" value="{{ g }}"{% if g in read_sel %} checked{% endif %}> {{ g }}</label>
+        {% endfor %}
+      </div>
+
+      <div class="frappe-section-head" style="margin-top:18px;">Write access <span class="frappe-muted frappe-text-sm">(create / edit / delete)</span></div>
+      <div class="frappe-muted frappe-text-sm">Who may add or change records.</div>
+      <div class="hd-perm-grid">
+        {% for g in all_groups %}
+        <label><input type="checkbox" name="write" value="{{ g }}"{% if g in write_sel %} checked{% endif %}> {{ g }}</label>
+        {% endfor %}
+      </div>
+
+      <button class="btn btn-primary" type="submit" style="margin-top:18px;">Save permissions</button>
+    </div>
+  </form>
+  {% else %}
+  <div class="frappe-form-card">
+    <div class="frappe-muted">No user groups exist yet. Create groups (roles) in the Tethys / Django admin
+      (<code>Auth &rarr; Groups</code>) and assign users to them &mdash; they&rsquo;ll appear here as read/write options.</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

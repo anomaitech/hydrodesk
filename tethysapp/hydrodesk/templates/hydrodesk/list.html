@@ -33,6 +33,9 @@
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:workflow_edit' slug=slug %}">
         <i class="bi bi-diagram-3"></i> Workflow
       </a>
+      <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:permissions_edit' slug=slug %}">
+        <i class="bi bi-shield-lock"></i> Permissions
+      </a>
       {% endif %}
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:geomap' %}?slug={{ slug }}">
         <i class="bi bi-geo-alt"></i> Map

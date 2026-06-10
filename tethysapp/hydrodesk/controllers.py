@@ -8584,6 +8584,47 @@ def workflow_edit(request, slug=None):
         "list_url": reverse("hydrodesk:list", kwargs={"slug": slug})})
 
 
+@controller(name="permissions_edit", url="permissions/{slug}", title="Permissions")
+def permissions_edit(request, slug=None):
+    """Builder-gated editor for a doctype's role-based access — choose which user groups
+    may read / write its records. Stored in field_schema['x-permissions']; enforced
+    everywhere by _user_can. Empty list = everyone signed in; staff/admin always may."""
+    if not _can_build(request):
+        return _denied(request, "manage permissions for", slug or "this type")
+    from django.contrib.auth.models import Group
+    all_groups = list(Group.objects.order_by("name").values_list("name", flat=True))
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(reverse("hydrodesk:doctypes"))
+        dn, fs, gk = meta
+        ht = session.execute(select(m.HydroType)
+                             .where(m.HydroType.slug == slug)).scalar_one()
+        if request.method == "POST":
+            read = [g for g in request.POST.getlist("read") if g in all_groups]
+            write = [g for g in request.POST.getlist("write") if g in all_groups]
+            new_fs = dict(fs or {})
+            perms = {}
+            if read:
+                perms["read"] = read
+            if write:
+                perms["write"] = write
+            if perms:
+                new_fs["x-permissions"] = perms
+            else:
+                new_fs.pop("x-permissions", None)
+            ht.field_schema = new_fs                  # reassign so the JSONB change is tracked
+            session.commit()
+            return redirect(reverse("hydrodesk:permissions_edit", kwargs={"slug": slug}))
+        perms = (fs or {}).get("x-permissions") or {}
+        read_sel, write_sel = (perms.get("read") or []), (perms.get("write") or [])
+    return render(request, "hydrodesk/permissions_edit.html", {
+        "slug": slug, "display_name": dn, "all_groups": all_groups,
+        "read_sel": read_sel, "write_sel": write_sel,
+        "list_url": reverse("hydrodesk:list", kwargs={"slug": slug})})
+
+
 @controller(name="detail", url="record/{slug}/{record_id}", title="Record")
 def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     """Read-style detail view for one HydroRecord: a definition list of its
