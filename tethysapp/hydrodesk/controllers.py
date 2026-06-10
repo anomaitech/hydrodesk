@@ -519,6 +519,113 @@ def ai_codegen(request):
     return JsonResponse({"ok": True, "code": code, "model": model, "syntax_ok": syntax_ok})
 
 
+def _ai_field_schema(ftype, label, options):
+    """Build a JSON-Schema property fragment for an AI-described field (basic types only)."""
+    ft = (ftype or "text").strip().lower().replace(" ", "_")
+    if ft in ("number", "float", "decimal"):
+        s = {"type": "number"}
+    elif ft in ("integer", "int", "count"):
+        s = {"type": "integer"}
+    elif ft in ("checkbox", "boolean", "bool", "yesno"):
+        s = {"type": "boolean"}
+    elif ft == "date":
+        s = {"type": "string", "format": "date"}
+    elif ft == "email":
+        s = {"type": "string", "format": "email"}
+    elif ft in ("url", "link_url"):
+        s = {"type": "string", "format": "uri"}
+    elif ft in ("long_text", "longtext", "textarea", "notes"):
+        s = {"type": "string", "x-widget": "textarea"}
+    elif ft in ("select", "choice", "dropdown", "enum"):
+        opts = [str(o).strip() for o in (options or []) if str(o).strip()][:20]
+        s = {"type": "string", "enum": opts or ["Option A", "Option B"]}
+    else:
+        s = {"type": "string"}
+    s["title"] = label
+    return s
+
+
+@controller(name="ai_build_doctype", url="ai-build-doctype", title="AI build doctype")
+def ai_build_doctype(request):
+    """POST {description} -> design a doctype with a local model and CREATE it. Returns the
+    new slug + the fields it made. Privileged (schema authoring = builder-gated)."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not _can_build(request):
+        return JsonResponse({"ok": False, "error": "only an admin can create doctypes"}, status=403)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    description = (data.get("description") or "").strip()
+    if not description:
+        return JsonResponse({"ok": False, "error": "describe the doctype"}, status=400)
+    models = _ai_models()
+    if not models:
+        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
+    model = (data.get("model") if data.get("model") in models else
+             next((x for x in models if x.startswith("llama3.2")),
+                  next((x for x in models if x.startswith("qwen")), models[0])))
+    sys = (
+        "You design HydroDesk doctypes (data tables) for hydrologists. From the user's request, "
+        "return ONLY a JSON object:\n"
+        '{"name":"<doctype name>","geometry":"point|line|polygon|none",'
+        '"fields":[{"label":"<field label>","type":"<type>","options":["a","b"]}]}\n'
+        "Allowed types: text, number, integer, date, long_text, email, url, select, checkbox.\n"
+        "- number for measurements (depth, SWE, elevation, flow, temperature); integer for counts.\n"
+        "- select for a fixed choice set (ALWAYS include \"options\"); date for dates; checkbox for yes/no.\n"
+        "- text for names/ids/short text; long_text for notes/descriptions.\n"
+        "- geometry=point if records are stations/sites/locations (a lon-lat point); polygon for "
+        "basins/watersheds/areas; line for reaches/channels; else none.\n"
+        "- Make the FIRST field the human-readable name/title (type text). Only include fields the user asked for, "
+        "plus the name field. Keep labels short and clear.")
+    try:
+        raw = _ollama_chat(model, [{"role": "system", "content": sys},
+                                   {"role": "user", "content": description[:2000]}], fmt="json", timeout=180)
+        spec = json.loads(raw)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": "design failed: %s" % str(exc)[:120]}, status=502)
+    name = re.sub(r"[_]+", " ", (spec.get("name") or "").strip()).strip() if isinstance(spec, dict) else ""
+    raw_fields = spec.get("fields") if isinstance(spec, dict) else None
+    if not name or not isinstance(raw_fields, list) or not raw_fields:
+        return JsonResponse({"ok": False, "error": "the model didn't return a usable design"}, status=502)
+    geom = (spec.get("geometry") or "none").strip().lower()
+    geometry_kind = geom if geom in ("point", "line", "polygon") else None
+
+    props, order, made, title_key, seen = {}, [], [], None, set()
+    for f in raw_fields[:25]:
+        if not isinstance(f, dict):
+            continue
+        label = str(f.get("label") or "").strip()
+        if not label:
+            continue
+        key = _slugify_underscore(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        props[key] = _ai_field_schema(f.get("type"), label, f.get("options"))
+        order.append(key)
+        made.append({"label": label, "type": (f.get("type") or "text")})
+        if title_key is None and props[key].get("type") == "string" and "enum" not in props[key]:
+            title_key = key
+    if not props:
+        return JsonResponse({"ok": False, "error": "no valid fields in the design"}, status=502)
+    field_schema = {"type": "object", "properties": props, "x-order": order, "required": []}
+    if title_key:
+        field_schema["x-title-field"] = title_key
+
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        slug = _unique_slug(session, _slugify_underscore(name) or "new_doctype")
+        session.add(m.HydroType(slug=slug, display_name=name, version=1,
+                                field_schema=field_schema, geometry_kind=geometry_kind))
+        session.commit()
+    return JsonResponse({"ok": True, "slug": slug, "name": name,
+                         "geometry": geometry_kind or "none", "fields": made,
+                         "list_url": reverse("hydrodesk:list", kwargs={"slug": slug}),
+                         "edit_url": reverse("hydrodesk:edit_type", kwargs={"slug": slug})})
+
+
 def _ai_data_context(slug, dn, fs, records, max_chars=12000):
     """A compact, LLM-grounding view of a doctype's records: a field summary + the records
     as JSON (images dropped, inline tables capped) so the model answers from real values."""

@@ -940,8 +940,29 @@
     // KNOW audio works (if you hear nothing here, the OS/browser has TTS muted/disabled).
     tts.addEventListener("change", function(){
       if(tts.checked && window.speechSynthesis){ loadVoices(); speak("Voice on."); } });
+    // "create/build a doctype/table…" -> have the AI design + CREATE it, not just point.
+    var CREATE_RE=/\b(create|make|build|add|set ?up|new)\b[\s\S]{0,40}\b(doc\s?type|data\s?type|datatype|table|dataset|record type)\b/i;
+    function goLink(go, url, label){ go.className="hd-guide-go"; go.type="button"; go.textContent=label;
+      go.addEventListener("click", function(){ location.href=url; }); }
+    function buildDoctype(text){
+      ans.textContent="…designing your doctype"; ask.disabled=true;
+      fetch("{% url 'hydrodesk:ai_build_doctype' %}", { method:"POST",
+        headers:{"Content-Type":"application/json","X-CSRFToken":csrf()},
+        body:JSON.stringify({description:text}) })
+        .then(function(r){return r.json();}).then(function(j){
+          if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
+          ans.textContent="✓ Created \""+j.name+"\""+(j.geometry!=="none"?" · "+j.geometry+" geometry":"")
+            +" with "+j.fields.length+" fields:\n"
+            +j.fields.map(function(f){return "  • "+f.label+"  ("+f.type+")";}).join("\n");
+          var go=document.createElement("button"); goLink(go, j.list_url, "Open "+j.name+" →");
+          ans.appendChild(document.createElement("br")); ans.appendChild(go);
+          if(tts.checked) speak("Created "+j.name+" with "+j.fields.length+" fields.");
+        }).catch(function(e){ ans.textContent="⚠ "+e; })
+        .finally(function(){ ask.disabled=false; q.focus(); });
+    }
     function run(text){
       if(!text.trim()) return; q.value="";
+      if(CREATE_RE.test(text)){ buildDoctype(text); return; }
       ans.textContent="…thinking"; ask.disabled=true;
       if(tts.checked && window.speechSynthesis){ try{ window.speechSynthesis.resume(); }catch(e){} }
       fetch("{% url 'hydrodesk:guide_query' %}", { method:"POST",
