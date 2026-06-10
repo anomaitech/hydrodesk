@@ -49,6 +49,11 @@
       <span class="frappe-sidebar-ico">&#9678;</span> Map View
     </a>
   </li>
+  <li class="nav-item">
+    <a class="nav-link{% block nav_active_ai %}{% endblock %}" href="{% url 'hydrodesk:ai_chat' %}">
+      <span class="frappe-sidebar-ico">&#9728;</span> Chat with data
+    </a>
+  </li>
   <li class="nav-item title frappe-sidebar-section">Integrations</li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_connectors %}{% endblock %}" href="{% url 'hydrodesk:connectors' %}">

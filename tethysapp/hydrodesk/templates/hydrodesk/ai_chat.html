@@ -1,0 +1,101 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% block title %}Chat with data - {{ block.super }}{% endblock %}
+{% block nav_active_ai %} active{% endblock %}
+{% block desk_content %}
+{% csrf_token %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Chat with data</div>
+  <div class="frappe-page-head"><div class="frappe-title-area">
+    <h1 class="frappe-title">Chat with your data <span class="indicator-pill" style="background:#ecf7f0;color:#0a9d6e;font-size:11px;">local · Ollama</span></h1>
+    <p class="frappe-muted">Ask questions in plain English &mdash; a local model answers grounded in a doctype's records. Nothing leaves this machine.</p>
+  </div></div>
+
+  {% if not ollama_up %}
+  <div class="frappe-form-card" style="border-color:#f5c2c7;background:#fff5f5;padding:12px 16px;color:#b42318;">
+    Ollama isn't reachable on <code>localhost:11434</code>. Start it (<code>ollama serve</code>) and pull a model
+    (<code>ollama pull llama3.2</code>), then reload.
+  </div>
+  {% else %}
+  <div class="frappe-form-card" style="padding:14px 18px;margin-bottom:14px;display:flex;gap:14px;align-items:end;flex-wrap:wrap;">
+    <div class="frappe-form-group" style="margin:0;min-width:220px;">
+      <label class="frappe-label">Data (doctype)</label>
+      <select class="form-select" id="ai-slug">
+        {% for t in slugs %}<option value="{{ t.slug }}"{% if t.slug == selected %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="frappe-form-group" style="margin:0;min-width:200px;">
+      <label class="frappe-label">Model</label>
+      <select class="form-select" id="ai-model">
+        {% for m in models %}<option value="{{ m }}"{% if m == default_model %} selected{% endif %}>{{ m }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-default btn-sm" id="ai-clear" type="button" style="margin-bottom:2px;">Clear chat</button>
+  </div>
+
+  <div class="frappe-form-card" style="padding:0;display:flex;flex-direction:column;height:540px;">
+    <div id="ai-messages" style="flex:1;overflow-y:auto;padding:16px 20px;">
+      <div class="frappe-muted frappe-text-sm" id="ai-empty">
+        Try: <a href="#" class="ai-suggest">Which scenario has the highest estimated loss?</a> &middot;
+        <a href="#" class="ai-suggest">How many buildings are flooded in total?</a> &middot;
+        <a href="#" class="ai-suggest">Summarize this dataset.</a>
+      </div>
+    </div>
+    <div style="border-top:1px solid #e6e9ee;padding:12px 16px;display:flex;gap:8px;">
+      <input id="ai-input" class="form-control" placeholder="Ask about this data…" autocomplete="off" style="flex:1;">
+      <button class="btn btn-primary" id="ai-send" type="button">Send</button>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  var msgs = document.getElementById("ai-messages");
+  if (!msgs) return;
+  var input = document.getElementById("ai-input"), send = document.getElementById("ai-send");
+  var history = [];
+  function csrf() {
+    var m = document.cookie.match(/csrftoken=([^;]+)/); if (m) return m[1];
+    var el = document.querySelector("[name=csrfmiddlewaretoken]"); return el ? el.value : "";
+  }
+  function esc(s){ var d=document.createElement("div"); d.textContent=s; return d.innerHTML; }
+  function bubble(role, text, cls) {
+    var e = document.getElementById("ai-empty"); if (e) e.remove();
+    var wrap = document.createElement("div");
+    wrap.style.cssText = "margin:8px 0;display:flex;" + (role==="user" ? "justify-content:flex-end;" : "");
+    var b = document.createElement("div");
+    b.className = cls || "";
+    b.style.cssText = "max-width:78%;padding:9px 13px;border-radius:12px;font-size:14px;white-space:pre-wrap;line-height:1.45;"
+      + (role==="user" ? "background:#2490ef;color:#fff;" : "background:#f1f4f8;color:#1a2533;");
+    b.innerHTML = esc(text);
+    wrap.appendChild(b); msgs.appendChild(wrap); msgs.scrollTop = msgs.scrollHeight;
+    return b;
+  }
+  function ask(q) {
+    if (!q.trim()) return;
+    bubble("user", q);
+    history.push({role:"user", content:q});
+    var thinking = bubble("assistant", "…thinking", "ai-thinking");
+    send.disabled = true; input.disabled = true;
+    fetch("{% url 'hydrodesk:ai_chat_query' %}", {
+      method: "POST",
+      headers: {"Content-Type":"application/json", "X-CSRFToken": csrf()},
+      body: JSON.stringify({ slug: document.getElementById("ai-slug").value,
+        model: document.getElementById("ai-model").value, question: q, history: history })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      thinking.textContent = j.ok ? j.answer : ("⚠ " + (j.error || "error"));
+      if (j.ok) history.push({role:"assistant", content:j.answer});
+    }).catch(function (e) { thinking.textContent = "⚠ " + e; })
+      .finally(function () { send.disabled=false; input.disabled=false; input.focus(); msgs.scrollTop=msgs.scrollHeight; });
+  }
+  send.addEventListener("click", function () { var q=input.value; input.value=""; ask(q); });
+  input.addEventListener("keydown", function (e) { if (e.key==="Enter") { var q=input.value; input.value=""; ask(q); } });
+  document.getElementById("ai-clear").addEventListener("click", function () {
+    history = []; msgs.innerHTML = ""; input.focus();
+  });
+  document.querySelectorAll(".ai-suggest").forEach(function (a) {
+    a.addEventListener("click", function (ev) { ev.preventDefault(); ask(a.textContent); });
+  });
+})();
+</script>
+{% endblock %}

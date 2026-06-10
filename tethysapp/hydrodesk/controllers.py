@@ -363,6 +363,129 @@ def report_builder(request):
     return render(request, "hydrodesk/report.html", ctx)
 
 
+# --- AI: "Chat with your data" via a LOCAL Ollama (offline-safe). The LLM answers
+#     grounded in a doctype's actual records — no data leaves the machine. ---
+OLLAMA_URL = "http://localhost:11434"
+
+_AI_SYSTEM = (
+    "You are HydroDesk's data assistant, helping a hydrologist understand their data. "
+    "Answer ONLY from the DATA provided below — use its exact numbers and units. Be concise "
+    "and specific (a sentence or two, or a short list). If the data does not contain the "
+    "answer, say so plainly; never invent values, records, or scenarios.\n\nDATA:\n%s")
+
+
+def _ai_models():
+    """List the local Ollama model names (empty list if Ollama is unreachable)."""
+    try:
+        import requests
+        r = requests.get(OLLAMA_URL + "/api/tags", timeout=5)
+        return [m.get("name") for m in (r.json().get("models") or []) if m.get("name")]
+    except Exception:
+        return []
+
+
+def _ollama_chat(model, messages, timeout=120):
+    """One non-streaming Ollama chat completion -> the assistant text. Strips any
+    <think>…</think> reasoning block (deepseek-r1 etc.) for a clean answer."""
+    import requests
+    r = requests.post(OLLAMA_URL + "/api/chat", timeout=timeout,
+                      json={"model": model, "messages": messages, "stream": False,
+                            "options": {"temperature": 0.2}})
+    r.raise_for_status()
+    txt = ((r.json().get("message") or {}).get("content") or "")
+    return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
+
+
+def _ai_data_context(slug, dn, fs, records, max_chars=12000):
+    """A compact, LLM-grounding view of a doctype's records: a field summary + the records
+    as JSON (images dropped, inline tables capped) so the model answers from real values."""
+    props = (fs or {}).get("properties") or {}
+    order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+    fdesc = []
+    for k in order:
+        p = props[k] or {}
+        if p.get("x-layout"):
+            continue
+        kind = ("table" if p.get("x-widget") == "table" else
+                "image" if p.get("x-widget") == "image" else
+                "live" if p.get("x-api-connector") else (p.get("type") or "text"))
+        fdesc.append("%s [%s]" % (p.get("title") or k, kind))
+    out = []
+    for r in records[:50]:
+        rec = {}
+        for k in order:
+            p = props[k] or {}
+            if p.get("x-layout") or p.get("x-widget") == "image":
+                continue
+            v = r.get(k)
+            if v in (None, "") or (isinstance(v, str) and v.startswith("data:")):
+                continue
+            rec[k] = v[:20] if isinstance(v, list) else v
+        if rec:
+            out.append(rec)
+    blob = json.dumps(out, ensure_ascii=False, default=str)
+    if len(blob) > max_chars:
+        blob = blob[:max_chars] + " …(truncated)"
+    return ("Doctype: %s (%s) — %d records.\nFields: %s\n\nRecords (JSON):\n%s"
+            % (dn, slug, len(records), ", ".join(fdesc), blob))
+
+
+@controller(name="ai_chat", url="ai-chat", title="Chat with data")
+def ai_chat(request):
+    """Chat-with-your-data page: pick a doctype + a local Ollama model, ask in plain
+    English. The model answers grounded in that doctype's records (data stays local)."""
+    if not getattr(request.user, "is_authenticated", False):
+        return _denied(request, "use", "AI Chat")
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        slugs = _all_slugs(session)
+    models = _ai_models()
+    default_model = next((x for x in models if x.startswith("llama3.2")), models[0] if models else "")
+    ctx = {"slugs": slugs, "selected": request.GET.get("slug") or (slugs[0]["slug"] if slugs else None),
+           "models": models, "default_model": default_model, "ollama_up": bool(models)}
+    return render(request, "hydrodesk/ai_chat.html", ctx)
+
+
+@controller(name="ai_chat_query", url="ai-chat/query", title="AI Chat query")
+def ai_chat_query(request):
+    """POST {slug, question, model, history[]} -> {ok, answer}. Loads the doctype's
+    records, grounds a local Ollama model on them, and returns the answer."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    slug = (data.get("slug") or "").strip()
+    question = (data.get("question") or "").strip()
+    model = (data.get("model") or "").strip()
+    history = data.get("history") or []
+    if not (slug and question and model):
+        return JsonResponse({"ok": False, "error": "slug, question and model are required"}, status=400)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return JsonResponse({"ok": False, "error": "unknown doctype"}, status=404)
+        dn, fs, gk = meta
+        if not _user_can(request, fs, "read"):
+            return JsonResponse({"ok": False, "error": "no read access"}, status=403)
+        records = [dict(a or {}) for a in session.execute(
+            select(m.HydroRecord.attributes).where(m.HydroRecord.hydrotype_slug == slug)).scalars().all()]
+    messages = [{"role": "system", "content": _AI_SYSTEM % _ai_data_context(slug, dn, fs, records)}]
+    for h in history[-6:]:
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": str(h["content"])[:4000]})
+    messages.append({"role": "user", "content": question[:4000]})
+    try:
+        answer = _ollama_chat(model, messages)
+    except Exception as exc:
+        return JsonResponse({"ok": False,
+                             "error": "Ollama call failed (%s). Is it running on :11434?"
+                                      % str(exc)[:120]}, status=502)
+    return JsonResponse({"ok": True, "answer": answer or "(no answer)"})
+
+
 def _records_geojson(slug):
     """Load every record of a HydroType from the generic store as a GeoJSON
     FeatureCollection (lon/lat EPSG:4326 — MapLayout reprojects for display)."""
