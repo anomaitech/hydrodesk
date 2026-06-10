@@ -24,7 +24,7 @@ Define a record type once in a visual builder, and HydroDesk instantly generates
   - [Live data connectors](#4-live-data-connectors)
   - [Computed fields & models](#5-computed-fields--models)
   - [Scheduling & alerts](#6-scheduling--alerts)
-  - [Reports, insights & maps](#7-reports-insights--maps)
+  - [Dashboards, reports, insights & maps](#7-dashboards-reports-insights--maps)
   - [Data API & interoperability](#8-data-api--interoperability)
   - [Local AI assistant (offline)](#9-local-ai-assistant-offline)
 - [Architecture](#architecture)
@@ -65,6 +65,12 @@ It's no-code, spreadsheet-simple ergonomics, purpose-built for **water & environ
 </tr>
 <tr>
 <td colspan="2"><img src="docs/screenshots/data_api.png" alt="Data API"><br><sub><b>Data API</b> — every doctype is a JSON / GeoJSON endpoint, with a read token and a point-and-click query builder.</sub></td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/screenshots/dashboard.png" alt="Native in-app dashboard"><br><sub><b>Native dashboards</b> — assemble KPI cards, charts, tables, and live maps over your data, no code and no export needed.</sub></td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/screenshots/history.png" alt="Record history and comments"><br><sub><b>Record history &amp; comments</b> — every change is versioned with a field-level diff and one-click restore, plus a per-record discussion thread.</sub></td>
 </tr>
 </table>
 
@@ -119,6 +125,8 @@ Every type automatically gets:
 
 Plus full record lifecycle: per-record CRUD, **bulk-delete** with select-all, **link existing** records into a child table, and **CSV / Excel import** (`.csv`, `.xlsx`, `.xlsm`) with type coercion (dates → ISO, whole floats → ints).
 
+**History & collaboration:** every record keeps a **versioned history** — each create/edit/restore is an immutable snapshot, shown on the detail page as a **field-level diff** with **one-click Restore**. Records also carry a **comment thread** for discussion.
+
 ### 4. Live data connectors
 
 A configurable integration engine — no glue code. A **connector** is a reusable, named data source; a doctype's **API field** binds to one and maps record fields to its inputs.
@@ -157,8 +165,9 @@ A configurable integration engine — no glue code. A **connector** is a reusabl
 - **Threshold alerts** — define breach conditions; HydroDesk records breaches and can **send email notifications** (`notify_email`) when thresholds are crossed.
 - **Alerts inbox** — review and **acknowledge** alerts.
 
-### 7. Reports, insights & maps
+### 7. Dashboards, reports, insights & maps
 
+- **Native in-app dashboards** — a built-in builder + viewer: assemble **KPI cards, bar charts, records tables, and live maps** over any doctype's data, arranged in a grid. Charts/tables are server-rendered (offline-safe); no export to an external tool required.
 - **Report builder** — filter, group, and aggregate records (including across child-table columns), then export **CSV**.
 - **Insights** — auto-generated stat cards and inline-SVG charts per doctype.
 - **Styled map** — color-by-field GeoJSON maps (Leaflet) of any spatial type.
