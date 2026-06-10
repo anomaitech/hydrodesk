@@ -384,16 +384,80 @@ def _ai_models():
         return []
 
 
-def _ollama_chat(model, messages, timeout=120):
-    """One non-streaming Ollama chat completion -> the assistant text. Strips any
-    <think>…</think> reasoning block (deepseek-r1 etc.) for a clean answer."""
+def _ollama_chat(model, messages, timeout=120, fmt=None):
+    """One non-streaming Ollama chat completion -> the assistant text. ``fmt='json'``
+    forces a JSON object. Strips any <think>…</think> block (deepseek-r1) for clean text."""
     import requests
-    r = requests.post(OLLAMA_URL + "/api/chat", timeout=timeout,
-                      json={"model": model, "messages": messages, "stream": False,
-                            "options": {"temperature": 0.2}})
+    payload = {"model": model, "messages": messages, "stream": False,
+               "options": {"temperature": 0.2}}
+    if fmt:
+        payload["format"] = fmt
+    r = requests.post(OLLAMA_URL + "/api/chat", timeout=timeout, json=payload)
     r.raise_for_status()
     txt = ((r.json().get("message") or {}).get("content") or "")
     return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
+
+
+# In-app guide ("clicky"-style): a local model answers HOW-TO questions and POINTS at the
+# right nav item. The app knows its own UI, so pointing is a DOM highlight — no vision model.
+_GUIDE_TARGETS = [
+    {"key": "home", "label": "Home", "sel": "/apps/hydrodesk/", "help": "the app home — every doctype as a card"},
+    {"key": "new_type", "label": "+ New HydroType", "sel": "new-type", "help": "create a new doctype: define fields and HydroDesk auto-generates the table, list, map, and form"},
+    {"key": "doctypes", "label": "DocTypes", "sel": "/doctypes", "help": "manage all doctypes (open, edit, duplicate, delete; 'show hidden' reveals scratch ones)"},
+    {"key": "map", "label": "Map View", "sel": "geomap", "help": "see a doctype's records on a map, colored by an attribute"},
+    {"key": "ai_chat", "label": "Chat with data", "sel": "ai-chat", "help": "ask questions about your records in plain English using a local AI model"},
+    {"key": "report", "label": "Reports", "sel": "/report", "help": "filter, group-by, and aggregate records into a report and export CSV"},
+    {"key": "models", "label": "Models", "sel": "/models", "help": "define a Python/command model; bind it to a doctype so records get a Run button (runs via the Job Manager)"},
+    {"key": "connectors", "label": "Connectors", "sel": "/connectors", "help": "connect live data sources: USGS, GeoGLOWS, NextGen/NGIAB, CSV, NetCDF, THREDDS, WMS/WCS, GEE"},
+    {"key": "credentials", "label": "Credentials", "sel": "/credentials", "help": "store API keys/tokens that connectors use"},
+    {"key": "publish", "label": "Publish to TethysDash", "sel": "publish-tethysdash", "help": "auto-build a TethysDash dashboard JSON from a doctype's fields, ready to import"},
+    {"key": "schedules", "label": "Schedules", "sel": "/schedules", "help": "run a doctype on a schedule to refresh live data and raise threshold alerts (with email)"},
+    {"key": "alerts", "label": "Alerts", "sel": "/alerts", "help": "see threshold alerts raised by schedules"},
+    {"key": "data_api", "label": "Data API", "sel": "api_explorer", "help": "the outbound JSON/GeoJSON API for every doctype, with a read token"},
+]
+_GUIDE_STEPS = (
+    "To make INSIGHTS, REPORTS, IMPORT, MAP, or RUN a model: open a doctype from Home (or DocTypes), "
+    "then use the buttons on its list/detail page (Insights, Import CSV/Excel, Map, and Run on a record).")
+
+
+@controller(name="guide_query", url="guide/query", title="Guide")
+def guide_query(request):
+    """POST {question, page} -> {ok, answer, point, selector}. A local model answers a
+    how-to question grounded in HydroDesk's UI map and names the nav item to highlight."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not getattr(request.user, "is_authenticated", False):
+        return JsonResponse({"ok": False, "error": "login required"}, status=403)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    question = (data.get("question") or "").strip()
+    if not question:
+        return JsonResponse({"ok": False, "error": "ask a question"}, status=400)
+    models = _ai_models()
+    if not models:
+        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
+    model = next((x for x in models if x.startswith("llama3.2")), models[0])
+    kb = "\n".join("- %s — %s (%s)" % (t["key"], t["label"], t["help"]) for t in _GUIDE_TARGETS)
+    system = (
+        "You are HydroDesk's friendly in-app guide for non-coding hydrologists. HydroDesk is a "
+        "no-code app builder on the Tethys Platform. The sidebar nav items (key — label — what it does):\n"
+        + kb + "\n" + _GUIDE_STEPS +
+        "\n\nAnswer the user's how-to question in 1–3 short, friendly sentences (plain language, no jargon). "
+        "Then set \"point\" to the single nav KEY the user should click next (from the list above), or null "
+        "if none fits. The user is currently on page: " + str(data.get("page") or "/") +
+        ". Reply with ONLY a JSON object: {\"answer\": \"...\", \"point\": \"<key or null>\"}.")
+    try:
+        raw = _ollama_chat(model, [{"role": "system", "content": system},
+                                   {"role": "user", "content": question[:2000]}], fmt="json")
+        obj = json.loads(raw)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": "guide error: %s" % str(exc)[:120]}, status=502)
+    point = obj.get("point") if isinstance(obj, dict) else None
+    sel = next((t["sel"] for t in _GUIDE_TARGETS if t["key"] == point), None)
+    return JsonResponse({"ok": True, "answer": (obj.get("answer") or "").strip() or "(no answer)",
+                         "point": point if sel else None, "selector": sel})
 
 
 def _ai_data_context(slug, dn, fs, records, max_chars=12000):
