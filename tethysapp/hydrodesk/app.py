@@ -6,13 +6,13 @@ class App(ComponentBase):
     """
     Tethys app class for Hydrodesk.
 
-    A Frappe-style metadata engine: a HydroType (the DocType analog) is one row
+    A no-code metadata engine: a HydroType (the record-type definition) is one row
     in a fixed generic store; every UI surface (Home, List, Map, Form, Detail,
-    DocType Builder) is a server-rendered controller generic over the type slug.
+    Type Builder) is a server-rendered controller generic over the type slug.
     """
 
     name = "Hydrodesk"
-    description = "Frappe-style metadata engine for hydrology (HydroForge)"
+    description = "No-code metadata engine for hydrology"
     package = "hydrodesk"  # WARNING: Do not change this value
     index = "home"
     icon = f"{package}/images/icon.png"
