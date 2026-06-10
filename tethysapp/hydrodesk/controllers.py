@@ -610,20 +610,278 @@ def ai_build_doctype(request):
             title_key = key
     if not props:
         return JsonResponse({"ok": False, "error": "no valid fields in the design"}, status=502)
-    field_schema = {"type": "object", "properties": props, "x-order": order, "required": []}
-    if title_key:
-        field_schema["x-title-field"] = title_key
+
+    # Compound request — "a doctype WITH a (GeoGLOWS reach) connector": wire a LIVE
+    # forecast field bound to the GeoGLOWS connector, add the river_id it reads, and (if a
+    # reach number was named) seed a first record so the forecast renders immediately.
+    desc_l = description.lower()
+    has_reach_num = bool(re.search(r"\breach\s+\d{5,}", desc_l))
+    wants_geoglows = ("geoglow" in desc_l or has_reach_num or
+                      (("reach" in desc_l or "river id" in desc_l or "river_id" in desc_l)
+                       and any(w in desc_l for w in ("forecast", "streamflow", "connector"))))
+    reach_id = ""
+    if wants_geoglows:
+        mo = re.search(r"\b(\d{6,})\b", description)
+        reach_id = mo.group(1) if mo else ""
 
     engine = App.get_persistent_store_database("hydro_db")
+    connector_name = None
+    seeded = False
     with Session(engine) as session:
+        if wants_geoglows:
+            connector_name = _ensure_geoglows_connector(session)
+            if "river_id" not in props:
+                props["river_id"] = {"type": "integer", "title": "GeoGLOWS River ID"}
+                order.append("river_id")
+                made.append({"label": "GeoGLOWS River ID", "type": "integer"})
+            if "forecast_m3s" not in props:
+                props["forecast_m3s"] = {
+                    "type": "string", "title": "15-day forecast (m³/s)",
+                    "x-api-connector": connector_name,
+                    "x-api-map": {"river_id": {"field": "river_id", "source": "field"}},
+                    "x-api-outputs": [{"label": "series", "output": "series",
+                                       "field_type": "Time-Series"}]}
+                order.append("forecast_m3s")
+                made.append({"label": "15-day forecast (m³/s)",
+                             "type": "Time-Series (live GeoGLOWS)"})
+
+        field_schema = {"type": "object", "properties": props, "x-order": order, "required": []}
+        if title_key:
+            field_schema["x-title-field"] = title_key
+
         slug = _unique_slug(session, _slugify_underscore(name) or "new_doctype")
         session.add(m.HydroType(slug=slug, display_name=name, version=1,
                                 field_schema=field_schema, geometry_kind=geometry_kind))
+        session.flush()   # parent row must exist before the FK'd seed record inserts
+        if wants_geoglows and reach_id:
+            attrs = {"river_id": int(reach_id) if reach_id.isdigit() else reach_id}
+            if title_key:
+                attrs[title_key] = "Reach %s" % reach_id
+            session.add(m.HydroRecord(hydrotype_slug=slug, attributes=attrs))
+            seeded = True
         session.commit()
-    return JsonResponse({"ok": True, "slug": slug, "name": name,
-                         "geometry": geometry_kind or "none", "fields": made,
-                         "list_url": reverse("hydrodesk:list", kwargs={"slug": slug}),
-                         "edit_url": reverse("hydrodesk:edit_type", kwargs={"slug": slug})})
+
+    resp = {"ok": True, "slug": slug, "name": name,
+            "geometry": geometry_kind or "none", "fields": made,
+            "list_url": reverse("hydrodesk:list", kwargs={"slug": slug}),
+            "edit_url": reverse("hydrodesk:edit_type", kwargs={"slug": slug})}
+    if connector_name:
+        resp["connector"] = connector_name
+        resp["live_field"] = "15-day forecast (m³/s)"
+    if seeded:
+        resp["seeded_reach"] = reach_id
+    return JsonResponse(resp)
+
+
+# Presets the AI connector builder is allowed to pick from — each line is one
+# "menu item" the model sees: the preset key, what it returns, and which inputs
+# it can fill. Kept narrow (live value/series sources) on purpose so the model
+# matches a VERIFIED endpoint instead of inventing a URL. Freeform is the escape
+# hatch (preset "none" + a full URL) for anything not on the menu.
+_AI_CONNECTOR_PRESETS = {
+    "geoglows_forecast": (
+        "GeoGLOWS — 15-day ensemble streamflow forecast for a single river reach. "
+        "inputs: river_id (the GeoGLOWS reach / river ID, a long integer, e.g. 760021951)."),
+    "nwis_iv": (
+        "USGS NWIS Instantaneous Values — live (~15-min) streamflow / gage height / "
+        "water temperature at a USGS site. inputs: sites (8-digit USGS site number), "
+        "parameterCd (00060=discharge ft3/s, 00065=gage height ft, 00010=water temp C, "
+        "00045=precip), period (ISO-8601 duration, e.g. PT2H, P7D)."),
+    "nwis_dv": (
+        "USGS NWIS Daily Values — daily mean (or max/min) streamflow etc at a USGS site. "
+        "inputs: sites (8-digit site number), parameterCd (same codes as nwis_iv), "
+        "statCd (00003=mean, 00001=max, 00002=min), period (e.g. P90D, P1Y)."),
+    "nwps_stageflow": (
+        "NOAA NWPS — observed/forecast gauge stage & flow. inputs: identifier (NWS gauge "
+        "LID, e.g. CAGT2), product (observed or forecast)."),
+    "wqp_station": (
+        "Water Quality Portal — station metadata for a monitoring site. inputs: siteid "
+        "(e.g. USGS-09380000), providers (NWIS or STORET)."),
+    "nextgen_nexus": (
+        "NextGen / NGIAB — a model's nexus streamflow CSV output (time series). inputs: "
+        "ngen_output_dir (folder path or base URL of the ngen run outputs), nexus_id (integer)."),
+}
+
+
+# Hosts that belong to a built-in preset — a pasted URL on one of these is better
+# served by the verified preset (richer parsing) than by a freeform GET.
+_AI_PRESET_HOSTS = ("waterservices.usgs.gov", "api.water.noaa.gov", "waterqualitydata.us")
+
+
+def _first_url(text):
+    """Return the first http(s) URL in ``text`` (trailing punctuation trimmed), else ''."""
+    mo = re.search(r"https?://[^\s'\"<>]+", text or "")
+    return mo.group(0).rstrip(".,;)]}'\"") if mo else ""
+
+
+def _ensure_geoglows_connector(session):
+    """Return the name of a GeoGLOWS forecast connector — reuse an existing one (matched by
+    its forecast URL, so the curated ``geoglow_forcast`` is reused) else create one from the
+    preset. The caller commits. Lets the doctype builder bind a live forecast field."""
+    for nm, cfg in session.execute(
+            select(m.HydroConnector.name, m.HydroConnector.config)).all():
+        if "geoglows.ecmwf.int/api/v2/forecast" in ((cfg or {}).get("url_template") or ""):
+            return nm
+    import copy as _copy
+    name = _unique_connector_name(session, "geoglows_forecast")
+    session.add(m.HydroConnector(
+        name=name, config=_copy.deepcopy(CONNECTOR_PRESETS["geoglows_forecast"]["config"])))
+    return name
+
+
+def _unique_connector_name(session, base):
+    """Return ``base`` or ``base 2``/``base 3``… so a new connector name doesn't collide."""
+    base = (base or "AI Connector").strip()[:120] or "AI Connector"
+    existing = {r[0] for r in session.execute(select(m.HydroConnector.name)).all()}
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base} {n}" in existing:
+        n += 1
+    return f"{base} {n}"
+
+
+@controller(name="ai_build_connector", url="ai-build-connector", title="AI build connector")
+def ai_build_connector(request):
+    """POST {description} -> a local model picks a VERIFIED data-source preset (or a
+    freeform REST URL), fills its inputs, and CREATES the hydro_connector row. Returns
+    the new connector + the rendered URL it will fetch. Privileged (connector authoring
+    = builder-gated, same as doctype/script authoring)."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not _can_build(request):
+        return JsonResponse({"ok": False, "error": "only an admin can create connectors"}, status=403)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    description = (data.get("description") or "").strip()
+    if not description:
+        return JsonResponse({"ok": False, "error": "describe the data source to connect"}, status=400)
+    models = _ai_models()
+    if not models:
+        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
+    model = (data.get("model") if data.get("model") in models else
+             next((x for x in models if x.startswith("llama3.2")),
+                  next((x for x in models if x.startswith("qwen")), models[0])))
+
+    menu = "\n".join("- %s: %s" % (k, v) for k, v in _AI_CONNECTOR_PRESETS.items())
+    sys = (
+        "You configure HydroDesk DATA CONNECTORS (live API/data feeds) for hydrologists. "
+        "Pick the best-matching preset from the MENU and fill its inputs from the user's "
+        "request. Return ONLY a JSON object:\n"
+        '{"name":"<short connector name>","preset":"<menu key or none>",'
+        '"inputs":{"<input>":"<value>"},'
+        '"freeform_url":"","result_kind":"value","value_path":""}\n'
+        "Rules:\n"
+        "- Choose a preset KEY from the menu when one fits; put any values you know in "
+        "\"inputs\" (use the EXACT input names from the menu). Omit inputs you don't know — "
+        "they keep sensible defaults.\n"
+        "- Only if NOTHING on the menu fits, set preset=\"none\" and give a full https "
+        "\"freeform_url\", a \"result_kind\" (value=single number, series=time series, "
+        "json=raw), and a \"value_path\" (dot path to the value, blank if unsure).\n"
+        "- Never invent a USGS site number you aren't sure of — leave \"sites\" out and it "
+        "defaults. Map words to parameter codes (discharge/flow->00060, stage/gage "
+        "height->00065, temperature->00010).\n"
+        "- Keep \"name\" short and human (e.g. 'Provo River Discharge').\n\n"
+        "MENU:\n%s" % menu)
+    try:
+        raw = _ollama_chat(model, [{"role": "system", "content": sys},
+                                   {"role": "user", "content": description[:2000]}],
+                           fmt="json", timeout=180)
+        spec = json.loads(raw)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": "design failed: %s" % str(exc)[:120]}, status=502)
+    if not isinstance(spec, dict):
+        return JsonResponse({"ok": False, "error": "the model didn't return a usable config"}, status=502)
+
+    name = (spec.get("name") or "").strip() or "AI Connector"
+    preset_key = (spec.get("preset") or "").strip().lower()
+    given = spec.get("inputs") if isinstance(spec.get("inputs"), dict) else {}
+
+    # If the user pasted a concrete URL whose host isn't a known preset host, honor THAT
+    # exact URL (freeform) — a small local model otherwise tends to force a preset match
+    # and even invent a site number. The real URL the user typed always wins.
+    desc_url = _first_url(description)
+    force_freeform = bool(desc_url) and not any(h in desc_url for h in _AI_PRESET_HOSTS)
+
+    if not force_freeform and preset_key in _AI_CONNECTOR_PRESETS and preset_key in CONNECTOR_PRESETS:
+        import copy as _copy
+        config = _copy.deepcopy(CONNECTOR_PRESETS[preset_key]["config"])
+        applied = {}
+        for inp in (config.get("inputs") or []):
+            iname = (inp.get("name") or "").strip()
+            if iname in given and given[iname] not in (None, ""):
+                v = str(given[iname]).strip()
+                # set BOTH so it renders standalone (constant/default chain) yet a
+                # mapped record field can still override at fetch time.
+                inp["value"] = v
+                inp["default"] = v
+                applied[iname] = v
+        # Server-side backfill: if a required ID-like input is still empty, pull it from
+        # the description — small models sometimes omit it. GeoGLOWS reach IDs are long
+        # integers; USGS site numbers are 8 digits.
+        for inp in (config.get("inputs") or []):
+            iname = (inp.get("name") or "").strip()
+            if iname in applied or not inp.get("required"):
+                continue
+            if inp.get("value") or inp.get("default"):
+                continue
+            guess = ""
+            if iname == "river_id":
+                mo = re.search(r"\b(\d{6,})\b", description)
+                guess = mo.group(1) if mo else ""
+            elif iname == "sites":
+                mo = re.search(r"\b(\d{8,})\b", description)
+                guess = mo.group(1) if mo else ""
+            if guess:
+                inp["value"] = guess
+                inp["default"] = guess
+                applied[iname] = guess
+        source = preset_key
+    else:
+        # Freeform escape hatch: a generic GET against the user's pasted URL (preferred)
+        # or, failing that, a model-supplied one.
+        url = desc_url or (spec.get("freeform_url") or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return JsonResponse(
+                {"ok": False, "error": "No preset matched and the model gave no usable URL. "
+                 "Try naming a known source (USGS NWIS, NWPS, Water Quality Portal, NextGen)."},
+                status=422)
+        rk = (spec.get("result_kind") or "value").strip().lower()
+        if rk not in ("value", "series", "json"):
+            rk = "value"
+        config = {
+            "kind": "rest", "url_template": url, "method": "GET",
+            "headers": {}, "query": {},
+            "auth": {"scheme": "none", "credential": "", "placement": "header", "param": ""},
+            "inputs": [],
+            "result_kind": rk,
+            "output_path": (spec.get("value_path") or "").strip(),
+            "x_path": "", "y_path": "",
+            "ttl_seconds": 900, "timeout": 15,
+        }
+        applied = {}
+        source = "none"
+
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        name = _unique_connector_name(session, name)
+        conn = m.HydroConnector(name=name, config=config)
+        session.add(conn)
+        session.commit()
+        cid = str(conn.id)
+    rendered, _missing = _resolve_inputs(config, {})
+    url_template = config.get("url_template") or config.get("csv_url") or ""
+    try:
+        preview = _render_template(url_template, rendered) if url_template else ""
+    except Exception:
+        preview = url_template
+    return JsonResponse({"ok": True, "id": cid, "name": name, "preset": source,
+                         "result_kind": config.get("result_kind", "value"),
+                         "inputs": applied, "url": preview,
+                         "list_url": reverse("hydrodesk:connectors"),
+                         "edit_url": reverse("hydrodesk:connector_edit", kwargs={"conn_id": cid})})
 
 
 def _ai_data_context(slug, dn, fs, records, max_chars=12000):
@@ -3759,6 +4017,25 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
 # Each prefills a connector config for the builder; auth-less for the public
 # water APIs. Keys mirror HydroConnector.config exactly. ---
 CONNECTOR_PRESETS = {
+    "geoglows_forecast": {
+        "label": "GeoGLOWS — 15-day streamflow forecast (by reach / river ID)",
+        "config": {
+            "kind": "rest",
+            "url_template": "https://geoglows.ecmwf.int/api/v2/forecast/{river_id}?format=json",
+            "method": "GET", "headers": {}, "query": {},
+            "auth": {"scheme": "none", "credential": "", "placement": "header", "param": ""},
+            "inputs": [
+                {"name": "river_id", "label": "GeoGLOWS River ID", "type": "number",
+                 "source": "field", "field": "river_id", "value": "", "default": "",
+                 "required": True, "in": "url"},
+            ],
+            "result_kind": "series",
+            "x_path": "datetime.*",
+            "y_path": "flow_median.*",
+            "ttl_seconds": 1800,
+            "timeout": 25,
+        },
+    },
     "nextgen_nexus": {
         "label": "NextGen / NGIAB — Nexus streamflow output",
         "config": {

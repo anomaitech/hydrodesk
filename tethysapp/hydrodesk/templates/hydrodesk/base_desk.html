@@ -953,16 +953,44 @@
           if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
           ans.textContent="✓ Created \""+j.name+"\""+(j.geometry!=="none"?" · "+j.geometry+" geometry":"")
             +" with "+j.fields.length+" fields:\n"
-            +j.fields.map(function(f){return "  • "+f.label+"  ("+f.type+")";}).join("\n");
+            +j.fields.map(function(f){return "  • "+f.label+"  ("+f.type+")";}).join("\n")
+            +(j.connector?"\n  ⚡ live \""+j.live_field+"\" via connector \""+j.connector+"\"":"")
+            +(j.seeded_reach?"\n  • seeded reach "+j.seeded_reach+" — forecast fetches on open":"");
           var go=document.createElement("button"); goLink(go, j.list_url, "Open "+j.name+" →");
           ans.appendChild(document.createElement("br")); ans.appendChild(go);
-          if(tts.checked) speak("Created "+j.name+" with "+j.fields.length+" fields.");
+          if(tts.checked) speak("Created "+j.name+" with "+j.fields.length+" fields"
+            +(j.connector?", plus a live GeoGLOWS forecast field":"")+".");
         }).catch(function(e){ ans.textContent="⚠ "+e; })
         .finally(function(){ ask.disabled=false; q.focus(); });
     }
+    // "connect to USGS / build a connector / add a live feed…" -> AI configures + CREATES a connector.
+    var CONNECT_RE=/\b(create|make|build|add|set ?up|configure|connect(?: to)?|new)\b[\s\S]{0,40}\b(connector|data ?source|connection|live ?feed|feed|web ?service|usgs|nwis|nwps|geoglows?|water ?quality|stream ?gauge|streamflow ?api)\b/i;
+    function buildConnector(text){
+      ans.textContent="…configuring your connector"; ask.disabled=true;
+      fetch("{% url 'hydrodesk:ai_build_connector' %}", { method:"POST",
+        headers:{"Content-Type":"application/json","X-CSRFToken":csrf()},
+        body:JSON.stringify({description:text}) })
+        .then(function(r){return r.json();}).then(function(j){
+          if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
+          var ins=Object.keys(j.inputs||{}).map(function(k){return "  • "+k+" = "+j.inputs[k];}).join("\n");
+          ans.textContent="✓ Created connector \""+j.name+"\""
+            +(j.preset&&j.preset!=="none"?" · "+j.preset:"")+" · "+j.result_kind
+            +(ins?"\n"+ins:"")+(j.url?"\nFetches: "+j.url:"");
+          var go=document.createElement("button"); goLink(go, j.list_url, "Open Connectors →");
+          ans.appendChild(document.createElement("br")); ans.appendChild(go);
+          if(tts.checked) speak("Created the "+j.name+" connector.");
+        }).catch(function(e){ ans.textContent="⚠ "+e; })
+        .finally(function(){ ask.disabled=false; q.focus(); });
+    }
+    // Routing: an explicit "doctype/table" word means a doctype (even "doctype WITH a
+    // connector" — the builder wires the connector field itself); else an explicit
+    // "connector/data source" word means a connector; else loose connect-intent ("connect to USGS…").
+    var EXPLICIT_CONNECTOR=/\b(connector|data ?source|connection|live ?feed|web ?service)\b/i;
     function run(text){
       if(!text.trim()) return; q.value="";
       if(CREATE_RE.test(text)){ buildDoctype(text); return; }
+      if(EXPLICIT_CONNECTOR.test(text)){ buildConnector(text); return; }
+      if(CONNECT_RE.test(text)){ buildConnector(text); return; }
       ans.textContent="…thinking"; ask.disabled=true;
       if(tts.checked && window.speechSynthesis){ try{ window.speechSynthesis.resume(); }catch(e){} }
       fetch("{% url 'hydrodesk:guide_query' %}", { method:"POST",
