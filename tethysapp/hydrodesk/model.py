@@ -204,6 +204,17 @@ class HydroComment(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class HydroDashboard(Base):
+    """A saved in-app dashboard: a named JSONB config of widgets (KPI / bar chart /
+    records table / map), each bound to a doctype + field. Rendered server-side on the
+    Dashboards page. Adding one is a pure INSERT, like a HydroType — no schema change."""
+    __tablename__ = 'hydro_dashboard'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, unique=True, nullable=False)
+    config = Column(JSONB, nullable=False, default=dict)        # {"widgets": [ {...}, ... ]}
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 def init_hydro_db(engine, first_time):
     """Tethys persistent-store initializer. Enables PostGIS, then creates the
     fixed schema (the geom column + its GiST index come from the geoalchemy2

@@ -11581,6 +11581,215 @@ def _schedule_form_context(mode, sched, errors, schedule_id=None, slugs=None):
             "schedules_url": reverse("hydrodesk:schedules")}
 
 
+# ---------------------------------------------------------------------------
+# Native in-app DASHBOARDS — saved grids of widgets (KPI / bar / table / map)
+# over the live doctype store. All server-rendered (SVG charts + Leaflet), so a
+# dashboard works offline and never needs TethysDash. A dashboard is one
+# hydro_dashboard row (JSONB config), like a HydroType — a pure INSERT.
+# ---------------------------------------------------------------------------
+_DASH_WIDGET_TYPES = ("kpi", "bar", "table", "map")
+_DASH_AGGS = ("count", "sum", "avg", "min", "max")
+
+
+def _dash_records(session, slug):
+    """All records of a doctype as attribute dicts."""
+    return [dict(a or {}) for a in session.execute(
+        select(m.HydroRecord.attributes)
+        .where(m.HydroRecord.hydrotype_slug == slug)).scalars().all()]
+
+
+def _dash_numbers(records, field):
+    """The numeric values of ``field`` across records (skips blanks/booleans)."""
+    return [float(r.get(field)) for r in records
+            if isinstance(r.get(field), (int, float)) and not isinstance(r.get(field), bool)]
+
+
+def _dashboard_widget_view(session, fs_cache, w):
+    """Compute one widget's render payload from its config dict. Returns a dict the
+    dashboard_view template renders (kpi value / bar svg / table rows / map geojson)."""
+    wtype = (w.get("type") or "kpi").lower()
+    slug = w.get("doctype") or ""
+    out = {"type": wtype, "title": w.get("title") or "", "doctype": slug,
+           "width": w.get("width") or "half", "error": ""}
+    meta = fs_cache.get(slug, False)
+    if meta is False:
+        meta = _load_hydrotype(session, slug)
+        fs_cache[slug] = meta
+    if meta is None:
+        out["error"] = "Doctype not found"
+        return out
+    dn, fs, gk = meta
+    out["doctype_name"] = dn
+    if wtype == "kpi":
+        recs = _dash_records(session, slug)
+        agg = (w.get("agg") or "count").lower()
+        val = len(recs) if agg == "count" else _report_agg(_dash_numbers(recs, w.get("field")), agg)
+        out["value"] = _fmt_stat(val)
+        out["sub"] = "%s%s · %d records" % (agg, ("" if agg == "count" else " of " + (w.get("field") or "")), len(recs))
+    elif wtype == "bar":
+        recs = _dash_records(session, slug)
+        field, group = w.get("field"), w.get("group_field")
+        if group:
+            buckets = {}
+            for r in recs:
+                v = r.get(field)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    buckets.setdefault(str(r.get(group) or "—"), []).append(float(v))
+            agg = (w.get("agg") or "sum").lower()
+            pairs = [(k, _report_agg(vs, agg)) for k, vs in buckets.items()]
+        else:
+            pairs = [(_label_for(fs, r) or "?", float(r.get(field))) for r in recs
+                     if isinstance(r.get(field), (int, float)) and not isinstance(r.get(field), bool)]
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        out["svg"] = _svg_hbar(pairs[:12]) if pairs else ""
+        if not pairs:
+            out["error"] = "No numeric data for '%s'" % (w.get("field") or "(field)")
+    elif wtype == "table":
+        recs = _dash_records(session, slug)
+        props = (fs or {}).get("properties") or {}
+        order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+        cols = []
+        for k in order:
+            p = props[k] or {}
+            if p.get("x-layout") or p.get("x-widget") in ("image", "table") or p.get("x-api-connector"):
+                continue
+            cols.append((k, p.get("title") or k))
+            if len(cols) >= 6:
+                break
+        out["columns"] = [t for _, t in cols]
+        out["rows"] = [[_diff_str(r.get(k)) for k, _ in cols] for r in recs[:20]]
+        out["row_total"] = len(recs)
+    elif wtype == "map":
+        out["geojson"] = json.dumps(_records_geojson(slug)).replace("<", "\\u003c")
+        out["title_field"] = (fs or {}).get("x-title-field") or ""
+    return out
+
+
+@controller(name="dashboards", url="dashboards", title="Dashboards")
+def dashboards(request):
+    """List saved dashboards; POST (builder-gated) creates one and opens its builder."""
+    if not getattr(request.user, "is_authenticated", False):
+        return _denied(request, "use", "Dashboards")
+    engine = App.get_persistent_store_database("hydro_db")
+    if request.method == "POST":
+        if not _can_build(request):
+            return _denied(request, "create", "Dashboards")
+        name = (request.POST.get("name") or "").strip()
+        if name:
+            with Session(engine) as session:
+                if session.execute(select(m.HydroDashboard.id)
+                                   .where(m.HydroDashboard.name == name)).first() is None:
+                    d = m.HydroDashboard(name=name, config={"widgets": []})
+                    session.add(d)
+                    session.commit()
+                    return redirect(reverse("hydrodesk:dashboard_edit", kwargs={"dash_id": str(d.id)}))
+        return redirect(reverse("hydrodesk:dashboards"))
+    with Session(engine) as session:
+        rows = [{"id": str(r.id), "name": r.name,
+                 "count": len((r.config or {}).get("widgets") or []),
+                 "view_url": reverse("hydrodesk:dashboard_view", kwargs={"dash_id": str(r.id)}),
+                 "edit_url": reverse("hydrodesk:dashboard_edit", kwargs={"dash_id": str(r.id)}),
+                 "delete_url": reverse("hydrodesk:dashboard_delete", kwargs={"dash_id": str(r.id)})}
+                for r in session.execute(
+                    select(m.HydroDashboard).order_by(m.HydroDashboard.name)).scalars().all()]
+    return render(request, "hydrodesk/dashboards.html",
+                  {"rows": rows, "record_count": len(rows), "can_build": _can_build(request)})
+
+
+@controller(name="dashboard_view", url="dashboard/{dash_id}", title="Dashboard")
+def dashboard_view(request, dash_id=None):
+    """Render a dashboard's widgets, computed live from the store."""
+    if not getattr(request.user, "is_authenticated", False):
+        return _denied(request, "use", "Dashboard")
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        d = session.execute(select(m.HydroDashboard)
+                            .where(m.HydroDashboard.id == dash_id)).scalar_one_or_none()
+        if d is None:
+            return redirect(reverse("hydrodesk:dashboards"))
+        fs_cache = {}
+        widgets = [_dashboard_widget_view(session, fs_cache, w)
+                   for w in ((d.config or {}).get("widgets") or [])]
+        name = d.name
+    return render(request, "hydrodesk/dashboard_view.html", {
+        "name": name, "dash_id": str(dash_id), "widgets": widgets,
+        "can_build": _can_build(request),
+        "edit_url": reverse("hydrodesk:dashboard_edit", kwargs={"dash_id": str(dash_id)}),
+        "dashboards_url": reverse("hydrodesk:dashboards")})
+
+
+@controller(name="dashboard_edit", url="dashboards/{dash_id}/edit", title="Edit Dashboard")
+def dashboard_edit(request, dash_id=None):
+    """Builder: add/remove widgets (builder-gated)."""
+    if not _can_build(request):
+        return _denied(request, "edit", "Dashboards")
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        d = session.execute(select(m.HydroDashboard)
+                            .where(m.HydroDashboard.id == dash_id)).scalar_one_or_none()
+        if d is None:
+            return redirect(reverse("hydrodesk:dashboards"))
+        if request.method == "POST":
+            cfg = dict(d.config or {})
+            widgets = list(cfg.get("widgets") or [])
+            action = request.POST.get("action")
+            if action == "add":
+                widgets.append({
+                    "type": (request.POST.get("type") or "kpi"),
+                    "title": (request.POST.get("title") or "").strip(),
+                    "doctype": request.POST.get("doctype") or "",
+                    "field": request.POST.get("field") or "",
+                    "agg": request.POST.get("agg") or "count",
+                    "group_field": request.POST.get("group_field") or "",
+                    "width": request.POST.get("width") or "half"})
+            elif action == "remove":
+                try:
+                    idx = int(request.POST.get("idx"))
+                    if 0 <= idx < len(widgets):
+                        widgets.pop(idx)
+                except (TypeError, ValueError):
+                    pass
+            cfg["widgets"] = widgets
+            d.config = cfg                       # reassign so the JSONB change is tracked
+            session.commit()
+            return redirect(reverse("hydrodesk:dashboard_edit", kwargs={"dash_id": str(dash_id)}))
+        name = d.name
+        widgets = [{"i": i, **w} for i, w in enumerate((d.config or {}).get("widgets") or [])]
+        slugs = _all_slugs(session)
+        fields_map = {}
+        for s in slugs:
+            meta = _load_hydrotype(session, s["slug"])
+            if not meta:
+                continue
+            _, fs, _ = meta
+            props = (fs or {}).get("properties") or {}
+            order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+            fields_map[s["slug"]] = [
+                {"key": k, "title": (props[k] or {}).get("title") or k,
+                 "num": (props[k] or {}).get("type") in ("number", "integer")}
+                for k in order if not (props[k] or {}).get("x-layout")]
+    return render(request, "hydrodesk/dashboard_edit.html", {
+        "name": name, "dash_id": str(dash_id), "widgets": widgets,
+        "doctypes": slugs, "fields_json": json.dumps(fields_map),
+        "widget_types": list(_DASH_WIDGET_TYPES), "aggs": list(_DASH_AGGS),
+        "view_url": reverse("hydrodesk:dashboard_view", kwargs={"dash_id": str(dash_id)}),
+        "dashboards_url": reverse("hydrodesk:dashboards")})
+
+
+@controller(name="dashboard_delete", url="dashboards/{dash_id}/delete", title="Delete Dashboard")
+def dashboard_delete(request, dash_id=None):
+    """POST: delete a dashboard (builder-gated)."""
+    if _can_build(request) and request.method == "POST":
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            d = session.execute(select(m.HydroDashboard)
+                                .where(m.HydroDashboard.id == dash_id)).scalar_one_or_none()
+            if d is not None:
+                session.delete(d)
+                session.commit()
+    return redirect(reverse("hydrodesk:dashboards"))
+
+
 def _visible_types():
     """SQLAlchemy WHERE clause excluding doctypes flagged ``x-hidden`` in their
     field_schema — a reversible 'hide from the UI' (the type + its records stay in the

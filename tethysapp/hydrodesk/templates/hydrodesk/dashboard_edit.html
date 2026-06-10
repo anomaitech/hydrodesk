@@ -1,0 +1,127 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Dashboard builder: list current widgets (remove) + add-widget form. The Field/Group
+   selects are populated from an embedded doctype->fields map as the doctype changes. #}
+{% block title %}Edit {{ name }} - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
+    <a href="{{ dashboards_url }}">Dashboards</a><span class="sep">/</span>{{ name }}<span class="sep">/</span>Edit
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">{{ name }}</h1>
+      <div class="frappe-sub-heading">Add or remove widgets</div>
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-primary btn-sm" href="{{ view_url }}">View dashboard &rarr;</a>
+    </div>
+  </div>
+
+  <style>
+    .hd-wtag { font-size:11px; padding:1px 8px; border-radius:10px; font-weight:600;
+               text-transform:uppercase; background:#e8f0fe; color:#1a56c4; }
+    .hd-wrow { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid #eef0f2; }
+    .hd-wrow:last-child { border-bottom:none; }
+    .hd-add-grid { display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+    .hd-add-grid > div { min-width:120px; }
+  </style>
+
+  <div class="frappe-form-card" style="margin-bottom:16px;">
+    <div class="frappe-section-head">Widgets ({{ widgets|length }})</div>
+    {% for w in widgets %}
+    <div class="hd-wrow">
+      <span class="hd-wtag">{{ w.type }}</span>
+      <strong>{{ w.title|default:w.doctype }}</strong>
+      <span class="frappe-muted frappe-text-sm">{{ w.doctype }}{% if w.field %} &middot; {{ w.field }}{% endif %}{% if w.agg and w.type != 'table' and w.type != 'map' %} &middot; {{ w.agg }}{% endif %}{% if w.group_field %} &middot; by {{ w.group_field }}{% endif %}</span>
+      <form method="post" style="margin-left:auto;">{% csrf_token %}
+        <input type="hidden" name="action" value="remove">
+        <input type="hidden" name="idx" value="{{ w.i }}">
+        <button class="btn btn-default btn-sm" style="color:#e24c4c;">Remove</button>
+      </form>
+    </div>
+    {% empty %}
+    <div class="frappe-muted frappe-text-sm">No widgets yet — add one below.</div>
+    {% endfor %}
+  </div>
+
+  <div class="frappe-form-card">
+    <div class="frappe-section-head">Add a widget</div>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="add">
+      <div class="hd-add-grid">
+        <div>
+          <label class="frappe-label">Type</label>
+          <select class="form-select" name="type" id="w-type">
+            {% for t in widget_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="frappe-label">Doctype</label>
+          <select class="form-select" name="doctype" id="w-doctype">
+            {% for d in doctypes %}<option value="{{ d.slug }}">{{ d.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div id="w-field-wrap">
+          <label class="frappe-label">Value field</label>
+          <select class="form-select" name="field" id="w-field"></select>
+        </div>
+        <div id="w-agg-wrap">
+          <label class="frappe-label">Aggregate</label>
+          <select class="form-select" name="agg" id="w-agg">
+            {% for a in aggs %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+          </select>
+        </div>
+        <div id="w-group-wrap">
+          <label class="frappe-label">Group by</label>
+          <select class="form-select" name="group_field" id="w-group"><option value="">(per record)</option></select>
+        </div>
+        <div style="flex:1;min-width:160px;">
+          <label class="frappe-label">Title</label>
+          <input class="form-control" name="title" placeholder="Widget title">
+        </div>
+        <div>
+          <label class="frappe-label">Width</label>
+          <select class="form-select" name="width">
+            <option value="half">Half</option><option value="full">Full</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-primary" type="submit" style="margin-top:14px;">+ Add widget</button>
+    </form>
+  </div>
+</div>
+
+<script>
+(function(){
+  var FIELDS = {{ fields_json|safe }};
+  var dt = document.getElementById('w-doctype'),
+      ft = document.getElementById('w-field'),
+      gp = document.getElementById('w-group'),
+      tp = document.getElementById('w-type');
+  function fill(){
+    var fs = FIELDS[dt.value] || [];
+    ft.innerHTML = '';
+    gp.innerHTML = '<option value="">(per record)</option>';
+    fs.forEach(function(f){
+      var o = document.createElement('option'); o.value = f.key;
+      o.textContent = f.title + (f.num ? '  (#)' : ''); ft.appendChild(o);
+      var o2 = document.createElement('option'); o2.value = f.key; o2.textContent = f.title; gp.appendChild(o2);
+    });
+    sync();
+  }
+  function sync(){
+    var t = tp.value, kpiBar = (t === 'kpi' || t === 'bar');
+    document.getElementById('w-field-wrap').style.display = kpiBar ? '' : 'none';
+    document.getElementById('w-agg-wrap').style.display = kpiBar ? '' : 'none';
+    document.getElementById('w-group-wrap').style.display = (t === 'bar') ? '' : 'none';
+  }
+  dt.addEventListener('change', fill);
+  tp.addEventListener('change', sync);
+  fill();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,86 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Render a dashboard's widgets (KPI / bar SVG / table / Leaflet map), computed live. #}
+{% block title %}{{ name }} - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
+    <a href="{{ dashboards_url }}">Dashboards</a><span class="sep">/</span>{{ name }}
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area"><h1 class="frappe-title">{{ name }}</h1></div>
+    <div class="frappe-page-actions">
+      {% if can_build %}<a class="btn btn-default btn-sm" href="{{ edit_url }}"><i class="bi bi-pencil"></i> Edit</a>{% endif %}
+    </div>
+  </div>
+
+  <style>
+    .hd-dash-grid { display:flex; flex-wrap:wrap; gap:16px; }
+    .hd-w { background:#fff; border:1px solid var(--fr-border,#e2e6ea); border-radius:10px; padding:16px; box-sizing:border-box; }
+    .hd-w.half { width:calc(50% - 8px); }
+    .hd-w.full { width:100%; }
+    .hd-w-title { font-weight:600; margin-bottom:10px; color:#344054; }
+    .hd-kpi-val { font-size:34px; font-weight:700; color:#1a56c4; line-height:1.1; }
+    .hd-kpi-sub { color:#667085; font-size:12px; margin-top:4px; text-transform:capitalize; }
+    .hd-w table { width:100%; border-collapse:collapse; font-size:13px; }
+    .hd-w th { text-align:left; color:#667085; font-weight:600; border-bottom:1px solid #eef0f2; padding:5px 8px; }
+    .hd-w td { padding:5px 8px; border-bottom:1px solid #f4f5f7; }
+    .hd-w-err { color:#b54708; font-size:13px; }
+    .hd-map { height:300px; border-radius:8px; border:1px solid var(--fr-border,#e2e6ea); }
+    @media (max-width:860px){ .hd-w.half{ width:100%; } }
+  </style>
+
+  {% if widgets %}
+  <div class="hd-dash-grid">
+    {% for w in widgets %}
+    <div class="hd-w {{ w.width }}{% if w.type == 'map' or w.type == 'table' %} full{% endif %}">
+      <div class="hd-w-title">{{ w.title|default:w.doctype_name }}</div>
+      {% if w.error %}
+        <div class="hd-w-err">{{ w.error }}</div>
+      {% elif w.type == 'kpi' %}
+        <div class="hd-kpi-val">{{ w.value }}</div>
+        <div class="hd-kpi-sub">{{ w.sub }}</div>
+      {% elif w.type == 'bar' %}
+        {{ w.svg }}
+      {% elif w.type == 'table' %}
+        <table>
+          <thead><tr>{% for c in w.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+          <tbody>{% for row in w.rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+        </table>
+        {% if w.row_total > 20 %}<div class="hd-kpi-sub">Showing 20 of {{ w.row_total }}</div>{% endif %}
+      {% elif w.type == 'map' %}
+        <div class="hd-map" data-geojson="{{ w.geojson }}" data-title-field="{{ w.title_field }}"></div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="frappe-form-card">
+    <div class="frappe-muted">This dashboard has no widgets yet.{% if can_build %} <a href="{{ edit_url }}">Add some &rarr;</a>{% endif %}</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if widgets %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+  if (typeof L === 'undefined') return;
+  document.querySelectorAll('.hd-map').forEach(function(el){
+    var gj; try { gj = JSON.parse(el.getAttribute('data-geojson')); } catch(e){ return; }
+    var tf = el.getAttribute('data-title-field') || '';
+    var map = L.map(el, { scrollWheelZoom:false }).setView([39.5,-111.5], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap'}).addTo(map);
+    var layer = L.geoJSON(gj, { onEachFeature: function(f, lyr){
+      var p = f.properties || {}; var t = p[tf] || p.name || p.id || '';
+      if (t) lyr.bindPopup(String(t));
+    }}).addTo(map);
+    try { var b = layer.getBounds(); if (b.isValid()) map.fitBounds(b.pad(0.2)); } catch(e){}
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

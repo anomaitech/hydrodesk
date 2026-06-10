@@ -1,0 +1,62 @@
+{% extends "hydrodesk/base_desk.html" %}
+{# Dashboards index: list saved dashboards + create a new one (builder-gated). #}
+{% block title %}Dashboards - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page">
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Dashboards
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Dashboards</h1>
+      <div class="frappe-sub-heading">{{ record_count }} dashboard{{ record_count|pluralize }}
+        &middot; KPI cards, charts, tables &amp; maps over your live data</div>
+    </div>
+  </div>
+
+  {% if can_build %}
+  <div class="frappe-form-card" style="margin-bottom:16px;">
+    <form method="post" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+      {% csrf_token %}
+      <div style="flex:1;min-width:240px;">
+        <label class="frappe-label">New dashboard</label>
+        <input class="form-control" name="name" placeholder="e.g. Flood Operations" required>
+      </div>
+      <button class="btn btn-primary" type="submit">+ Create dashboard</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="frappe-form-card">
+    {% if rows %}
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="text-align:left;color:#667085;border-bottom:1px solid #eef0f2;">
+        <th style="padding:8px;">Name</th><th style="padding:8px;">Widgets</th>
+        <th style="padding:8px;text-align:right;">Actions</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr style="border-bottom:1px solid #f4f5f7;">
+          <td style="padding:8px;"><a href="{{ r.view_url }}" style="font-weight:600;">{{ r.name }}</a></td>
+          <td style="padding:8px;">{{ r.count }}</td>
+          <td style="padding:8px;text-align:right;">
+            <a class="btn btn-default btn-sm" href="{{ r.view_url }}">View</a>
+            {% if can_build %}
+            <a class="btn btn-default btn-sm" href="{{ r.edit_url }}">Edit</a>
+            <form method="post" action="{{ r.delete_url }}" style="display:inline;"
+                  onsubmit="return confirm('Delete this dashboard?');">{% csrf_token %}
+              <button class="btn btn-default btn-sm" style="color:#e24c4c;">Delete</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="frappe-muted">No dashboards yet.{% if can_build %} Create one above.{% endif %}</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

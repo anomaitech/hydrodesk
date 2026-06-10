@@ -50,6 +50,11 @@
     </a>
   </li>
   <li class="nav-item">
+    <a class="nav-link{% block nav_active_dashboards %}{% endblock %}" href="{% url 'hydrodesk:dashboards' %}">
+      <span class="frappe-sidebar-ico">&#9638;</span> Dashboards
+    </a>
+  </li>
+  <li class="nav-item">
     <a class="nav-link{% block nav_active_ai %}{% endblock %}" href="{% url 'hydrodesk:ai_chat' %}">
       <span class="frappe-sidebar-ico">&#9728;</span> Chat with data
     </a>
