@@ -10595,14 +10595,15 @@ def _td_primary_metric(num_fields):
 # Visualization vocabulary for the no-code mapper: each field/output is mapped to
 # ONE of these. The UI offers only the choices that make sense for a field's kind.
 _TD_VIZ_LABELS = {
-    "select": "Record selector (dropdown)",
-    "kpi":    "KPI number card",
-    "bar":    "Bar chart across records",
-    "line":   "Line chart across records",
-    "map":    "Map (record locations)",
-    "image":  "Image / map picture",
-    "table":  "Data table",
-    "ignore": "— don't show —",
+    "select":  "Record selector (dropdown)",
+    "kpi":     "KPI number card",
+    "bar":     "Bar chart across records",
+    "line":    "Line chart across records",
+    "map":     "Map (record locations)",
+    "image":   "Image / map picture",
+    "table":   "Data table (this record's rows)",
+    "records": "Column in records table",
+    "ignore":  "— don't show —",
 }
 
 
@@ -10621,16 +10622,18 @@ def _td_field_kind(prop):
 
 
 def _td_viz_options(kind, is_title):
-    """The visualizations a field of this kind may be mapped to (first = default)."""
+    """The visualizations a field of this kind may be mapped to (first = default).
+    Any scalar field (number or plain text) can also be a column in the records table —
+    the dataset-level view that mirrors the Data API record list."""
     if kind == "number":
-        return ["kpi", "bar", "line", "ignore"]
+        return ["kpi", "bar", "line", "records", "ignore"]
     if kind == "image":
         return ["image", "ignore"]
     if kind == "table":
         return ["table", "ignore"]
     if is_title:
-        return ["select", "ignore"]
-    return ["ignore"]
+        return ["select", "records", "ignore"]
+    return ["records", "ignore"]
 
 
 def _td_order_props(field_schema):
@@ -10664,19 +10667,31 @@ def _td_default_picks(field_schema, geometry_kind):
     title_key = _td_title_key(field_schema, order, props)
     picks = {}
     for k in order:
-        kind = _td_field_kind(props[k] or {})
+        prop = props[k] or {}
+        kind = _td_field_kind(prop)
         if kind == "layout":
             continue
         if k == title_key:
             picks[k] = "select"
         elif kind == "number":
-            picks[k] = "bar" if k == primary else "kpi"
+            # Computed metrics get KPI/chart; raw input numbers go to the records table.
+            if k == primary:
+                picks[k] = "bar"
+            elif prop.get("x-computed"):
+                picks[k] = "kpi"
+            else:
+                picks[k] = "records"
         elif kind == "image":
             picks[k] = "image"
         elif kind == "table":
             picks[k] = "table"
-        else:
+        elif prop.get("x-api-connector"):
+            # Live connector field: a records column would re-fetch per record, so keep
+            # it off by default (still selectable as a column).
             picks[k] = "ignore"
+        else:
+            # Descriptive text columns go to the records table by default.
+            picks[k] = "records"
     if geometry_kind in ("point", "line", "polygon"):
         picks["__geom__"] = "map"
     return picks
@@ -10787,6 +10802,7 @@ def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_ur
     line_fields = [k for k in order if picks.get(k) == "line"]
     image_fields = [k for k in order if picks.get(k) == "image"]
     table_fields = [k for k in order if picks.get(k) == "table"]
+    records_fields = [k for k in order if picks.get(k) == "records"]
     select_key = next((k for k in order if picks.get(k) == "select"), None)
     geom_on = (geometry_kind in ("point", "line", "polygon")
                and picks.get("__geom__") == "map")
@@ -10828,6 +10844,12 @@ def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_ur
         add(0, y, 100, 18, "hydrodesk_scenario_map", {**base, "metric": metric},
             "locations map" + (" (points sized by %s)" % metric if metric else ""))
         y += 18
+
+    if records_fields:
+        add(0, y, 100, 16, "hydrodesk_records_table",
+            {**base, "fields": ",".join(records_fields), "limit": 200},
+            "records table (every record; columns: name, " + ", ".join(records_fields) + ")")
+        y += 16
 
     for j in range(max(len(image_fields), len(table_fields))):
         if j < len(image_fields):
