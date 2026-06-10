@@ -46,6 +46,12 @@
     {% else %}
       <div class="frappe-help">No read token set, so the API is open only to logged-in users with read permission. To let an external app pull data, create a credential named <code>api_read_token</code> under <a href="{{ credentials_url }}">Credentials</a> — its secret becomes the API token.</div>
     {% endif %}
+    <div class="frappe-help" style="margin-top:10px;border-top:1px solid var(--fr-border,#eef0f2);padding-top:10px;">
+      <strong>OGC API - Features:</strong> every spatial doctype is also served as a standards-based
+      collection (GeoJSON) that QGIS / ArcGIS / OpenLayers can consume directly &mdash;
+      <a href="{% url 'hydrodesk:ogc_landing' %}" target="_blank"><code>/ogc</code></a>
+      (uses the same read token).
+    </div>
   </div>
 
   <div class="hd-api-grid">

@@ -4853,6 +4853,189 @@ def _connector_series_columns(cfg, output_name=None):
     return []
 
 
+# ---------------------------------------------------------------------------
+# OGC API - Features (Part 1: Core) — a standards facade over the store. Each
+# SPATIAL doctype is a "collection"; its records are GeoJSON features. Lets any
+# OGC-Features client (QGIS, OpenLayers, ArcGIS, ...) consume HydroDesk data.
+# Read-gated identically to the Data API (login OR the api_read_token).
+# ---------------------------------------------------------------------------
+def _ogc_base(request):
+    return request.build_absolute_uri(reverse("hydrodesk:ogc_landing")).rstrip("/")
+
+
+def _ogc_spatial_types(session):
+    """Visible doctypes that are spatial (point/line/polygon) — the OGC collections."""
+    return [t for t in session.execute(
+        select(m.HydroType).where(_visible_types())
+        .order_by(m.HydroType.display_name)).scalars().all()
+        if (t.geometry_kind or "") in ("point", "line", "polygon")]
+
+
+def _ogc_collection_obj(t, base):
+    cid = t.slug
+    return {
+        "id": cid, "title": t.display_name, "itemType": "feature",
+        "crs": ["http://www.opengis.net/def/crs/OGC/1.3/CRS84"],
+        "links": [
+            {"rel": "self", "type": "application/json", "href": "%s/collections/%s" % (base, cid)},
+            {"rel": "items", "type": "application/geo+json",
+             "href": "%s/collections/%s/items" % (base, cid)},
+        ],
+    }
+
+
+def _coords_extent(geom):
+    """(minx, miny, maxx, maxy) over all coordinates of a GeoJSON geometry, or None."""
+    xs, ys = [], []
+
+    def walk(c):
+        if (isinstance(c, list) and len(c) >= 2
+                and all(isinstance(n, (int, float)) for n in c[:2])):
+            xs.append(c[0])
+            ys.append(c[1])
+        elif isinstance(c, list):
+            for e in c:
+                walk(e)
+    walk((geom or {}).get("coordinates"))
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+
+@controller(name="ogc_landing", url="ogc", title="OGC API", login_required=False)
+def ogc_landing(request):
+    base = _ogc_base(request)
+    return JsonResponse({
+        "title": "HydroDesk — OGC API - Features",
+        "description": "Spatial doctypes served as OGC API - Features collections (GeoJSON).",
+        "links": [
+            {"rel": "self", "type": "application/json", "href": base, "title": "This document"},
+            {"rel": "conformance", "type": "application/json", "href": base + "/conformance"},
+            {"rel": "data", "type": "application/json", "href": base + "/collections",
+             "title": "Collections"},
+        ],
+    })
+
+
+@controller(name="ogc_conformance", url="ogc/conformance", title="OGC conformance",
+            login_required=False)
+def ogc_conformance(request):
+    return JsonResponse({"conformsTo": [
+        "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core",
+        "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/geojson",
+    ]})
+
+
+@controller(name="ogc_collections", url="ogc/collections", title="OGC collections",
+            login_required=False)
+def ogc_collections(request):
+    base = _ogc_base(request)
+    engine = App.get_persistent_store_database("hydro_db")
+    cols = []
+    with Session(engine) as session:
+        for t in _ogc_spatial_types(session):
+            if _api_authorized(request, t.field_schema):
+                cols.append(_ogc_collection_obj(t, base))
+    return JsonResponse({
+        "links": [{"rel": "self", "type": "application/json", "href": base + "/collections"}],
+        "collections": cols,
+    })
+
+
+@controller(name="ogc_collection", url="ogc/collections/{slug}", title="OGC collection",
+            login_required=False)
+def ogc_collection(request, slug=None):
+    base = _ogc_base(request)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        t = session.execute(select(m.HydroType)
+                            .where(m.HydroType.slug == slug)).scalar_one_or_none()
+        if t is None or (t.geometry_kind or "") not in ("point", "line", "polygon"):
+            return JsonResponse({"code": "NotFound", "description": "no such collection"}, status=404)
+        if not _api_authorized(request, t.field_schema):
+            return JsonResponse({"code": "Unauthorized", "description": "read access denied"}, status=401)
+        return JsonResponse(_ogc_collection_obj(t, base))
+
+
+@controller(name="ogc_items", url="ogc/collections/{slug}/items", title="OGC items",
+            login_required=False)
+def ogc_items(request, slug=None):
+    base = _ogc_base(request)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        t = session.execute(select(m.HydroType)
+                            .where(m.HydroType.slug == slug)).scalar_one_or_none()
+        if t is None or (t.geometry_kind or "") not in ("point", "line", "polygon"):
+            return JsonResponse({"code": "NotFound", "description": "no such collection"}, status=404)
+        if not _api_authorized(request, t.field_schema):
+            return JsonResponse({"code": "Unauthorized", "description": "read access denied"}, status=401)
+    feats = _records_geojson(slug)["features"]
+    for f in feats:
+        f["id"] = (f.get("properties") or {}).get("id")
+    bbox = (request.GET.get("bbox") or "").strip()
+    if bbox:
+        try:
+            mnx, mny, mxx, mxy = [float(x) for x in bbox.split(",")[:4]]
+            kept = []
+            for f in feats:
+                ext = _coords_extent(f.get("geometry"))
+                if ext and not (ext[2] < mnx or ext[0] > mxx or ext[3] < mny or ext[1] > mxy):
+                    kept.append(f)
+            feats = kept
+        except (ValueError, TypeError):
+            pass
+    matched = len(feats)
+    try:
+        limit = max(1, min(10000, int(request.GET.get("limit") or 1000)))
+    except (TypeError, ValueError):
+        limit = 1000
+    try:
+        offset = max(0, int(request.GET.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    page = feats[offset:offset + limit]
+    return JsonResponse({
+        "type": "FeatureCollection", "features": page,
+        "numberMatched": matched, "numberReturned": len(page),
+        "links": [
+            {"rel": "self", "type": "application/geo+json",
+             "href": "%s/collections/%s/items" % (base, slug)},
+            {"rel": "collection", "type": "application/json",
+             "href": "%s/collections/%s" % (base, slug)},
+        ],
+    }, content_type="application/geo+json")
+
+
+@controller(name="ogc_item", url="ogc/collections/{slug}/items/{item_id}",
+            title="OGC item", login_required=False)
+def ogc_item(request, slug=None, item_id=None):
+    base = _ogc_base(request)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        t = session.execute(select(m.HydroType)
+                            .where(m.HydroType.slug == slug)).scalar_one_or_none()
+        if t is None or (t.geometry_kind or "") not in ("point", "line", "polygon"):
+            return JsonResponse({"code": "NotFound", "description": "no such collection"}, status=404)
+        if not _api_authorized(request, t.field_schema):
+            return JsonResponse({"code": "Unauthorized", "description": "read access denied"}, status=401)
+        row = session.execute(
+            select(m.HydroRecord.attributes, func.ST_AsGeoJSON(m.HydroRecord.geom))
+            .where(m.HydroRecord.id == item_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).first()
+    if row is None or row[1] is None:
+        return JsonResponse({"code": "NotFound", "description": "no such feature"}, status=404)
+    props = dict(row[0] or {})
+    props["id"] = str(item_id)
+    return JsonResponse({
+        "type": "Feature", "id": str(item_id),
+        "geometry": json.loads(row[1]), "properties": props,
+        "links": [
+            {"rel": "self", "type": "application/geo+json",
+             "href": "%s/collections/%s/items/%s" % (base, slug, item_id)},
+            {"rel": "collection", "type": "application/json",
+             "href": "%s/collections/%s" % (base, slug)},
+        ],
+    }, content_type="application/geo+json")
+
+
 @controller(name="api_records", url="api/{slug}/records", title="Records API",
             login_required=False)
 def api_records(request, slug=None):
