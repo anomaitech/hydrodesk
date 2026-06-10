@@ -2425,7 +2425,10 @@ def _read_csv_columns(url, delimiter=",", has_header=True, timeout=15, max_rows=
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8-sig", "replace")
     else:
-        with open(url, "r", encoding="utf-8-sig", errors="replace", newline="") as fh:
+        # A local path: undo the URL-encoding _render_template applies to {field} tokens
+        # (it targets URLs), so a path like /run/outputs opens instead of %2Frun%2F….
+        from urllib.parse import unquote
+        with open(unquote(url), "r", encoding="utf-8-sig", errors="replace", newline="") as fh:
             text = fh.read()
     reader = _csvmod.reader(io.StringIO(text), delimiter=(delimiter or ","),
                             skipinitialspace=True)
@@ -2509,11 +2512,27 @@ def _fetch_csv(cfg, record_attrs, output=None, field_map=None,
         return {"kind": "value", "value": latest, "url": url, "cached": cached}
 
     n = max((len(c["values"]) for c in cols), default=0)
-    xs = cols[0]["values"] if cols else []
-    yi = next((i for i, c in enumerate(cols)
-               if (c["name"] or "").lower() in ("value", "y")),
-              1 if len(cols) > 1 else 0)
-    ys = cols[yi]["values"] if cols else []
+
+    def _pick(spec, default_idx):
+        """Choose a column by cfg x_col/y_col — a 0-based index (incl. negative) or a
+        column name — else the default index. Lets header-less CSVs (e.g. a NextGen
+        nexus output: index,time,flow) map time->x and flow->y."""
+        if cols and spec not in (None, ""):
+            s = str(spec).strip()
+            if s.lstrip("-").isdigit():
+                idx = int(s)
+                if -len(cols) <= idx < len(cols):
+                    return cols[idx]
+            named = next((c for c in cols if (c.get("name") or "") == s), None)
+            if named is not None:
+                return named
+        return cols[default_idx] if cols and -len(cols) <= default_idx < len(cols) else (cols[0] if cols else {})
+
+    yi_default = next((i for i, c in enumerate(cols)
+                       if (c.get("name") or "").lower() in ("value", "y")),
+                      1 if len(cols) > 1 else 0)
+    xs = _pick(cfg.get("x_col"), 0).get("values", []) if cols else []
+    ys = _pick(cfg.get("y_col"), yi_default).get("values", []) if cols else []
     return {"kind": "series", "columns": cols, "n": n, "x": xs, "y": ys,
             "url": url, "cached": cached, "truncated": truncated}
 
@@ -3355,6 +3374,27 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
 # Each prefills a connector config for the builder; auth-less for the public
 # water APIs. Keys mirror HydroConnector.config exactly. ---
 CONNECTOR_PRESETS = {
+    "nextgen_nexus": {
+        "label": "NextGen / NGIAB — Nexus streamflow output",
+        "config": {
+            "kind": "csv",
+            "csv_url": "{ngen_output_dir}/nex-{nexus_id}_output.csv",
+            "has_header": False,     # ngen nexus CSV: index, ISO time, flow (m3/s) — no header
+            "x_col": 1,              # ISO timestamp column
+            "y_col": 2,              # streamflow (m3/s)
+            "result_kind": "series",
+            "method": "GET", "headers": {}, "query": {},
+            "auth": {"scheme": "none", "credential": "", "placement": "header", "param": ""},
+            "inputs": [
+                {"name": "ngen_output_dir", "label": "NextGen output dir or base URL",
+                 "type": "string", "source": "field", "field": "ngen_output_dir",
+                 "value": "", "default": "", "required": True, "in": "url"},
+                {"name": "nexus_id", "label": "Nexus ID", "type": "string",
+                 "source": "field", "field": "nexus_id", "value": "",
+                 "default": "1", "required": True, "in": "url"},
+            ],
+        },
+    },
     "nwis_iv": {
         "label": "USGS NWIS — Instantaneous Values",
         "config": {
