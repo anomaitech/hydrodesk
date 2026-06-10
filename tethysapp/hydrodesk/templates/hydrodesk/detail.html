@@ -54,6 +54,25 @@
     Hydrotype: <code>{{ slug }}</code> &middot; ID: <code>{{ record_id }}</code>
   </div>
 
+  {% if record_found and wf_has %}
+  <div class="frappe-form-card" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span class="frappe-muted frappe-text-sm">Status</span>
+    <span style="font-size:13px;padding:2px 12px;border-radius:12px;font-weight:600;background:#e8f0fe;color:#1a56c4;">{{ wf_status|default:"&mdash;" }}</span>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      {% for tr in wf_transitions %}
+      <form method="post" action="{{ tr.url }}" style="display:inline;">{% csrf_token %}
+        <button type="submit" class="btn btn-primary btn-sm">{{ tr.label }}{% if tr.role == 'staff' %} &#128274;{% endif %}</button>
+      </form>
+      {% empty %}
+      <span class="frappe-muted frappe-text-sm">No actions available from &ldquo;{{ wf_status }}&rdquo;.</span>
+      {% endfor %}
+    </div>
+    {% if can_build %}<a class="frappe-text-sm" href="{{ wf_edit_url }}" style="margin-left:auto;">Configure workflow</a>{% endif %}
+  </div>
+  {% elif record_found and can_build %}
+  <div style="margin-bottom:14px;"><a class="frappe-text-sm" href="{{ wf_edit_url }}">+ Set up an approval workflow</a></div>
+  {% endif %}
+
   {% if not record_found %}
     <div class="alert alert-warning" role="alert">
       No record <code>{{ record_id }}</code> was found for hydrotype
@@ -127,6 +146,22 @@
     .hd-comment-del { border:none; background:none; color:#b94a48; cursor:pointer; font-size:16px; line-height:1; }
     .hd-comment-form { margin-top:12px; }
   </style>
+
+  {% if wf_log %}
+  <div class="frappe-form-card" style="margin-top:16px;">
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Workflow history</div>
+      {% for a in wf_log %}
+      <div class="hd-rev" style="display:flex;align-items:center;gap:8px;">
+        <span class="frappe-text-sm">{{ a.from|default:"(start)" }}</span>
+        <span class="hd-diff-arrow">&rarr;</span>
+        <span style="font-weight:600;">{{ a.to }}</span>
+        <span class="frappe-muted frappe-text-sm" style="margin-left:auto;">{{ a.when|date:"Y-m-d H:i" }} &middot; {{ a.actor }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   {# History — revision timeline with field-level diffs + Restore #}
   <div class="frappe-form-card" style="margin-top:16px;">

@@ -6886,6 +6886,45 @@ def _revision_diff(prev_attrs, curr_attrs):
     return out
 
 
+def _workflow_def(field_schema):
+    """The approval-workflow definition for a doctype, or None. Lives in
+    field_schema['x-workflow'] = {field:<status select field>, transitions:[...]}."""
+    wf = (field_schema or {}).get("x-workflow")
+    return wf if isinstance(wf, dict) and wf.get("field") else None
+
+
+def _workflow_states(field_schema, wf):
+    """Ordered states = the enum of the workflow's status field."""
+    props = (field_schema or {}).get("properties") or {}
+    p = props.get((wf or {}).get("field")) or {}
+    return [str(x) for x in (p.get("enum") or [])]
+
+
+def _record_status(field_schema, wf, attrs):
+    """A record's current workflow state — its status field's value, else the first state."""
+    states = _workflow_states(field_schema, wf)
+    v = (attrs or {}).get((wf or {}).get("field"))
+    return v if v in states else (states[0] if states else "")
+
+
+def _allowed_transitions(field_schema, wf, attrs, request):
+    """Transitions available FROM the record's current state for THIS user (role-gated)."""
+    cur = _record_status(field_schema, wf, attrs)
+    staff = bool(getattr(request.user, "is_staff", False)
+                 or getattr(request.user, "is_superuser", False))
+    can_write = _user_can(request, field_schema, "write")
+    out = []
+    for i, t in enumerate((wf or {}).get("transitions") or []):
+        if t.get("from") != cur or not can_write:
+            continue
+        if (t.get("role") or "any").lower() == "staff" and not staff:
+            continue
+        out.append({"i": i, "to": t.get("to"),
+                    "label": t.get("label") or ("→ " + str(t.get("to"))),
+                    "role": (t.get("role") or "any").lower()})
+    return out
+
+
 @controller(name="new", url="new/{slug}", title="New Record")
 def hydrotype_new(request, slug="monitoring_station"):
     """Generic auto-form for creating a HydroRecord of one HydroType.
@@ -8433,6 +8472,118 @@ def comment_delete(request, slug=None, record_id=None, comment_id=None):
     return redirect(detail)
 
 
+@controller(name="record_transition", url="record/{slug}/{record_id}/transition/{tindex}",
+            title="Workflow transition")
+def record_transition(request, slug=None, record_id=None, tindex=None):
+    """POST: move a record along an approval-workflow transition. Validates the current
+    state + role, sets the status field, logs WorkflowAuditLog, and snapshots a revision."""
+    detail = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST":
+        return redirect(detail)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(detail)
+        dn, fs, gk = meta
+        wf = _workflow_def(fs)
+        if wf is None:
+            return redirect(detail)
+        if not _user_can(request, fs, "write"):
+            return _denied(request, "edit", dn)
+        rec = session.execute(
+            select(m.HydroRecord)
+            .where(m.HydroRecord.id == record_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalar_one_or_none()
+        if rec is None:
+            return redirect(detail)
+        try:
+            ti = int(tindex)
+        except (TypeError, ValueError):
+            return redirect(detail)
+        trans = wf.get("transitions") or []
+        if not (0 <= ti < len(trans)):
+            return redirect(detail)
+        t = trans[ti]
+        cur = _record_status(fs, wf, rec.attributes)
+        if t.get("from") != cur:                      # stale / not valid from here
+            return redirect(detail)
+        staff = bool(getattr(request.user, "is_staff", False)
+                     or getattr(request.user, "is_superuser", False))
+        if (t.get("role") or "any").lower() == "staff" and not staff:
+            return _denied(request, "perform this transition for", dn)
+        attrs = dict(rec.attributes or {})
+        attrs[wf["field"]] = t.get("to")
+        rec.attributes = attrs
+        session.add(m.WorkflowAuditLog(
+            record_id=record_id, from_state=cur, to_state=t.get("to"),
+            actor=getattr(request.user, "username", None)))
+        _snapshot_revision(session, rec.id, slug, attrs, rec.geom, "update",
+                           getattr(request.user, "username", None))
+        session.commit()
+    return redirect(detail)
+
+
+@controller(name="workflow_edit", url="workflow/{slug}", title="Workflow")
+def workflow_edit(request, slug=None):
+    """Define a doctype's approval workflow: pick a Select field as the status, then add
+    role-gated transitions between its states. Builder-gated. Stored in x-workflow."""
+    if not _can_build(request):
+        return _denied(request, "edit", "Workflow")
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(reverse("hydrodesk:doctypes"))
+        dn, fs, gk = meta
+        ht = session.execute(select(m.HydroType)
+                             .where(m.HydroType.slug == slug)).scalar_one()
+        if request.method == "POST":
+            action = request.POST.get("action")
+            wf = dict((fs or {}).get("x-workflow") or {})
+            trans = list(wf.get("transitions") or [])
+            new_fs = dict(fs or {})
+            if action == "set_field":
+                field = request.POST.get("field") or ""
+                if field:
+                    keep = trans if wf.get("field") == field else []
+                    new_fs["x-workflow"] = {"field": field, "transitions": keep}
+                else:
+                    new_fs.pop("x-workflow", None)
+            elif action == "add_transition" and wf.get("field"):
+                trans.append({"from": request.POST.get("from") or "",
+                              "to": request.POST.get("to") or "",
+                              "label": (request.POST.get("label") or "").strip(),
+                              "role": request.POST.get("role") or "any"})
+                new_fs["x-workflow"] = {"field": wf["field"], "transitions": trans}
+            elif action == "remove_transition" and wf.get("field"):
+                try:
+                    idx = int(request.POST.get("idx"))
+                    if 0 <= idx < len(trans):
+                        trans.pop(idx)
+                except (TypeError, ValueError):
+                    pass
+                new_fs["x-workflow"] = {"field": wf["field"], "transitions": trans}
+            ht.field_schema = new_fs                  # reassign so the JSONB change is tracked
+            session.commit()
+            return redirect(reverse("hydrodesk:workflow_edit", kwargs={"slug": slug}))
+
+        wf = _workflow_def(fs)
+        props = (fs or {}).get("properties") or {}
+        order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+        select_fields = [
+            {"key": k, "title": (props[k] or {}).get("title") or k,
+             "states": [str(x) for x in ((props[k] or {}).get("enum") or [])]}
+            for k in order if (props[k] or {}).get("enum")]
+        states = _workflow_states(fs, wf) if wf else []
+        transitions = [{"i": i, **t} for i, t in enumerate((wf or {}).get("transitions") or [])]
+    return render(request, "hydrodesk/workflow_edit.html", {
+        "slug": slug, "display_name": dn,
+        "wf_field": (wf or {}).get("field") or "",
+        "select_fields": select_fields, "states": states, "transitions": transitions,
+        "list_url": reverse("hydrodesk:list", kwargs={"slug": slug})})
+
+
 @controller(name="detail", url="record/{slug}/{record_id}", title="Record")
 def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     """Read-style detail view for one HydroRecord: a definition list of its
@@ -8448,6 +8599,10 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     geom_geojson = None
     revisions = []
     comments = []
+    wf_field = ""
+    wf_status = ""
+    wf_transitions = []
+    wf_log = []
 
     with Session(engine) as session:
         meta = _load_hydrotype(session, slug)
@@ -8556,6 +8711,22 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
                         "slug": slug, "record_id": record_id, "comment_id": str(c.id)}),
                 })
 
+            # Workflow: current state, the transitions this user may take, + audit log.
+            wf = _workflow_def(field_schema)
+            if wf:
+                wf_field = wf.get("field") or ""
+                wf_status = _record_status(field_schema, wf, attributes)
+                for tr in _allowed_transitions(field_schema, wf, attributes, request):
+                    tr["url"] = reverse("hydrodesk:record_transition", kwargs={
+                        "slug": slug, "record_id": record_id, "tindex": tr["i"]})
+                    wf_transitions.append(tr)
+                for a in session.execute(
+                        select(m.WorkflowAuditLog)
+                        .where(m.WorkflowAuditLog.record_id == record_id)
+                        .order_by(m.WorkflowAuditLog.at.desc())).scalars().all():
+                    wf_log.append({"from": a.from_state, "to": a.to_state,
+                                   "actor": a.actor or "system", "when": a.at})
+
     has_geom = lon is not None and lat is not None
     # The record's human TITLE (designated title field / name / first field), shown
     # as the detail H1 instead of a bare UUID. Falls back to a short id.
@@ -8591,6 +8762,14 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         "can_comment": bool(getattr(request.user, "is_authenticated", False)),
         "comment_add_url": reverse("hydrodesk:comment_add",
                                    kwargs={"slug": slug, "record_id": record_id}),
+        # Approval workflow
+        "wf_has": bool(wf_field),
+        "wf_field": wf_field,
+        "wf_status": wf_status,
+        "wf_transitions": wf_transitions,
+        "wf_log": wf_log,
+        "can_build": _can_build(request),
+        "wf_edit_url": reverse("hydrodesk:workflow_edit", kwargs={"slug": slug}),
     }
     return render(request, "hydrodesk/detail.html", context)
 
