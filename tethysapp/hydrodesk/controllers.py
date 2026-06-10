@@ -10661,6 +10661,7 @@ _TD_VIZ_LABELS = {
     "pie":       "Pie / donut (share by record)",
     "histogram": "Histogram (value distribution)",
     "box":       "Box plot (value spread)",
+    "series":    "Time-series chart (line over time)",
     "map":       "Map (record locations)",
     "image":     "Image / map picture",
     "table":     "Data table (this record's rows)",
@@ -10687,7 +10688,7 @@ def _td_field_kind(prop):
         outs = p.get("x-api-outputs") or []
         if any(isinstance(o, dict) and (o.get("field_type") or "") == "Time-Series"
                for o in outs):
-            return "table"        # live Time-Series connector -> a table tile of its rows
+            return "series"       # live Time-Series connector -> a series chart (or table)
         return "connector"        # live value/string connector -> a records-table column
     if p.get("type") == "number":
         return "number"
@@ -10703,7 +10704,9 @@ def _td_viz_options(kind, is_title):
                 "histogram", "box", "records", "ignore"]
     if kind == "image":
         return ["image", "ignore"]
-    if kind == "table":            # inline table OR a live Time-Series connector
+    if kind == "series":           # a live Time-Series connector
+        return ["series", "table", "records", "ignore"]
+    if kind == "table":            # an inline table field
         return ["table", "records", "ignore"]
     if kind == "connector":        # a live value/string connector
         return ["records", "ignore"]
@@ -10759,8 +10762,11 @@ def _td_default_picks(field_schema, geometry_kind):
                 picks[k] = "records"
         elif kind == "image":
             picks[k] = "image"
+        elif kind == "series":
+            # A live Time-Series connector -> a time-series chart by default.
+            picks[k] = "series"
         elif kind == "table":
-            # Inline table OR a live Time-Series connector -> its own table tile.
+            # An inline table field -> its own table tile.
             picks[k] = "table"
         elif kind == "connector":
             # A live value connector (e.g. a gage reading) -> a records-table column,
@@ -10832,8 +10838,9 @@ def _td_field_catalog(field_schema, geometry_kind, picks, sample_attrs):
         # Connector fields aren't stored, so a stored-attr sample is blank — show that
         # they're fetched live (and whether as a series or a value) instead.
         if prop.get("x-api-connector"):
-            sample = "[live series]" if kind == "table" else "[live value]"
-            kind_label = "connector (live %s)" % ("series" if kind == "table" else "value")
+            is_series = kind in ("series", "table")
+            sample = "[live series]" if is_series else "[live value]"
+            kind_label = "connector (live %s)" % ("series" if is_series else "value")
         else:
             sample = _td_sample_str(sample_attrs.get(k))
             kind_label = kind
@@ -10885,6 +10892,7 @@ def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_ur
     kpi_fields = [k for k in order if picks.get(k) == "kpi"]
     # Any chart-type pick (bar/line/scatter/area/pie/histogram/box) -> a chart tile.
     chart_fields = [(picks[k], k) for k in order if picks.get(k) in _TD_CHART_TYPES]
+    series_fields = [k for k in order if picks.get(k) == "series"]
     image_fields = [k for k in order if picks.get(k) == "image"]
     table_fields = [k for k in order if picks.get(k) == "table"]
     records_fields = [k for k in order if picks.get(k) == "records"]
@@ -10919,6 +10927,21 @@ def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_ur
             add(j * 50, y, w, 18, "hydrodesk_loss_chart",
                 {**base, "metric": f, "chart_type": ct},
                 "%s chart of %s across records" % (ct, f))
+        y += 18
+        i += 2
+
+    # Per-record live Time-Series (e.g. a station's daily temperature) -> line charts
+    # that follow the record dropdown.
+    i = 0
+    while i < len(series_fields):
+        rowf = series_fields[i:i + 2]
+        for j, f in enumerate(rowf):
+            w = 50 if len(rowf) == 2 else 100
+            a = {**base, "series_field": f, "chart_type": "line"}
+            if scen:
+                a["scenario"] = scen
+            add(j * 50, y, w, 18, "hydrodesk_series_chart", a,
+                "time-series line of %s%s" % (f, " (follows the dropdown)" if scen else ""))
         y += 18
         i += 2
 
