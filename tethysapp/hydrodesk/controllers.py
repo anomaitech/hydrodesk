@@ -208,6 +208,130 @@ def hydrotype_insights(request, slug="monitoring_station"):
     return render(request, "hydrodesk/insights.html", ctx)
 
 
+_REPORT_OPS = ("=", "!=", ">", "<", ">=", "<=", "contains")
+_REPORT_AGGS = ("count", "sum", "avg", "min", "max")
+
+
+def _report_cmp(cur, op, val):
+    """Evaluate one report filter atom; numeric compare when both sides parse as numbers,
+    else string compare. 'contains' is a case-insensitive substring test."""
+    if op == "contains":
+        return str(val).lower() in str("" if cur is None else cur).lower()
+    try:
+        a, b = float(cur), float(val)
+    except (TypeError, ValueError):
+        a, b = str("" if cur is None else cur), str(val)
+    return {"=": a == b, "!=": a != b, ">": a > b, "<": a < b,
+            ">=": a >= b, "<=": a <= b}.get(op, False)
+
+
+def _report_agg(vals, agg):
+    if not vals:
+        return 0
+    if agg == "sum":
+        return sum(vals)
+    if agg == "avg":
+        return sum(vals) / len(vals)
+    if agg == "min":
+        return min(vals)
+    if agg == "max":
+        return max(vals)
+    return len(vals)
+
+
+@controller(name="report", url="report", title="Report Builder")
+def report_builder(request):
+    """No-code report: pick a doctype, filter, group by a field, and aggregate a metric
+    (count/sum/avg/min/max) -> a summary table + bar chart, exportable as CSV. The list
+    view already does filtered detail; this is the group-by/aggregate companion."""
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        slugs = _all_slugs(session)
+        slug = request.GET.get("slug") or (slugs[0]["slug"] if slugs else None)
+        meta = _load_hydrotype(session, slug) if slug else None
+        if meta is None:
+            return render(request, "hydrodesk/report.html",
+                          {"slugs": slugs, "selected": slug, "no_type": True})
+        dn, fs, gk = meta
+        if not _user_can(request, fs, "read"):
+            return _denied(request, "read", dn)
+        records = [dict(a or {}) for a in session.execute(
+            select(m.HydroRecord.attributes)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalars().all()]
+
+    props = (fs or {}).get("properties") or {}
+    order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+    def _real(k):
+        p = props[k] or {}
+        return not (p.get("x-layout") or p.get("x-widget") in ("image", "table")
+                    or p.get("x-api-connector"))
+    group_fields = [{"key": k, "title": (props[k] or {}).get("title") or k}
+                    for k in order if _real(k) and (props[k] or {}).get("type") == "string"]
+    num_fields = [{"key": k, "title": (props[k] or {}).get("title") or k}
+                  for k in order if _real(k) and (props[k] or {}).get("type") in ("number", "integer")]
+
+    # Parse up to 3 filter rows (rf<i>/ro<i>/rv<i>) + the group/metric/agg selections.
+    filters = []
+    for i in range(3):
+        f = (request.GET.get("rf%d" % i) or "").strip()
+        v = request.GET.get("rv%d" % i)
+        if f and f in props and v not in (None, ""):
+            op = request.GET.get("ro%d" % i) or "="
+            if op not in _REPORT_OPS:
+                op = "="
+            filters.append({"field": f, "op": op, "value": v.strip()})
+    group_by = request.GET.get("group_by") or (group_fields[0]["key"] if group_fields else "")
+    metric = request.GET.get("metric") or ""
+    agg = request.GET.get("agg") if request.GET.get("agg") in _REPORT_AGGS else "count"
+
+    filtered = [r for r in records
+                if all(_report_cmp(r.get(fl["field"]), fl["op"], fl["value"]) for fl in filters)]
+
+    rows, total = [], {"count": len(filtered), "metric": 0.0}
+    if group_by:
+        groups = {}
+        for r in filtered:
+            g = str(r.get(group_by, "")).strip() or "(blank)"
+            groups.setdefault(g, []).append(r)
+        all_mvals = []
+        for g, recs in groups.items():
+            mvals = ([float(x.get(metric)) for x in recs
+                      if isinstance(x.get(metric), (int, float)) and not isinstance(x.get(metric), bool)]
+                     if metric else [])
+            all_mvals += mvals
+            rows.append({"group": g, "count": len(recs),
+                         "metric_raw": _report_agg(mvals, agg) if metric else len(recs),
+                         "metric": _fmt_stat(_report_agg(mvals, agg) if metric else len(recs))})
+        rows.sort(key=lambda x: x["metric_raw"], reverse=True)
+        total["metric"] = _fmt_stat(_report_agg(all_mvals, agg) if metric and agg != "count" else len(filtered))
+
+    metric_title = next((f["title"] for f in num_fields if f["key"] == metric), metric)
+    colname = ("%s of %s" % (agg, metric_title)) if (metric and agg != "count") else "count"
+
+    if request.GET.get("format") == "csv":
+        from django.http import HttpResponse
+        import csv as _csv
+        resp = HttpResponse(content_type="text/csv")
+        resp["Content-Disposition"] = 'attachment; filename="%s-report.csv"' % slug
+        w = _csv.writer(resp)
+        gtitle = next((f["title"] for f in group_fields if f["key"] == group_by), group_by)
+        w.writerow([gtitle, "count", colname])
+        for r in rows:
+            w.writerow([r["group"], r["count"], r["metric_raw"]])
+        return resp
+
+    chart_svg = _svg_hbar([(r["group"], r["metric_raw"]) for r in rows], color="#0a9d6e") if rows else ""
+    qs = request.GET.urlencode()
+    ctx = {"slugs": slugs, "selected": slug, "display_name": dn,
+           "group_fields": group_fields, "num_fields": num_fields,
+           "group_by": group_by, "metric": metric, "agg": agg, "aggs": list(_REPORT_AGGS),
+           "ops": list(_REPORT_OPS), "all_fields": [{"key": k, "title": (props[k] or {}).get("title") or k}
+                                                    for k in order if _real(k)],
+           "filters": filters, "rows": rows, "colname": colname, "total": total,
+           "chart_svg": chart_svg, "matched": len(filtered), "csv_qs": qs}
+    return render(request, "hydrodesk/report.html", ctx)
+
+
 def _records_geojson(slug):
     """Load every record of a HydroType from the generic store as a GeoJSON
     FeatureCollection (lon/lat EPSG:4326 — MapLayout reprojects for display)."""

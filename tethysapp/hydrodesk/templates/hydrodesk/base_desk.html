@@ -71,6 +71,11 @@
     </a>
   </li>
   <li class="nav-item">
+    <a class="nav-link{% block nav_active_report %}{% endblock %}" href="{% url 'hydrodesk:report' %}">
+      <span class="frappe-sidebar-ico">&#9778;</span> Reports
+    </a>
+  </li>
+  <li class="nav-item">
     <a class="nav-link{% block nav_active_schedules %}{% endblock %}" href="{% url 'hydrodesk:schedules' %}">
       <span class="frappe-sidebar-ico">&#8635;</span> Schedules
     </a>
