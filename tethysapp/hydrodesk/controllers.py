@@ -356,6 +356,55 @@ def _records_geojson(slug):
     return {"type": "FeatureCollection", "features": features}
 
 
+@controller(name="geomap", url="geomap", title="Map")
+def styled_map(request):
+    """A Leaflet map of one doctype's records, colored by an attribute the user picks
+    (graduated ramp for numbers, a categorical palette for text), with a legend + popups.
+    Self-contained (embeds the GeoJSON) so it needs no token/CORS to the Data API."""
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        spatial = [{"slug": r[0], "name": r[1]} for r in session.execute(
+            select(m.HydroType.slug, m.HydroType.display_name)
+            .where(m.HydroType.geometry_kind.in_(["point", "line", "polygon"]))
+            .order_by(m.HydroType.display_name)).all()]
+        slug = request.GET.get("slug") or (spatial[0]["slug"] if spatial else None)
+        meta = _load_hydrotype(session, slug) if slug else None
+        if meta is None:
+            return render(request, "hydrodesk/geomap.html",
+                          {"spatial": spatial, "selected": slug, "no_type": True})
+        dn, fs, gk = meta
+        if not _user_can(request, fs, "read"):
+            return _denied(request, "read", dn)
+    fc = _records_geojson(slug)
+    # strip reserved/internal keys from popup props; build the "color by" field list
+    props = (fs or {}).get("properties") or {}
+    order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+    title_key = _td_title_key(fs, order, props)      # x-title-field or first text field
+    nums, cats = [], []
+    for k in order:
+        p = props[k] or {}
+        if (p.get("x-layout") or p.get("x-widget") in ("image", "table")
+                or p.get("x-api-connector") or k in (title_key, "name")):
+            continue                                 # skip identifiers — coloring by them is noise
+        t = p.get("type")
+        if t in ("number", "integer"):
+            nums.append({"key": k, "title": p.get("title") or k, "kind": "number"})
+        elif t == "string":
+            cats.append({"key": k, "title": p.get("title") or k, "kind": "text"})
+    color_fields = nums + cats                       # numbers first -> a graduated default
+    color_by = request.GET.get("color_by") or (color_fields[0]["key"] if color_fields else "")
+    title_key = title_key or "name"
+    ctx = {"spatial": spatial, "selected": slug, "display_name": dn,
+           "geometry_kind": gk or "point", "color_by": color_by,
+           "color_fields": color_fields, "title_field": title_key or "name",
+           "n_features": len(fc["features"]),
+           # escape '<' so a record value containing '</script>' can't break out of the
+           # application/json block the template embeds this in.
+           "geojson": json.dumps(fc).replace("<", "\\u003c"),
+           "list_url": reverse("hydrodesk:list", kwargs={"slug": slug})}
+    return render(request, "hydrodesk/geomap.html", ctx)
+
+
 # --- Vetted, cached NWIS fetch. Honors the design's cached-fetch principle:
 #     in-process TTL cache + request timeout + graceful fallback; never raw polling. ---
 _NWIS_CACHE = {}
