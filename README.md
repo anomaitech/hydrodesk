@@ -59,6 +59,13 @@ It's no-code, spreadsheet-simple ergonomics, purpose-built for **water & environ
 <td width="50%"><img src="docs/screenshots/list.png" alt="Auto-generated list view"><br><sub><b>Auto-generated list</b> — sortable table with one-click Insights, Map, and CSV/Excel import.</sub></td>
 <td width="50%"><img src="docs/screenshots/connectors.png" alt="Connectors"><br><sub><b>Connectors</b> — reusable live-data sources (USGS, GeoGLOWS, OPeNDAP/THREDDS, OGC, GEE…) with a Test panel.</sub></td>
 </tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/alerts.png" alt="Alerts inbox"><br><sub><b>Threshold alerts</b> — breaches across records with severity, the triggering condition, and one-click acknowledge (email-capable).</sub></td>
+<td width="50%"><img src="docs/screenshots/publish.png" alt="Publish to TethysDash"><br><sub><b>Publish to TethysDash</b> — map each field to a KPI, chart, map, or table, then download an import-ready dashboard.</sub></td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/screenshots/data_api.png" alt="Data API"><br><sub><b>Data API</b> — every doctype is a JSON / GeoJSON endpoint, with a read token and a point-and-click query builder.</sub></td>
+</tr>
 </table>
 
 ---
