@@ -3,6 +3,34 @@
 {% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
 {% block nav_active_models %} active{% endblock %}
 {% block desk_content %}
+<style>
+  .hd-dataref{border:1px solid var(--fr-border-color,#e6e9ee);border-radius:8px;background:#fbfcfd;margin-bottom:14px;}
+  .hd-dataref>summary{cursor:pointer;padding:9px 12px;font-weight:600;font-size:13px;list-style:none;user-select:none;}
+  .hd-dataref>summary::-webkit-details-marker{display:none;}
+  .hd-dataref>summary::before{content:"\25B8";display:inline-block;margin-right:6px;transition:transform .15s;color:#8a94a6;}
+  .hd-dataref[open]>summary::before{transform:rotate(90deg);}
+  .hd-dataref-body{padding:2px 12px 12px;}
+  .hd-dataref-hint{margin:2px 0 10px;}
+  .hd-dataref-dt{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:7px 0;border-top:1px dashed #eef1f5;}
+  .hd-dataref-dt:first-of-type{border-top:none;}
+  .hd-dt-name{margin-right:2px;}
+  .hd-dt-model{color:#1a6dcc;background:#eaf3ff;border-radius:4px;padding:0 6px;}
+  .hd-keys{display:flex;flex-wrap:wrap;gap:4px;margin-left:auto;}
+  .hd-copy{cursor:pointer;font-size:11.5px;padding:1px 7px;border-radius:4px;border:1px solid transparent;transition:background .1s,border-color .1s;}
+  .hd-slug{background:#eef6ee;color:#1a7f37;border-color:#cfe6d4;font-weight:600;}
+  .hd-slug:hover{background:#dcefe0;}
+  .hd-key{background:#f1f3f6;color:#374151;border-color:#e3e7ee;}
+  .hd-key:hover{background:#e4e8ef;}
+  .hd-key-computed{background:#fff7e8;color:#9a6700;border-color:#f1e2bf;}
+  .hd-copy.hd-copied{background:#1a7f37 !important;color:#fff !important;border-color:#1a7f37 !important;}
+  .hd-dt-list{max-height:172px;overflow:auto;border:1px solid var(--fr-border-color,#e6e9ee);border-radius:6px;background:#fff;padding:4px;}
+  .hd-dt-opt{display:flex;align-items:center;gap:8px;padding:4px 7px;border-radius:5px;cursor:pointer;font-size:12.5px;}
+  .hd-dt-opt:hover{background:#f3f6fa;}
+  .hd-dt-opt input{margin:0;}
+  .hd-dt-opt-name{font-weight:500;}
+  .hd-dt-opt code{color:#6b7280;font-size:11.5px;}
+  .hd-source-panel{margin-top:4px;}
+</style>
 <div class="frappe-page frappe-page--form">
   <div class="frappe-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
@@ -25,6 +53,60 @@
         <input class="form-control" id="id_name" name="name" value="{{ name }}"
                placeholder="e.g. rational_runoff" {% if is_edit %}{% endif %}>
         <div class="frappe-help">Referenced by a doctype's <strong>Model</strong> binding in the builder.</div>
+      </div>
+
+      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="frappe-section-head">Based on <span class="frappe-muted frappe-text-sm">— what this model reads / runs</span></div>
+        <div class="frappe-form-group" style="max-width:300px;margin-bottom:10px;">
+          <select class="form-select form-select-sm" id="hd-based-on" name="based_on">
+            {% for k in source_kinds %}<option value="{{ k.value }}"{% if k.value == based_on %} selected{% endif %}>{{ k.label }}</option>{% endfor %}
+          </select>
+        </div>
+
+        {# ---- Doctypes: search + multi-select; only ticked doctypes reveal their slug/keys ---- #}
+        <div class="hd-source-panel" data-kind="doctypes"{% if based_on != "doctypes" %} hidden{% endif %}>
+          <div class="frappe-help" style="margin-bottom:6px;">Pick the doctype(s) this model reads with <code>data.records("slug")</code>. Each ticked doctype reveals its <strong>slug</strong> + <strong>field keys</strong> below (click to copy).</div>
+          <input type="text" id="hd-dt-search" class="form-control form-control-sm" placeholder="Search doctypes by name or slug…" autocomplete="off" style="margin-bottom:6px;">
+          <div id="hd-dt-list" class="hd-dt-list">
+            {% for dt in field_index %}
+            <label class="hd-dt-opt" data-search="{{ dt.name|lower }} {{ dt.slug }}">
+              <input type="checkbox" name="input_doctype" value="{{ dt.slug }}"{% if dt.slug in selected_doctypes %} checked{% endif %}>
+              <span class="hd-dt-opt-name">{{ dt.name }}</span> <code>{{ dt.slug }}</code>
+              {% if dt.model %}<span class="hd-dt-model frappe-text-sm">⚙ {{ dt.model }}</span>{% endif %}
+            </label>
+            {% empty %}
+            <div class="frappe-muted frappe-text-sm" style="padding:8px;">No doctypes defined yet.</div>
+            {% endfor %}
+          </div>
+
+          <div class="hd-dataref" style="margin-top:10px;">
+            <div class="hd-dataref-hint frappe-text-sm frappe-muted" style="padding:8px 12px 0;">Selected input doctypes — slug &amp; field keys (click to copy):</div>
+            <div class="hd-dataref-body" id="hd-dt-ref">
+              {% for dt in field_index %}
+              <div class="hd-dataref-dt" data-slug="{{ dt.slug }}"{% if dt.slug not in selected_doctypes %} hidden{% endif %}>
+                <code class="hd-copy hd-slug" data-copy='data.records("{{ dt.slug }}")' title="copy data.records(&quot;{{ dt.slug }}&quot;)">{{ dt.slug }}</code>
+                <span class="hd-dt-name frappe-muted frappe-text-sm">{{ dt.name }}</span>
+                {% if dt.model %}<span class="hd-dt-model frappe-text-sm" title="this doctype runs model '{{ dt.model }}'">⚙ {{ dt.model }}</span>{% endif %}
+                <span class="hd-keys">
+                  {% for f in dt.fields %}<code class="hd-copy hd-key{% if f.computed %} hd-key-computed{% endif %}" data-copy='{{ f.key }}' title="{{ f.title }} · {{ f.kind }}{% if f.computed %} · computed{% endif %} — click to copy key">{{ f.key }}</code>{% empty %}<span class="frappe-muted frappe-text-sm">(no fields)</span>{% endfor %}
+                </span>
+              </div>
+              {% endfor %}
+              <div id="hd-dt-ref-empty" class="frappe-muted frappe-text-sm" style="padding:4px 12px 10px;"{% if selected_doctypes %} hidden{% endif %}>No input doctypes selected yet — tick one above.</div>
+            </div>
+          </div>
+        </div>
+
+        {# ---- Engine kinds: same pre/command/post structure; data.records() still available ---- #}
+        <div class="hd-source-panel" data-kind="hecras"{% if based_on != "hecras" %} hidden{% endif %}>
+          <div class="frappe-help">HEC-RAS: stage the project (<code>.prj/.g/.u/.p</code>) into <code>workspace</code> in the pre-script (e.g. <code>data.fetch(record["ras_url"], …)</code>), run the RAS engine in the <strong>Command</strong>, then parse the <code>.hdf</code> result in the post-script. App doctypes are still readable via <code>data.records()</code> — switch to <em>Doctypes</em> to browse their keys.</div>
+        </div>
+        <div class="hd-source-panel" data-kind="modflow"{% if based_on != "modflow" %} hidden{% endif %}>
+          <div class="frappe-help">MODFLOW 6 / FloPy: build the simulation in the pre-script (FloPy writes inputs into <code>workspace</code>), run <code>mf6</code> in the <strong>Command</strong>, then read heads/budget in the post-script. <code>data.records()</code> remains available for inputs.</div>
+        </div>
+        <div class="hd-source-panel" data-kind="other"{% if based_on != "other" %} hidden{% endif %}>
+          <div class="frappe-help">External / custom: stage inputs into <code>workspace</code> (pre-script), run any executable (<strong>Command</strong>), parse results (post-script). <code>data.records()</code>, <code>data.fetch(url, path)</code> and <code>record</code> are all available.</div>
+        </div>
       </div>
 
       <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
@@ -56,12 +138,21 @@
       </div>
 
       <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head">Outputs <span class="frappe-muted frappe-text-sm">(written back to record fields)</span></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:8px;margin-bottom:6px;">
-          <span class="frappe-label">Variable name</span><span class="frappe-label">Label</span><span class="frappe-label">Type</span>
+        <div class="frappe-section-head" style="display:flex;align-items:center;gap:10px;">
+          <span>Outputs <span class="frappe-muted frappe-text-sm">(written back to record fields)</span></span>
+          <button type="button" id="hd-detect-outputs" class="btn btn-default btn-sm" style="margin-left:auto;">
+            <i class="bi bi-magic"></i> Detect from post-script</button>
+          <span id="hd-detect-status" class="frappe-text-sm frappe-muted"></span>
         </div>
+        <div class="frappe-muted frappe-text-sm" style="margin:-2px 0 8px;">
+          Detect fills the variable <strong>name</strong> + <strong>type</strong>; <strong>tick</strong> the ones to store and set a <strong>Label</strong>. (Detect pre-ticks the likely outputs; untick any you don't want.)</div>
+        <div style="display:grid;grid-template-columns:28px 1fr 1fr 130px;gap:8px;margin-bottom:6px;">
+          <span class="frappe-label" title="store this output">✓</span><span class="frappe-label">Variable name</span><span class="frappe-label">Label</span><span class="frappe-label">Type</span>
+        </div>
+        <div id="hd-out-rows">
         {% for r in output_rows %}
-        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:8px;margin-bottom:6px;">
+        <div style="display:grid;grid-template-columns:28px 1fr 1fr 130px;gap:8px;margin-bottom:6px;align-items:center;">
+          <input type="checkbox" class="form-check-input" name="out_keep_{{ r.i }}" title="store this output"{% if r.keep %} checked{% endif %}>
           <input class="form-control form-control-sm" name="out_name_{{ r.i }}" value="{{ r.name }}" placeholder="e.g. discharge">
           <input class="form-control form-control-sm" name="out_label_{{ r.i }}" value="{{ r.label }}" placeholder="Label">
           <select class="form-select form-select-sm" name="out_type_{{ r.i }}">
@@ -69,6 +160,7 @@
           </select>
         </div>
         {% endfor %}
+        </div>
       </div>
 
       <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
@@ -85,4 +177,125 @@
     </div>
   </form>
 </div>
+<script>
+(function(){
+  var root = document.querySelector('.frappe-page--form');
+  if(!root) return;
+  var DETECT_OUTPUTS_URL = '{{ detect_outputs_url }}';
+  function getCookie(name){ var m=document.cookie.match('(^|;)\\s*'+name+'\\s*=\\s*([^;]+)'); return m?m.pop():''; }
+
+  // Detect outputs from the post-script (AST) and fill the rows: variable + type auto,
+  // label pre-filled (existing labels kept by name). Extra rows are cleared so a removed
+  // variable doesn't linger.
+  var detectBtn = document.getElementById('hd-detect-outputs');
+  if (detectBtn) {
+    detectBtn.addEventListener('click', function () {
+      var postEl = root.querySelector('[name="post_script"]');
+      var post = postEl ? (postEl.value || '') : '';
+      var status = document.getElementById('hd-detect-status');
+      if (!post.trim()) { if (status) status.textContent = 'write a post-script first'; return; }
+      if (status) status.textContent = 'detecting…';
+      var preEl = root.querySelector('[name="pre_script"]'), cmdEl = root.querySelector('[name="command"]');
+      fetch(DETECT_OUTPUTS_URL, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: JSON.stringify({ source: post,
+                               pre_script: preEl ? preEl.value : '',
+                               command: cmdEl ? cmdEl.value : '' })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (!d || !d.ok) { if (status) status.textContent = (d && d.error) || 'error'; return; }
+        var outs = d.outputs || [];
+        var outBox = document.getElementById('hd-out-rows');
+        var rows = Array.prototype.slice.call(outBox.querySelectorAll('[name^="out_name_"]'));
+        var keepLabel = {}, keepType = {};        // preserve label + a type the user already set
+        rows.forEach(function (ni) {
+          if (!ni.value.trim()) return;
+          var w = ni.closest('div');
+          var li = w.querySelector('[name^="out_label_"]');
+          var ty = w.querySelector('[name^="out_type_"]');
+          if (li && li.value.trim()) keepLabel[ni.value.trim()] = li.value.trim();
+          if (ty) keepType[ni.value.trim()] = ty.value;
+        });
+        // ensure enough rows — clone the last for any extra detected output (so none get cut off)
+        while (rows.length < outs.length && outBox.lastElementChild) {
+          var idx = rows.length, clone = outBox.lastElementChild.cloneNode(true);
+          clone.querySelectorAll('[name]').forEach(function (el) {
+            el.name = el.name.replace(/_\d+$/, '_' + idx);
+            if (el.type === 'checkbox') el.checked = false; else if (el.tagName === 'INPUT') el.value = '';
+          });
+          outBox.appendChild(clone);
+          rows.push(clone.querySelector('[name^="out_name_"]'));
+        }
+        var nSel = 0;
+        rows.forEach(function (nameInput, i) {
+          var wrap = nameInput.closest('div');
+          var labelInput = wrap.querySelector('[name^="out_label_"]');
+          var typeSel = wrap.querySelector('[name^="out_type_"]');
+          var keepCb = wrap.querySelector('[name^="out_keep_"]');
+          if (i < outs.length) {
+            nameInput.value = outs[i].name;
+            if (labelInput) labelInput.value = keepLabel[outs[i].name] || outs[i].label || outs[i].name;
+            if (typeSel) typeSel.value = keepType[outs[i].name] || outs[i].field_type || 'Number';
+            if (keepCb) { keepCb.checked = (outs[i].selected !== false); if (keepCb.checked) nSel++; }
+          } else {
+            nameInput.value = ''; if (labelInput) labelInput.value = '';
+            if (keepCb) keepCb.checked = false;
+          }
+        });
+        var ins = d.inputs || [];
+        if (status) status.textContent = '✓ ' + outs.length + ' candidate' + (outs.length===1?'':'s')
+          + ' (' + nSel + ' pre-ticked)'
+          + (ins.length ? ' · reads ' + ins.length + ' input' + (ins.length===1?'':'s') + ': ' + ins.join(', ') : '');
+      }).catch(function () { if (status) status.textContent = 'request failed'; });
+    });
+  }
+
+  // 1) click-to-copy (delegated): slug chips copy data.records(...), key chips copy the key
+  root.addEventListener('click', function(ev){
+    var el = ev.target.closest('.hd-copy');
+    if(!el) return;
+    ev.preventDefault();
+    var text = el.getAttribute('data-copy') || el.textContent;
+    var flash = function(){ el.classList.add('hd-copied'); setTimeout(function(){ el.classList.remove('hd-copied'); }, 700); };
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(flash, flash); }
+    else { var ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');}catch(e){} document.body.removeChild(ta); flash(); }
+  });
+
+  // 2) "Based on" -> reveal the matching source panel
+  var sel = document.getElementById('hd-based-on');
+  if(sel){
+    var panels = root.querySelectorAll('.hd-source-panel');
+    var syncKind = function(){ panels.forEach(function(p){ p.hidden = (p.getAttribute('data-kind') !== sel.value); }); };
+    sel.addEventListener('change', syncKind); syncKind();
+  }
+
+  // 3) doctype search filter (name or slug)
+  var search = document.getElementById('hd-dt-search');
+  if(search){
+    search.addEventListener('input', function(){
+      var q = search.value.trim().toLowerCase();
+      root.querySelectorAll('#hd-dt-list .hd-dt-opt').forEach(function(opt){
+        opt.style.display = (!q || (opt.getAttribute('data-search')||'').indexOf(q) !== -1) ? '' : 'none';
+      });
+    });
+  }
+
+  // 4) ticking a doctype reveals its slug/keys reference row
+  var refEmpty = document.getElementById('hd-dt-ref-empty');
+  var boxes = root.querySelectorAll('#hd-dt-list input[name="input_doctype"]');
+  var updateEmpty = function(){
+    if(!refEmpty) return;
+    var any = false; boxes.forEach(function(b){ if(b.checked) any = true; });
+    refEmpty.hidden = any;
+  };
+  boxes.forEach(function(cb){
+    cb.addEventListener('change', function(){
+      var row = root.querySelector('#hd-dt-ref .hd-dataref-dt[data-slug="'+cb.value+'"]');
+      if(row) row.hidden = !cb.checked;
+      updateEmpty();
+    });
+  });
+  updateEmpty();
+})();
+</script>
 {% endblock %}

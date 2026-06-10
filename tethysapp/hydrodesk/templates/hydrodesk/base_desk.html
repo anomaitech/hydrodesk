@@ -56,6 +56,11 @@
     </a>
   </li>
   <li class="nav-item">
+    <a class="nav-link{% block nav_active_publish %}{% endblock %}" href="{% url 'hydrodesk:publish_tethysdash' %}">
+      <span class="frappe-sidebar-ico">&#9636;</span> Publish to TethysDash
+    </a>
+  </li>
+  <li class="nav-item">
     <a class="nav-link{% block nav_active_credentials %}{% endblock %}" href="{% url 'hydrodesk:credentials' %}">
       <span class="frappe-sidebar-ico">&#9919;</span> Credentials
     </a>

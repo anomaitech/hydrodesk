@@ -43,13 +43,17 @@
 
       <div style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
         <div class="frappe-section-head">Alert rules <span class="frappe-muted frappe-text-sm">(raise an alert when a field crosses a threshold)</span></div>
+        <div class="frappe-muted frappe-text-sm" style="margin:-2px 0 8px;">Field choices come from the <strong>target doctype's real fields</strong> — pick a target above to populate them.</div>
         <div style="display:grid;grid-template-columns:1fr 90px 1fr 110px 1.4fr;gap:8px;margin-bottom:6px;">
           <span class="frappe-label">Field</span><span class="frappe-label">Op</span><span class="frappe-label">Value</span>
           <span class="frappe-label">Severity</span><span class="frappe-label">Message</span>
         </div>
         {% for r in alert_rows %}
         <div style="display:grid;grid-template-columns:1fr 90px 1fr 110px 1.4fr;gap:8px;margin-bottom:6px;">
-          <input class="form-control form-control-sm" name="alert_field_{{ r.i }}" value="{{ r.field }}" placeholder="e.g. discharge">
+          <select class="form-select form-select-sm hd-alert-field" name="alert_field_{{ r.i }}" data-current="{{ r.field }}">
+            {% if r.field %}<option value="{{ r.field }}" selected>{{ r.field }}</option>{% endif %}
+            <option value="">{% if target_slug %}— field —{% else %}— pick a target doctype —{% endif %}</option>
+          </select>
           <select class="form-select form-select-sm" name="alert_op_{{ r.i }}">
             {% for o in ops %}<option value="{{ o }}"{% if o == r.op %} selected{% endif %}>{{ o }}</option>{% endfor %}
           </select>
@@ -69,4 +73,47 @@
     </div>
   </form>
 </div>
+{{ field_index|json_script:"hd-field-index" }}
+<script>
+(function(){
+  var idxEl = document.getElementById('hd-field-index');
+  if(!idxEl) return;
+  var INDEX = {};
+  try { (JSON.parse(idxEl.textContent) || []).forEach(function(dt){ INDEX[dt.slug] = dt.fields || []; }); } catch(e){}
+  var target = document.getElementById('id_target');
+  var selects = Array.prototype.slice.call(document.querySelectorAll('.hd-alert-field'));
+  function populate(){
+    var slug = target ? target.value : '';
+    var fields = INDEX[slug] || [];
+    selects.forEach(function(sel){
+      var want = sel.value || sel.getAttribute('data-current') || '';
+      sel.innerHTML = '';
+      var blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = slug ? '— field —' : '— pick a target doctype —';
+      sel.appendChild(blank);
+      fields.forEach(function(f){
+        if (f.columns && f.columns.length){
+          // a table -> one option per column (alert on the latest row's value); the raw
+          // table itself isn't thresholdable so it's not offered.
+          f.columns.forEach(function(col){
+            var o = document.createElement('option');
+            o.value = f.key + '.' + col.key;
+            o.textContent = f.key + '.' + col.key + ' (' + f.key + ' table' + (col.kind ? ', ' + col.kind : '') + ')';
+            sel.appendChild(o);
+          });
+          return;
+        }
+        var o = document.createElement('option');
+        o.value = f.key;
+        o.textContent = f.key + (f.title && f.title !== f.key ? ' · ' + f.title : '') + (f.kind ? ' (' + f.kind + ')' : '');
+        sel.appendChild(o);
+      });
+      sel.value = (want && fields.some(function(f){ return f.key === want; })) ? want : '';
+    });
+  }
+  if(target) target.addEventListener('change', populate);
+  populate();
+})();
+</script>
 {% endblock %}

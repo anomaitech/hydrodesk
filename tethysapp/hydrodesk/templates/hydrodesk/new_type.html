@@ -121,11 +121,25 @@
 
       <div id="hd-rows">
         {% for r in rows %}
-        <div class="frappe-row-wrap" data-row-idx="{{ forloop.counter0 }}">
+        {% if r.computed %}
+        <div class="frappe-row-wrap hd-computed-wrap" data-row-idx="{{ forloop.counter0 }}" data-field-key="{{ r.key }}">
+          <div class="frappe-row hd-computed-row">
+            <div class="hd-computed-name">
+              <code>{{ r.key }}</code>
+              <span class="hd-computed-badge" title="Filled by its script — remove it by deleting that field">&#8627; computed by {{ r.computed_by }}</span>
+            </div>
+            <div class="frappe-muted frappe-text-sm">{{ r.type_label }}</div>
+            <div></div>
+            <div class="hd-config-cell"><span class="frappe-muted frappe-text-sm">read-only output</span></div>
+          </div>
+        </div>
+        {% else %}
+        <div class="frappe-row-wrap{% if r.model_input %} hd-model-input-row{% endif %}" data-row-idx="{{ forloop.counter0 }}" data-field-key="{{ r.key|default:'' }}">
           <div class="frappe-row">
-            <input class="form-control form-control-sm" type="text"
+            <input class="form-control form-control-sm{% if r.model_input %} hd-locked-label{% endif %}" type="text"
                    name="field_label_{{ forloop.counter0 }}"
-                   value="{{ r.label|default:'' }}" placeholder="Field label">
+                   value="{{ r.label|default:'' }}" placeholder="Field label"
+                   {% if r.model_input %}readonly title="Locked — this field's key is read by model '{{ r.model_input_by }}' as record['{{ r.key }}']; renaming it would break the model. Change the type if you like."{% endif %}>
             <select class="form-select form-select-sm" name="field_type_{{ forloop.counter0 }}">
               <option value="text"     {% if r.type == 'text' %}selected{% endif %}>Text</option>
               <option value="number"   {% if r.type == 'number' %}selected{% endif %}>Number</option>
@@ -148,6 +162,7 @@
               <option value="api"      {% if r.type == 'api' %}selected{% endif %}>API</option>
               <option value="table"    {% if r.type == 'table' %}selected{% endif %}>Table</option>
               <option value="tags"     {% if r.type == 'tags' %}selected{% endif %}>Tags</option>
+              <option value="list"     {% if r.type == 'list' %}selected{% endif %}>List (numbers)</option>
               <option value="tab"      {% if r.type == 'tab' %}selected{% endif %}>&mdash; Tab Break &mdash;</option>
               <option value="section"  {% if r.type == 'section' %}selected{% endif %}>&mdash; Section Break &mdash;</option>
               <option value="column"   {% if r.type == 'column' %}selected{% endif %}>&mdash; Column Break &mdash;</option>
@@ -167,11 +182,16 @@
               <input class="hd-showif" type="hidden"
                      name="field_showif_{{ forloop.counter0 }}"
                      value="{{ r.showif_json|default:'' }}">
+              {% if r.model_input %}<span class="hd-model-badge" title="Input read by model '{{ r.model_input_by }}'">↳ model input</span>{% endif %}
               <button type="button" class="btn btn-default btn-sm hd-configure"
                       title="Configure this field">
                 <i class="bi bi-gear"></i> Configure
               </button>
               <span class="hd-config-summary frappe-text-sm"></span>
+              <button type="button" class="btn btn-sm hd-row-del{% if r.has_data %} hd-row-del-locked{% endif %}"
+                      {% if r.has_data %}disabled aria-disabled="true" title="Holds data in {{ r.value_count }} record{{ r.value_count|pluralize }} — clear the data before deleting this field"{% else %}title="Delete this field"{% endif %}>
+                <i class="bi bi-trash"></i>
+              </button>
             </div>
           </div>
           <div class="hd-map-panel" style="display:none;">
@@ -181,13 +201,18 @@
             {% if r.api_outputs %}
             <script type="application/json" class="hd-out-seed">{{ r.api_outputs_json|default:'[]'|safe }}</script>
             {% endif %}
+            {% if r.script_inputs %}
+            <script type="application/json" class="hd-in-seed">{{ r.script_inputs_json|default:'{}'|safe }}</script>
+            {% endif %}
             {% if r.nc_map %}
             <script type="application/json" class="hd-ncmap-seed">{{ r.nc_map_json|default:'{}'|safe }}</script>
             {% endif %}
           </div>
         </div>
+        {% endif %}
         {% endfor %}
       </div>
+      <input type="hidden" name="hd_field_order" id="hd-field-order">
 
       <template id="hd-row-tpl">
         <div class="frappe-row-wrap" data-row-idx="IDX">
@@ -215,6 +240,7 @@
               <option value="api">API</option>
               <option value="table">Table</option>
               <option value="tags">Tags</option>
+              <option value="list">List (numbers)</option>
               <option value="tab">&mdash; Tab Break &mdash;</option>
               <option value="section">&mdash; Section Break &mdash;</option>
               <option value="column">&mdash; Column Break &mdash;</option>
@@ -229,6 +255,9 @@
                 <i class="bi bi-gear"></i> Configure
               </button>
               <span class="hd-config-summary frappe-text-sm"></span>
+              <button type="button" class="btn btn-sm hd-row-del" title="Delete this field">
+                <i class="bi bi-trash"></i>
+              </button>
             </div>
           </div>
           <div class="hd-map-panel" style="display:none;"></div>
@@ -302,11 +331,49 @@
 </div>
 
 <style>
+  /* ---- Drag-to-reorder handle (rearrange fields, incl. computed rows) ---- */
+  #inner-app-content .frappe-row-wrap { position:relative; }
+  #inner-app-content .hd-drag {
+    position:absolute; left:-16px; top:50%; transform:translateY(-50%);
+    cursor:grab; color:#b3bcc6; font-size:13px; line-height:1; padding:3px 3px;
+    user-select:none; -webkit-user-select:none; touch-action:none;
+  }
+  #inner-app-content .hd-drag:hover { color:#2490ef; }
+  #inner-app-content .hd-drag:active { cursor:grabbing; }
+  #inner-app-content .frappe-row-wrap.hd-dragging {
+    opacity:.55; background:var(--fr-bg-subtle,#f4f6f8); border-radius:6px;
+  }
+  #inner-app-content #hd-rows { padding-left:4px; }
   /* ---- Configure cell (the 4th builder column) ---- */
   #inner-app-content .hd-config-cell {
     display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap;
   }
   #inner-app-content .hd-config-cell .hd-configure { flex:0 0 auto; }
+  /* Per-field delete: enabled = red on hover; locked (field has data) = greyed out. */
+  #inner-app-content .hd-row-del {
+    flex:0 0 auto; margin-left:auto; border:1px solid transparent; color:#8d99a6;
+    padding:2px 7px; background:transparent;
+  }
+  #inner-app-content .hd-row-del:not(:disabled):hover {
+    color:#fff; background:var(--red-600,#e24c4c); border-color:var(--red-600,#e24c4c);
+  }
+  #inner-app-content .hd-row-del-locked, #inner-app-content .hd-row-del:disabled {
+    opacity:.4; cursor:not-allowed;
+  }
+  /* Computed output rows: read-only, owned by their script/formula field. */
+  #inner-app-content .hd-computed-row { background:#fafbfc; border-radius:6px; padding:4px 6px; }
+  #inner-app-content .hd-computed-name { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  #inner-app-content .hd-computed-name > code { font-size:12.5px; font-weight:600; }
+  #inner-app-content .hd-computed-badge {
+    font-size:11px; color:#1a6dcc; background:#eaf3ff; border-radius:4px; padding:1px 7px;
+  }
+  /* model INPUT preview rows: green badge (editable on save) vs blue OUTPUT (computed) */
+  #inner-app-content .hd-model-input .hd-computed-badge { color:#1a7f37; background:#eaf7ed; }
+  /* a saved model-input field: label is LOCKED (key must stay = the model variable) */
+  #inner-app-content .hd-locked-label { background:#f3f6f4; color:#52606d; cursor:not-allowed; }
+  #inner-app-content .hd-model-badge {
+    flex:0 0 auto; font-size:11px; color:#1a7f37; background:#eaf7ed; border-radius:4px; padding:1px 7px;
+  }
   #inner-app-content .hd-config-summary {
     color:var(--fr-text-muted); white-space:nowrap; overflow:hidden;
     text-overflow:ellipsis; min-width:0;
@@ -375,6 +442,17 @@
   }
   .hd-opt-del:hover { color:var(--red-600); }
 
+  /* Script field INPUTS editor: variable | maps-to-field | test value */
+  .hd-in-row {
+    display:grid; grid-template-columns:130px 1fr 1fr;
+    gap:8px; align-items:center; margin:5px 0;
+  }
+  .hd-in-row > code { font-size:12px; overflow:hidden; text-overflow:ellipsis; }
+  .hd-in-head {
+    font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
+    color:var(--fr-text-muted,#8d99a6); margin-bottom:2px;
+  }
+
   /* Table child-column editor: label | type | options | remove */
   .hd-tcol-head, .hd-tcol-row {
     display:grid; grid-template-columns:1.4fr 0.9fr 1.2fr 24px;
@@ -418,6 +496,7 @@
     var CONNECTORS_PAGE = '{{ connectors_url }}';
     var NEW_TYPE_PAGE   = '{{ new_type_url }}';
     var SCRIPT_TEST_URL = '{{ script_test_url }}';
+    var DELETE_FIELD_URL = '{{ delete_field_url_base }}';   // edit mode; __KEY__ -> field key
 
     // CSRF cookie reader (the /script-test POST executes code, so it is CSRF-checked).
     function getCookie(name) {
@@ -533,6 +612,32 @@
       p.panel.appendChild(hid);
     }
 
+    // Script INPUTS mapping {var: field_key}: seed (live blob else .hd-in-seed) + write.
+    function rowInputsSeed(wrap) {
+      var p = rowParts(wrap);
+      if (!p.panel) return {};
+      var live = p.panel.querySelector('input[name="field_inputs_' + p.idx + '"]');
+      if (live && live.value) {
+        try { var o = JSON.parse(live.value); if (o && typeof o === 'object') return o; } catch (e) {}
+      }
+      var seedNode = p.panel.querySelector('.hd-in-seed');
+      if (seedNode) {
+        try { var s = JSON.parse(seedNode.textContent || '{}'); if (s && typeof s === 'object') return s; } catch (e) {}
+      }
+      return {};
+    }
+    function writeRowInputs(wrap, mapping) {
+      var p = rowParts(wrap);
+      if (!p.panel) return;
+      p.panel.querySelectorAll('input[name="field_inputs_' + p.idx + '"]').forEach(function (n) { n.remove(); });
+      if (!mapping || !Object.keys(mapping).length) return;
+      var hid = document.createElement('input');
+      hid.type = 'hidden';
+      hid.name = 'field_inputs_' + p.idx;
+      hid.value = JSON.stringify(mapping);
+      p.panel.appendChild(hid);
+    }
+
     // Replace the row's hidden field_ncmap_<i> JSON ({shapefile,start,end} -> field
     // slugs) — the netcdf API field's per-record parameter mapping (x-nc-map).
     function writeRowNcMap(wrap, ncmap) {
@@ -645,6 +750,7 @@
         p.panel.querySelectorAll('input[name^="field_map_"]').forEach(function (n) { n.remove(); });
         if (p.type.value !== 'script') {
           p.panel.querySelectorAll('input[name^="field_outputs_"]').forEach(function (n) { n.remove(); });
+          p.panel.querySelectorAll('input[name^="field_inputs_"]').forEach(function (n) { n.remove(); });
         }
       }
       refreshSummary(wrap);
@@ -669,10 +775,15 @@
       }
       // Script rows reuse the field_outputs_<i> carrier — materialize its seed too so
       // the picked outputs POST after a validation-error re-render without reopening.
+      // Same for the field_inputs_<i> var->field mapping (.hd-in-seed).
       if (p.type && p.type.value === 'script' && p.panel) {
         var sOutSeed = rowOutputsSeed(wrap);
         if (sOutSeed.length && !p.panel.querySelector('input[name="field_outputs_' + p.idx + '"]')) {
           writeRowOutputs(wrap, sOutSeed);
+        }
+        var sInSeed = rowInputsSeed(wrap);
+        if (Object.keys(sInSeed).length && !p.panel.querySelector('input[name="field_inputs_' + p.idx + '"]')) {
+          writeRowInputs(wrap, sInSeed);
         }
       }
       refreshRow(wrap);
@@ -1094,6 +1205,7 @@
       var seeded = {};                              // previously-picked outputs (edit mode)
       rowOutputsSeed(wrap).forEach(function (o) { if (o && o.output) seeded[o.output] = o; });
       var samples = {};                             // free-var -> sample value text
+      var inputMap = rowInputsSeed(wrap);           // free-var -> mapped source field key
       var outRows = {};
       // Type choices for an output by its detected KIND (from the Test-run response):
       //  series  -> always a Table (locked);  table (dict) -> Table OR JSON (your call);
@@ -1116,8 +1228,8 @@
       ed.value = (p.opt && p.opt.value) || '';
       var note = document.createElement('div');
       note.className = 'hd-cfg-note';
-      note.innerHTML = 'Runs in a sandbox when the record is saved. Inputs are OTHER fields, '
-        + 'referenced by their <strong>key</strong> (auto-detected below). '
+      note.innerHTML = 'Runs in a sandbox when the record is saved. Map each input variable to a '
+        + '<strong>field</strong> below (left blank, it binds to a field with the same key). '
         + '<code>numpy</code> as <code>np</code>, <code>pandas</code> as <code>pd</code>, plus '
         + '<code>math / statistics / datetime</code> are available; no files or network. '
         + 'Each variable you assign can be stored as a typed output field.';
@@ -1133,7 +1245,7 @@
 
       var inHead = document.createElement('div');
       inHead.className = 'frappe-help'; inHead.style.margin = '8px 0 4px';
-      inHead.textContent = 'Inputs — sample values for the test run:';
+      inHead.textContent = 'Inputs — the fields the script reads:';
       var inBox = document.createElement('div');
       var outHead = document.createElement('div');
       outHead.className = 'frappe-help'; outHead.style.margin = '12px 0 4px';
@@ -1145,38 +1257,81 @@
       modalBody.appendChild(inHead); modalBody.appendChild(inBox);
       modalBody.appendChild(outHead); modalBody.appendChild(outBox);
 
-      function renderInputs(inputs) {
+      function renderInputs(inputs, authoritative) {
+        // preserve typed samples AND any field mappings already chosen in the live DOM
         inBox.querySelectorAll('input[data-iname]').forEach(function (n) {
-          samples[n.getAttribute('data-iname')] = n.value;       // preserve typed samples
+          samples[n.getAttribute('data-iname')] = n.value;
+        });
+        inBox.querySelectorAll('select[data-iname]').forEach(function (s) {
+          if (s.value) inputMap[s.getAttribute('data-iname')] = s.value;
+          else delete inputMap[s.getAttribute('data-iname')];
         });
         inBox.innerHTML = '';
-        inputs = inputs || [];
-        if (!inputs.length) {
+        var detected = (inputs || []).map(function (i) { return i.name; });
+        // A Test run reports the CURRENT free variables. Drop any stale mapping/sample for
+        // a variable the user has since REMOVED from the script (else it lingers here).
+        if (authoritative) {
+          Object.keys(inputMap).forEach(function (n) { if (detected.indexOf(n) < 0) delete inputMap[n]; });
+          Object.keys(samples).forEach(function (n) { if (detected.indexOf(n) < 0) delete samples[n]; });
+        }
+        // union of detected free vars + seeded mappings (so edit mode shows saved maps)
+        var names = detected.slice();
+        Object.keys(inputMap).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+        if (!names.length) {
           var none = document.createElement('div');
           none.className = 'frappe-text-sm frappe-muted';
-          none.textContent = 'No inputs detected yet (Test run to detect fields the script reads).';
+          none.textContent = 'No inputs yet — Test run to detect the variables the script reads.';
           inBox.appendChild(none); return;
         }
-        inputs.forEach(function (i) {
-          var nm = i.name;
-          var row = document.createElement('div');
-          row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:4px 0;';
-          var l = document.createElement('code'); l.textContent = nm; l.style.minWidth = '110px';
+        var choices = currentFieldChoices(p.idx);    // OTHER fields of this doctype
+        var head = document.createElement('div');
+        head.className = 'hd-in-row hd-in-head';
+        head.innerHTML = '<span>Variable</span><span>Maps to field</span><span>Test value</span>';
+        inBox.appendChild(head);
+        names.forEach(function (nm) {
+          var row = document.createElement('div'); row.className = 'hd-in-row';
+          var l = document.createElement('code'); l.textContent = nm;
+          // (2) field dropdown — pick the source field; blank = bind by same key name
+          var sel = document.createElement('select');
+          sel.className = 'form-select form-select-sm'; sel.setAttribute('data-iname', nm);
+          var blank = document.createElement('option');
+          blank.value = ''; blank.textContent = '— same name (' + nm + ') —';
+          sel.appendChild(blank);
+          choices.forEach(function (c) {
+            var o = document.createElement('option');
+            o.value = c.slug;
+            o.textContent = c.slug + (c.label && c.label.toLowerCase() !== c.slug ? ' · ' + c.label : '');
+            sel.appendChild(o);
+          });
+          // default: explicit mapping; else auto-select a field whose key equals the var
+          var want = inputMap[nm] || '';
+          if (!want && choices.some(function (c) { return c.slug === nm; })) want = nm;
+          sel.value = want;
+          sel.addEventListener('change', function () {
+            if (sel.value) inputMap[nm] = sel.value; else delete inputMap[nm];
+          });
+          // (3) sample value for the Test run
           var v = document.createElement('input');
           v.type = 'text'; v.className = 'form-control form-control-sm';
           v.setAttribute('data-iname', nm);
-          v.placeholder = 'sample e.g. [1,2,3,4] or 5';
+          v.placeholder = 'e.g. [1,2,3,4] or 5';
           if (samples[nm] != null) v.value = samples[nm];
           v.addEventListener('input', function () { samples[nm] = v.value; });
-          row.appendChild(l); row.appendChild(v); inBox.appendChild(row);
+          row.appendChild(l); row.appendChild(sel); row.appendChild(v);
+          inBox.appendChild(row);
         });
       }
 
-      function renderOutputs(variables, errored) {
+      function renderOutputs(variables, errored, authoritative) {
         outBox.innerHTML = ''; outRows = {};
         var names = [], meta = {};
         (variables || []).forEach(function (v) { names.push(v.name); meta[v.name] = v; });
-        Object.keys(seeded).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+        // A SUCCESSFUL Test run is the truth about what the script assigns now — show ONLY
+        // those. Otherwise (initial open / error) also show previously-picked outputs so
+        // edit mode pre-fills and a transient error doesn't wipe the user's selection.
+        if (!authoritative) {
+          Object.keys(seeded).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+        }
         if (!names.length) {
           var none = document.createElement('div');
           none.className = 'frappe-text-sm frappe-muted';
@@ -1190,7 +1345,9 @@
           item.style.cssText = 'display:flex;align-items:center;gap:8px;margin:5px 0;flex-wrap:wrap;';
           var cb = document.createElement('input');
           cb.type = 'checkbox'; cb.className = 'form-check-input';
-          cb.checked = !!sv || (!Object.keys(seeded).length && !!v.name);
+          // tick previously-saved outputs, and on a fresh Test-run the TERMINAL outputs
+          // (v.selected); descriptive intermediates are offered un-ticked.
+          cb.checked = !!sv || (v.selected === true);
           var lab = document.createElement('code'); lab.textContent = nm; lab.style.minWidth = '90px';
           var labelIn = document.createElement('input');
           labelIn.type = 'text'; labelIn.className = 'form-control form-control-sm';
@@ -1237,12 +1394,12 @@
           body: JSON.stringify({ source: src, inputs: inputs })
         }).then(function (r) { return r.json(); }).then(function (d) {
           testBtn.disabled = false;
-          renderInputs(d.inputs || []);
+          renderInputs(d.inputs || [], true);   // Test run = authoritative free-var list
           if (d.ok) {
             var nv = (d.variables || []).length;
             status.innerHTML = '<span style="color:#1a7f37;">&#10003; ran &mdash; '
               + nv + ' variable' + (nv === 1 ? '' : 's') + '</span>';
-            renderOutputs(d.variables || [], false);
+            renderOutputs(d.variables || [], false, true);   // success = authoritative var list
           } else {
             status.innerHTML = '<span style="color:#c0392b;">' + escapeHtml(d.error || 'error') + '</span>';
             renderOutputs([], true);
@@ -1268,6 +1425,12 @@
           }
         });
         writeRowOutputs(wrap, picked);
+        // capture the latest var->field mappings from the live selects, then persist
+        inBox.querySelectorAll('select[data-iname]').forEach(function (s) {
+          if (s.value) inputMap[s.getAttribute('data-iname')] = s.value;
+          else delete inputMap[s.getAttribute('data-iname')];
+        });
+        writeRowInputs(wrap, inputMap);
       });
     }
 
@@ -1592,6 +1755,42 @@
     // =====================================================================
     box.querySelectorAll('.frappe-row-wrap').forEach(wireRow);
 
+    // Per-field delete (delegated): the server disables the button for a field that holds
+    // data, so an enabled click never loses data. For an ALREADY-SAVED field (edit mode,
+    // it carries a data-field-key), delete persists IMMEDIATELY via the endpoint so a
+    // refresh reflects it; for a not-yet-saved row, just drop it from the form.
+    box.addEventListener('click', function (ev) {
+      var del = ev.target.closest('.hd-row-del');
+      if (!del || del.disabled) return;
+      var wrap = del.closest('.frappe-row-wrap');
+      if (!wrap) return;
+      var labelEl = wrap.querySelector('[name^="field_label_"]');
+      var label = labelEl ? (labelEl.value || '').trim() : '';
+      var key = wrap.getAttribute('data-field-key') || '';
+      var saved = key && DELETE_FIELD_URL;
+      var msg = saved
+        ? 'Delete the field "' + (label || key) + '" now? This removes it from the doctype immediately.'
+        : 'Delete the field "' + label + '"? It is removed from the doctype when you save.';
+      if (label && !confirm(msg)) return;
+      if (!saved) { wrap.remove(); return; }
+      del.disabled = true;
+      fetch(DELETE_FIELD_URL.replace('__KEY__', encodeURIComponent(key)), {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') }
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (d && d.ok) {
+          // the endpoint cascades: a script field also removes its computed outputs —
+          // drop every returned key's row, not just the one clicked.
+          var removed = d.removed; if (!Array.isArray(removed)) removed = removed ? [removed] : [key];
+          removed.forEach(function (k) {
+            var w = box.querySelector('.frappe-row-wrap[data-field-key="' + k + '"]');
+            if (w) w.remove();
+          });
+          wrap.remove();
+        } else { del.disabled = false; alert('Could not delete: ' + ((d && d.error) || 'unknown error')); }
+      }).catch(function () { del.disabled = false; alert('Delete request failed.'); });
+    });
+
     var next = box.querySelectorAll('.frappe-row-wrap').length;  // continue numbering
     btn.addEventListener('click', function () {
       var html = tpl.innerHTML.replace(/IDX/g, next);
@@ -1602,6 +1801,75 @@
       wireRow(wrap);
       next++;
     });
+
+    // =====================================================================
+    // DRAG-TO-REORDER fields. The visual order is written to the hidden
+    // hd_field_order input as a list of field KEYS; the server reorders x-order
+    // from it AFTER model-output fields are asserted, so it covers EVERY field
+    // type — user fields, Python-script outputs, and model input/output rows.
+    // =====================================================================
+    var orderInput = document.getElementById('hd-field-order');
+    var dragRow = null;
+    function rowKey(wrap) {
+      // existing/computed fields carry data-field-key; a new row's key is derived
+      // live from its label (this slugify matches the server's _slugify_underscore).
+      var k = wrap.getAttribute('data-field-key') || '';
+      if (k) return k;
+      var lbl = wrap.querySelector('[name^="field_label_"]');
+      return lbl ? slugify(lbl.value) : '';
+    }
+    function updateOrder() {
+      if (!orderInput) return;
+      var keys = [];
+      box.querySelectorAll('.frappe-row-wrap').forEach(function (w) {
+        var k = rowKey(w); if (k) keys.push(k);
+      });
+      orderInput.value = keys.join(',');
+    }
+    function rowAfter(y) {
+      var els = Array.prototype.slice.call(
+        box.querySelectorAll('.frappe-row-wrap:not(.hd-dragging)'));
+      var best = null, bestOff = -Infinity;
+      els.forEach(function (r) {
+        var b = r.getBoundingClientRect();
+        var off = y - b.top - b.height / 2;
+        if (off < 0 && off > bestOff) { bestOff = off; best = r; }
+      });
+      return best;
+    }
+    function wireDrag(wrap) {
+      if (wrap.querySelector(':scope > .hd-drag')) return;
+      var h = document.createElement('span');
+      h.className = 'hd-drag'; h.title = 'Drag to reorder this field';
+      h.setAttribute('draggable', 'true'); h.innerHTML = '&#9776;';
+      wrap.insertBefore(h, wrap.firstChild);
+      h.addEventListener('dragstart', function (e) {
+        dragRow = wrap; wrap.classList.add('hd-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', ''); } catch (_) {}
+      });
+      h.addEventListener('dragend', function () {
+        if (dragRow) dragRow.classList.remove('hd-dragging');
+        dragRow = null; updateOrder();
+      });
+    }
+    box.addEventListener('dragover', function (e) {
+      if (!dragRow) return;
+      e.preventDefault();
+      var after = rowAfter(e.clientY);
+      if (after == null) box.appendChild(dragRow);
+      else if (after !== dragRow) box.insertBefore(dragRow, after);
+    });
+    box.addEventListener('input', function (e) {
+      if (e.target && /^field_label_/.test(e.target.name || '')) updateOrder();
+    });
+    box.querySelectorAll('.frappe-row-wrap').forEach(wireDrag);
+    // re-wire drag on rows added/removed (Add field, delete, JS clones) + refresh order
+    new MutationObserver(function () {
+      box.querySelectorAll('.frappe-row-wrap').forEach(wireDrag);
+      updateOrder();
+    }).observe(box, { childList: true });
+    updateOrder();
   })();
 </script>
 
@@ -1610,19 +1878,53 @@
 // table/api fields, which have no scalar title value). Keeps the selection across
 // label edits; pre-selects the stored title field (data-current) when editing.
 // Populate the Model picker from models.json; pre-select the bound model (data-current).
+// On selection, LIVE-PREVIEW the model's outputs as read-only computed rows (they become
+// real fields on save via _apply_model_output_fields).
 (function () {
   var ms = document.getElementById('id_model');
   if (!ms) return;
+  var box = document.getElementById('hd-rows');
+  var MODELS = {};                                  // name -> {inputs:[], outputs:[]}
   var cur = ms.getAttribute('data-current') || '';
+  function typeLabel(ft){ return ({Number:'Number',Text:'Text','Time-Series':'Table',Date:'Date',JSON:'JSON'})[ft] || ft; }
+  function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+  function addPreviewRow(key, cls, typeLab, badge, note){
+    if (!key || box.querySelector('.frappe-row-wrap[data-field-key="'+key+'"]')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'frappe-row-wrap hd-computed-wrap ' + cls;
+    wrap.setAttribute('data-field-key', key);
+    wrap.innerHTML = '<div class="frappe-row hd-computed-row">'
+      + '<div class="hd-computed-name"><code>'+esc(key)+'</code>'
+      + '<span class="hd-computed-badge">↳ '+esc(badge)+'</span></div>'
+      + '<div class="frappe-muted frappe-text-sm">'+esc(typeLab)+'</div>'
+      + '<div></div>'
+      + '<div class="hd-config-cell"><span class="frappe-muted frappe-text-sm">'+esc(note)+'</span></div>'
+      + '</div>';
+    box.appendChild(wrap);
+  }
+  function previewFields(modelName){
+    if (!box) return;
+    box.querySelectorAll('.frappe-row-wrap.hd-model-input, .frappe-row-wrap.hd-model-output').forEach(function(n){ n.remove(); });
+    var spec = MODELS[modelName] || {inputs:[], outputs:[]};
+    (spec.inputs || []).forEach(function(key){
+      addPreviewRow(key, 'hd-model-input', 'Text', 'input read by '+modelName, 'model input · editable · added on save');
+    });
+    (spec.outputs || []).forEach(function(o){
+      addPreviewRow(o.name, 'hd-model-output', typeLabel(o.field_type), 'computed by '+modelName, 'model output · added on save');
+    });
+  }
   fetch(ms.getAttribute('data-url')).then(function (r) { return r.json(); })
     .then(function (d) {
       (d.models || []).forEach(function (mo) {
+        MODELS[mo.name] = {inputs: mo.inputs || [], outputs: mo.outputs || []};
         var o = document.createElement('option');
         o.value = mo.name; o.textContent = mo.name;
         if (mo.name === cur) o.selected = true;
         ms.appendChild(o);
       });
+      if (cur) previewFields(cur);                  // edit mode: skip-if-exists avoids dupes
     }).catch(function () {});
+  ms.addEventListener('change', function(){ previewFields(ms.value); });
 })();
 
 (function () {

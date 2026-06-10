@@ -230,6 +230,18 @@ def _json_path_series(data, dotpath):
     star = segs.index("*")
     head, tail = ".".join(segs[:star]), ".".join(segs[star + 1:])
     node = _json_path(data, head) if head else data
+    # A DICT at the '*' is iterated as items (insertion order, which JSON preserves): a
+    # '$key' tail yields the keys, an empty/'$value' tail yields the values, any other
+    # tail is pulled from each value. This turns a JSON object like return_periods
+    # {"2":152.6,...} into a series — keys=x (return period), values=y (flow), a
+    # flow-frequency curve — with NO change to the list path behavior below.
+    if isinstance(node, dict):
+        items = list(node.items())
+        if tail in ("$key", "$keys"):
+            return [k for k, _ in items]
+        if tail in ("", "$value", "$values"):
+            return [v for _, v in items]
+        return [_json_path(v, tail) for _, v in items]
     if not isinstance(node, list):
         return []
     out = []
@@ -3434,6 +3446,7 @@ def _derive_columns(field_schema):
             and not (p or {}).get("x-layout")
             and not (p or {}).get("x-field") == "script"     # holds no value; outputs do
             and not (p or {}).get("x-field") == "shapefile"  # big GeoJSON blob, not a cell
+            and not (p or {}).get("x-widget") == "image"     # a map/PNG (data-URI), not a cell
             and not ((p or {}).get("type") == "array"
                      and (p or {}).get("x-widget") == "table")]
     pmap = dict(cols)
@@ -4425,7 +4438,9 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 v = values.get(name)
                 if isinstance(v, (list, tuple)):
                     f["value"] = ", ".join(str(x) for x in v)
-                f["help"] = (f["help"] + " (comma-separated)").strip()
+                numeric = (prop.get("items") or {}).get("type") in ("number", "integer")
+                f["help"] = (f["help"] + (" (comma-separated numbers)" if numeric
+                                          else " (comma-separated)")).strip()
             else:  # string + anything unknown -> plain text
                 f["widget"] = "text"
             fields.append(f)
@@ -4526,7 +4541,22 @@ def _coerce_attributes(field_schema, post):
                     rows_out.append(cells)
             out[key] = rows_out
         elif t == "array":
-            out[key] = [s.strip() for s in raw.split(",") if s.strip()]
+            parts = [s.strip() for s in raw.split(",") if s.strip()]
+            it = (prop.get("items") or {}).get("type")
+            if it in ("number", "integer"):           # List (numbers) field
+                nums, bad = [], None
+                for s in parts:
+                    try:
+                        nums.append(int(s) if it == "integer" else float(s))
+                    except ValueError:
+                        bad = s
+                        break
+                if bad is not None:
+                    errors[key] = "must be a comma-separated list of numbers (got '%s')" % bad
+                else:
+                    out[key] = nums
+            else:                                     # Tags field -> list of strings
+                out[key] = parts
         else:  # string (+ enum) stays a string
             out[key] = raw
     return out, errors
@@ -4770,9 +4800,22 @@ def _build_script_globals():
             raise AttributeError("attribute '%s' is not allowed in a script" % name)
         val = safer_getattr(obj, name, missing)         # blocks _-names, format/format_map
         if val is missing:
-            # A clear error beats the cryptic "'NoneType' object is not callable" you'd
-            # get if a not-whitelisted np/pd function silently resolved to None.
-            raise AttributeError("'%s' is not available in the script sandbox" % name)
+            # Make the failure ACTIONABLE rather than the cryptic "'NoneType' is not
+            # callable". Three distinct causes:
+            if isinstance(obj, types.SimpleNamespace):
+                # a curated np/pd proxy: the function simply isn't whitelisted.
+                raise AttributeError("'%s' is not available in the script sandbox "
+                                     "(not in the curated numpy/pandas whitelist)" % name)
+            if obj is None:
+                # the common one: an input with no Test value (and, in test mode, no
+                # field is read — the mapping only binds at SAVE time) is None.
+                raise AttributeError(
+                    "tried '.%s' on a value that is None — this input has no value yet: "
+                    "enter a Test value for it (or, at save time, map it to a field)." % name)
+            hint = (" — for a numpy reducer use np.%s(x) (wrap a list with np.array(x) "
+                    "first), or a builtin like sum()/len()/max()" % name
+                    ) if isinstance(obj, (list, tuple, dict, int, float, str, bool)) else ""
+            raise AttributeError("a %s has no '.%s'%s" % (type(obj).__name__, name, hint))
         if isinstance(val, types.ModuleType):
             root = (getattr(val, "__name__", "") or "").split(".")[0]
             if root not in _SCRIPT_ALLOWED_ROOTS:
@@ -4935,15 +4978,22 @@ def _coerce_script_output(value, ftype):
     if ft in ("json", "object"):
         return v                            # store the JSON value as-is (object/array/scalar)
     if ft in ("time-series", "table", "series"):
-        # A table is a list of row dicts. A dict of SCALARS -> key/value rows
-        # ([{key,value}, ...]); a dict with nested values -> a single (one-row) table;
-        # a list passes through; a bare scalar -> one row {value}.
+        # A table is a list of row dicts:
+        #   * dict of SCALARS            -> key/value rows ([{key,value}, ...])
+        #   * dict of PARALLEL LISTS     -> column-oriented (keys=columns, one row per
+        #                                   index, like a DataFrame from a dict of columns)
+        #   * dict with other nested vals-> a single (one-row) table
+        #   * a list passes through;  a bare scalar -> one row {value}.
         if isinstance(v, dict):
             if not v:
                 return []
-            if all(val is None or isinstance(val, (int, float, str, bool))
-                   for val in v.values()):
+            vals = list(v.values())
+            if all(val is None or isinstance(val, (int, float, str, bool)) for val in vals):
                 return [{"key": k, "value": val} for k, val in v.items()]
+            if vals and all(isinstance(val, list) for val in vals):
+                n = max((len(val) for val in vals), default=0)
+                return [{k: (val[i] if i < len(val) else None) for k, val in v.items()}
+                        for i in range(n)]
             return [v]
         if isinstance(v, list):
             return v
@@ -5087,9 +5137,11 @@ def _compute_scripts(field_schema, attrs, session=None):
             attrs.pop(warnkey, None)
             continue
         inputs, warnings = {}, []
+        inputs_map = prop.get("x-script-inputs") or {}   # var name -> source field key
         for v in _script_free_vars(src):
-            if v in conn_fields:                        # a LIVE connector-output field
-                problem = _connector_input_problem(conn_fields[v], attrs)
+            src_field = inputs_map.get(v) or v           # explicit mapping, else by name
+            if src_field in conn_fields:                 # a LIVE connector-output field
+                problem = _connector_input_problem(conn_fields[src_field], attrs)
                 if problem:
                     # The connector would silently substitute a fallback (e.g. a widened
                     # window) — bind None instead so no wrong value is computed + persisted.
@@ -5097,9 +5149,9 @@ def _compute_scripts(field_schema, attrs, session=None):
                     warnings.append("input '%s': %s" % (v, problem))
                 else:
                     inputs[v] = _materialize_connector_for_script(
-                        session, conn_fields[v], attrs, conn_cache)
-            elif v in attrs:
-                inputs[v] = attrs.get(v)
+                        session, conn_fields[src_field], attrs, conn_cache)
+            elif src_field in attrs:
+                inputs[v] = attrs.get(src_field)
         if warnings:
             attrs[warnkey] = "; ".join(warnings)[:400]
         else:
@@ -5155,14 +5207,28 @@ class _ModelData:
         return App.get_persistent_store_database("hydro_db")
 
     def records(self, slug, limit=5000, **equals):
-        """All records of a doctype as attr dicts (id included). Optional ==field filters,
-        e.g. data.records('gage_site', region='Provo')."""
+        """All records of a doctype as attr dicts (id included), ORDERED by id so an
+        aggregate is reproducible. Optional ==field filters, e.g.
+        data.records('gage_site', region='Provo').
+
+        Models often SUM/AVERAGE over this set, so a silently-truncated read would make
+        the aggregate quietly wrong. Therefore the read is capped at ``limit`` (default
+        5000) and RAISES if the doctype has MORE than ``limit`` matching rows rather than
+        returning a partial set. Pass an explicit larger ``limit`` (or add a filter) to
+        opt into a known bound."""
+        limit = int(limit)
         with Session(self._eng()) as s:
             stmt = select(m.HydroRecord.id, m.HydroRecord.attributes).where(
                 m.HydroRecord.hydrotype_slug == slug)
             for k, v in (equals or {}).items():
                 stmt = stmt.where(m.HydroRecord.attributes[k].astext == str(v))
-            rows = s.execute(stmt.limit(int(limit))).all()
+            # fetch one past the cap to distinguish "exactly limit" (fine) from "more" (raise)
+            rows = s.execute(stmt.order_by(m.HydroRecord.id).limit(limit + 1)).all()
+        if len(rows) > limit:
+            raise RuntimeError(
+                "data.records(%r) matched more than the %d-row limit; an aggregate over a "
+                "truncated set would be silently wrong. Pass an explicit limit=N to read a "
+                "known bound, or add a filter to narrow the set." % (slug, limit))
         out = []
         for rid, a in rows:
             d = {k: v for k, v in (a or {}).items() if not k.startswith("_")}
@@ -5216,14 +5282,86 @@ class _ModelData:
         return out_path
 
 
+def _nc_stats(arr):
+    """Stats over a (possibly masked) NetCDF/numpy array, ALL-FILL-SAFE — a convenience for
+    model post-scripts reading gridded data. Returns {n_valid, n_total, mean, min, max, sum}
+    with None (not NaN) for every stat when no valid cells remain (e.g. a NetCDF tile that is
+    entirely _FillValue, like an ocean variable over land). So a model author writes
+    ``s = ncstats(var[:]); mean = s['mean']`` instead of hand-guarding the all-masked case."""
+    import numpy as _np
+    a = _np.ma.asarray(arr)
+    n_total = int(a.size)
+    n_valid = int(a.count())
+    if n_valid == 0:
+        return {"n_valid": 0, "n_total": n_total,
+                "mean": None, "min": None, "max": None, "sum": None}
+    return {"n_valid": n_valid, "n_total": n_total,
+            "mean": float(a.mean()), "min": float(a.min()),
+            "max": float(a.max()), "sum": float(a.sum())}
+
+
+def _geotiff_read(path, band=1):
+    """Read a GeoTIFF (or any GDAL raster) for a model post-script — one call instead of
+    rasterio boilerplate. Returns ``{array, crs, res, bounds, nodata, shape, stats}`` where
+    ``array`` is a masked numpy band (nodata cells masked) and ``stats`` is the all-fill-safe
+    reduction from ``ncstats``. So a model author writes
+    ``g = geotiff('dem.tif'); mean_elev = g['stats']['mean']`` over a DEM/coverage raster.
+    Raises a clear error if rasterio (GDAL) isn't installed, rather than NameError."""
+    try:
+        import rasterio
+    except Exception as exc:  # pragma: no cover - depends on env
+        raise RuntimeError(
+            "geotiff() needs rasterio/GDAL, which isn't installed in this environment. "
+            "Install it with: conda install -n tethys -c conda-forge rasterio") from exc
+    with rasterio.open(path) as src:
+        arr = src.read(int(band), masked=True)
+        crs = src.crs
+        b = src.bounds
+        # cell area in REAL m^2 regardless of CRS units (feet vs metre), so depth/area/volume
+        # come out right whether the raster is EPSG:5070 (m), EPSG:2271 (US ft), etc. None for
+        # geographic CRS (degrees), where a cell has no constant metric area, and the center
+        # lon/lat for placing the scenario on the map.
+        cell_area_m2 = None
+        center_lonlat = None
+        try:
+            from rasterio.warp import transform as _warp_pts
+            if crs is not None:
+                if not crs.is_geographic:
+                    try:
+                        uf = crs.linear_units_factor[1]   # (unit_name, metres-per-unit)
+                    except Exception:
+                        uf = 1.0
+                    cell_area_m2 = abs(src.res[0] * src.res[1]) * (uf ** 2)
+                cx, cy = (b.left + b.right) / 2.0, (b.bottom + b.top) / 2.0
+                lon, lat = _warp_pts(crs.to_string(), "EPSG:4326", [cx], [cy])
+                if abs(lon[0]) <= 180 and abs(lat[0]) <= 90:
+                    center_lonlat = (float(lon[0]), float(lat[0]))
+        except Exception:
+            pass
+        return {
+            "array": arr,
+            "crs": (crs.to_string() if crs else None),
+            "res": tuple(float(r) for r in src.res),
+            "cell_area_m2": cell_area_m2,
+            "center_lonlat": center_lonlat,
+            "bounds": (float(b.left), float(b.bottom), float(b.right), float(b.top)),
+            "nodata": (float(src.nodata) if src.nodata is not None else None),
+            "shape": (int(src.height), int(src.width)),
+            "stats": _nc_stats(arr),
+        }
+
+
 def _model_namespace(attrs, workspace, slug=None, record_id=None):
     """The TRUSTED namespace for a model's pre/post Python: full stdlib + numpy/pandas +
     file access (by convention scoped to ``workspace``) + a ``data`` accessor over HydroDesk
-    data. NOT the sandbox — model authoring is superuser-only, so the pre/post can stage
-    input files (incl. fetched DEM/coverage rasters) and parse outputs."""
+    data + an ``ncstats`` helper for all-fill-safe NetCDF reductions + a ``geotiff`` helper
+    for reading GDAL rasters (DEMs/coverages). NOT the sandbox — model authoring is
+    superuser-only, so the pre/post can stage input files (incl. fetched DEM/coverage
+    rasters) and parse outputs."""
     import os, io, csv, math, subprocess, pathlib, datetime, shutil, tempfile
     ns = {"record": dict(attrs or {}), "workspace": workspace,
-          "data": _ModelData(slug, record_id), "os": os, "io": io,
+          "data": _ModelData(slug, record_id), "ncstats": _nc_stats,
+          "geotiff": _geotiff_read, "os": os, "io": io,
           "json": json, "csv": csv, "math": math, "re": re, "subprocess": subprocess,
           "pathlib": pathlib, "datetime": datetime, "shutil": shutil, "tempfile": tempfile,
           "open": open, "print": print, "len": len, "range": range, "float": float,
@@ -6072,6 +6210,25 @@ def _render_table_field(prop, value):
     cols = [(ck, (cp or {}).get("title") or ck.replace("_", " ").title(),
              (cp or {}).get("type")) for ck, cp in _table_item_columns(prop)]
     rows = value if isinstance(value, list) else []
+    if not cols and rows:
+        # Computed/script table with NO declared item schema (e.g. a model output
+        # coerced from a dict-of-parallel-lists like hazard_breakdown / exposure_by_band):
+        # derive columns from the row dicts so it renders as a table, not a raw dump.
+        # Union of keys in first-seen order; a column is numeric only if every present
+        # value is a non-bool number (drives the "%g" formatting below).
+        keys = []
+        for row in rows:
+            if isinstance(row, dict):
+                for k in row:
+                    if k not in keys:
+                        keys.append(k)
+
+        def _coltype(ck):
+            vals = [r.get(ck) for r in rows if isinstance(r, dict) and r.get(ck) is not None]
+            return ("number" if vals and all(isinstance(x, (int, float))
+                    and not isinstance(x, bool) for x in vals) else None)
+
+        cols = [(ck, ck.replace("_", " ").title(), _coltype(ck)) for ck in keys]
     if not cols:
         return _format_cell(value)
     if not rows:
@@ -6440,6 +6597,24 @@ def _render_value_block(val, field_type="Text"):
     return str(format_html("<span style='font-weight:600;'>{}</span>", str(shown)))
 
 
+def _render_stored_image(val, label="map"):
+    """Render a STORED Image field (a ``data:`` URI or image URL a model produced) as a
+    safe <img>. Empty/non-image -> a muted placeholder. Used for a model OUTPUT of
+    field_type Image (e.g. a flood inundation map the post-script renders to a PNG)."""
+    s = val if isinstance(val, str) else ""
+    if not s.strip():
+        return mark_safe("<span class='frappe-muted frappe-text-sm'>"
+                         "no map yet &mdash; run the model</span>")
+    if not (s.startswith("data:image/") or s.startswith("http://")
+            or s.startswith("https://") or s.startswith("/")):
+        return mark_safe("<span class='frappe-muted frappe-text-sm'>no map</span>")
+    return format_html(
+        "<div class='hd-model-image'><a href='{}' target='_blank' rel='noopener'>"
+        "<img src='{}' alt='{}' loading='lazy' style='max-width:100%;height:auto;"
+        "display:block;border:1px solid var(--fr-border-color,#d1d8dd);"
+        "border-radius:6px;'></a></div>", s, s, label or "map")
+
+
 def _render_image_block(result, label="map"):
     """Render an 'image' output (e.g. a WMS GetMap) as a lazy <img> linking to the
     full image. The URL is built from connector config + record attrs; format_html
@@ -6549,6 +6724,64 @@ def _nc_params_bar(slug, record_id, field, nc_map, attrs):
         " · ".join(summary) or "query parameters")
 
 
+def _json_to_table_html(payload, cap=200):
+    """If a connector's JSON result is TABULAR, render it as a safe HTML table; else
+    None (the caller falls back to the raw-JSON view). Recognizes the common shapes a
+    REST endpoint returns: a dict of scalars (e.g. GeoGLOWS return_periods
+    {"2":152.6,...} -> a key/value table), a list of dicts (union-of-keys columns), a
+    dict of equal-length parallel lists (column-oriented), and a list of scalars. Every
+    cell is escaped so an untrusted API response cannot inject markup."""
+    from django.utils.html import escape
+
+    def _scalar(x):
+        return x is None or isinstance(x, (str, int, float, bool))
+
+    def _fmt(x):
+        if isinstance(x, bool):
+            return "true" if x else "false"
+        if isinstance(x, float):
+            return ("%.4f" % x).rstrip("0").rstrip(".") if x == x else ""
+        return "" if x is None else str(x)
+
+    headers = rows = None
+    if isinstance(payload, dict) and payload and all(_scalar(v) for v in payload.values()):
+        headers, rows = ["Key", "Value"], [[k, _fmt(v)] for k, v in payload.items()]
+    elif isinstance(payload, list) and payload and all(isinstance(r, dict) for r in payload):
+        cols = []
+        for r in payload:
+            for k in r:
+                if k not in cols:
+                    cols.append(k)
+        headers, rows = cols, [[_fmt(r.get(c)) for c in cols] for r in payload]
+    elif (isinstance(payload, dict) and payload
+          and all(isinstance(v, list) for v in payload.values())
+          and len({len(v) for v in payload.values()}) == 1):
+        headers = list(payload.keys())
+        n = len(next(iter(payload.values())))
+        rows = [[_fmt(payload[c][i]) for c in headers] for i in range(n)]
+    elif isinstance(payload, list) and payload and all(_scalar(v) for v in payload):
+        headers, rows = ["Value"], [[_fmt(v)] for v in payload]
+    if not rows:
+        return None
+
+    shown = rows[:cap]
+    thead = "".join(
+        "<th style='text-align:left;padding:4px 12px;border-bottom:2px solid "
+        "var(--fr-border-color,#e6e9ee);font-weight:600;'>%s</th>" % escape(str(h))
+        for h in headers)
+    tbody = "".join(
+        "<tr>" + "".join(
+            "<td style='padding:3px 12px;border-bottom:1px solid "
+            "var(--fr-border-color,#f0f0f0);'>%s</td>" % escape(str(c)) for c in r)
+        + "</tr>" for r in shown)
+    more = ("<div class='frappe-help' style='margin-top:2px;'>+%d more rows</div>"
+            % (len(rows) - len(shown))) if len(rows) > len(shown) else ""
+    return mark_safe(
+        "<table class='hd-api-json-table' style='border-collapse:collapse;font-size:13px;"
+        "margin-top:4px;'><thead><tr>%s</tr></thead><tbody>%s</tbody></table>%s"
+        % (thead, tbody, more))
+
+
 def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
                       field_map=None, api_outputs=None, nc_map=None):
     """Render an API field's LIVE result as safe HTML for the detail view.
@@ -6607,6 +6840,9 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
                 body = _render_image_block(result, label)
             elif (result.get("kind") == "series") or ft == "Time-Series":
                 body = _render_columns_table(result)
+            elif result.get("kind") == "json":
+                body = (_json_to_table_html(result.get("json"))
+                        or _render_value_block(result.get("value"), ft))
             else:
                 body = _render_value_block(result.get("value"), ft)
             blocks.append(
@@ -6645,6 +6881,21 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
 
     if kind == "json":
         payload = result.get("json")
+        table = _json_to_table_html(payload)
+        if table is not None:                    # tabular JSON -> a real table
+            try:
+                pretty = json.dumps(payload, indent=2, ensure_ascii=False)
+            except (TypeError, ValueError):
+                pretty = str(payload)
+            raw = format_html(
+                "<details class='hd-api-json' style='margin-top:4px;'>"
+                "<summary class='frappe-help'>raw JSON</summary>"
+                "<pre style='background:var(--gray-100);padding:10px;border-radius:6px;"
+                "overflow:auto;max-height:320px;'>{}</pre></details>", pretty)
+            body = mark_safe(
+                "<div class='hd-api-field'>" + str(mark_safe(pill)) + str(refresh)
+                + str(table) + str(raw) + "</div>")
+            return mark_safe(str(body) + _api_source_note(result, connector))
         try:
             pretty = json.dumps(payload, indent=2, ensure_ascii=False)
         except (TypeError, ValueError):
@@ -6779,6 +7030,13 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
             fields.append({
                 "label": label,
                 "value": _render_table_field(prop, attrs.get(name)),
+            })
+            seen.add(name)
+            continue
+        if prop.get("x-widget") == "image":          # a model-rendered map / image
+            fields.append({
+                "label": label,
+                "value": _render_stored_image(attrs.get(name), label),
             })
             seen.add(name)
             continue
@@ -7010,12 +7268,18 @@ def _schema_for(field_type, options):
         return {"x-layout": "tab"}
     if ft == "number":
         return {"type": "number"}
+    if ft == "image":  # a model/API IMAGE output (data: URI or URL) -> rendered as <img>
+        return {"type": "string", "x-widget": "image"}
     if ft == "checkbox":
         return {"type": "boolean"}
     if ft == "date":
         return {"type": "string", "format": "date"}
     if ft == "tags":
         return {"type": "array", "items": {"type": "string"}}
+    if ft == "list":  # a simple LIST of numbers (comma-separated). Stored as an array of
+        # numbers and handed to a Python-script field as a list[float] DIRECTLY — no
+        # json.loads needed (e.g. `mean = sum(values)/len(values)`).
+        return {"type": "array", "items": {"type": "number"}, "x-widget": "list"}
     if ft == "textarea":  # Long Text -> multiline <textarea>
         return {"type": "string", "x-widget": "textarea"}
     if ft == "email":
@@ -7174,7 +7438,11 @@ def _builder_type_for(prop):
         return prop.get("x-field")  # formatted/computed types round-trip by x-field
     t = prop.get("type")
     if t == "array":
-        return "table" if prop.get("x-widget") == "table" else "tags"
+        if prop.get("x-widget") == "table":
+            return "table"
+        if prop.get("x-widget") == "list":
+            return "list"
+        return "tags"
     if prop.get("x-link-type"):
         return "link"
     if t == "boolean":
@@ -7227,6 +7495,27 @@ def _builder_options_for(prop, builder_type):
     return ""
 
 
+def _field_value_counts(session, slug, keys):
+    """For the builder's per-field delete guard: how many records hold a NON-EMPTY value
+    for each field key. A field at 0 is safe to delete (no data is lost); >0 is locked."""
+    counts = {k: 0 for k in keys}
+    if not keys:
+        return counts
+    keyset = set(keys)
+    rows = session.execute(select(m.HydroRecord.attributes)
+                           .where(m.HydroRecord.hydrotype_slug == slug)).all()
+    for (a,) in rows:
+        for k, v in (a or {}).items():
+            if k not in keyset or v is None:
+                continue
+            if isinstance(v, str) and v.strip() == "":
+                continue
+            if isinstance(v, (list, dict)) and len(v) == 0:
+                continue
+            counts[k] += 1
+    return counts
+
+
 def _schema_to_builder_rows(field_schema):
     """Reverse a stored field_schema into editable builder rows (the inverse of the
     new_hydrotype assembly). Each row mirrors _parse_builder_rows' shape
@@ -7258,6 +7547,18 @@ def _schema_to_builder_rows(field_schema):
         si = prop.get("x-show-if") or {}
         nc_map = prop.get("x-nc-map") or {}
         rows.append({
+            "key": key,
+            # A computed field (script/formula output) is OWNED by its source field's
+            # carrier — render it READ-ONLY (disabled inputs don't submit, so it never
+            # re-slugifies into a junk key; the third pass re-creates it authoritatively).
+            "computed": bool(prop.get("x-computed")),
+            "computed_by": prop.get("x-computed-by") or "",
+            "model_input": bool(prop.get("x-model-input")),     # label locked to model var
+            "model_input_by": prop.get("x-model-input") or "",
+            "type_label": {"number": "Number", "textarea": "Long Text", "date": "Date",
+                           "tags": "Tags", "list": "List (numbers)", "table": "Table",
+                           "checkbox": "Checkbox", "text": "Text", "script": "Python Script",
+                           "formula": "Formula"}.get(bt, bt.title()),
             "label": prop.get("title") or key.replace("_", " ").title(),
             "type": bt,
             "options": _builder_options_for(prop, bt),
@@ -7274,6 +7575,8 @@ def _schema_to_builder_rows(field_schema):
             "default": dflt,
             "showif": si,
             "showif_json": json.dumps(si) if si.get("field") else "",
+            "script_inputs": prop.get("x-script-inputs") or {},
+            "script_inputs_json": json.dumps(prop.get("x-script-inputs") or {}),
         })
     return rows
 
@@ -7322,6 +7625,18 @@ def _parse_builder_rows(post):
                     api_outputs = parsed
             except (ValueError, TypeError):
                 api_outputs = []
+        # Python-Script field: the input var -> source-field mapping (x-script-inputs),
+        # a JSON blob field_inputs_<i> = {var_name: field_key}.
+        script_inputs = {}
+        raw_inputs = (post.get(f"field_inputs_{i}") or "").strip()
+        if raw_inputs:
+            try:
+                parsed_in = json.loads(raw_inputs)
+                if isinstance(parsed_in, dict):
+                    script_inputs = {str(k): str(v) for k, v in parsed_in.items()
+                                     if str(k).strip() and str(v).strip()}
+            except (ValueError, TypeError):
+                script_inputs = {}
         # NetCDF API field: the per-record parameter mapping (x-nc-map) carried as a
         # single JSON blob field_ncmap_<i> = {shapefile,start,end} -> field slugs.
         nc_map = {}
@@ -7348,7 +7663,8 @@ def _parse_builder_rows(post):
             except (ValueError, TypeError):
                 showif = {}
         has_any = (bool(label) or bool(options) or is_req or bool(field_map)
-                   or bool(api_outputs) or bool(nc_map) or bool(default_val) or bool(showif))
+                   or bool(api_outputs) or bool(nc_map) or bool(default_val) or bool(showif)
+                   or bool(script_inputs))
         if has_any:
             submitted_count = i + 1
         rows.append({
@@ -7358,6 +7674,7 @@ def _parse_builder_rows(post):
             "required": is_req,
             "field_map": field_map,
             "api_outputs": api_outputs,
+            "script_inputs": script_inputs,
             "nc_map": nc_map,
             "default": default_val,
             "showif": showif,
@@ -7394,6 +7711,7 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
             row["field_map_json"] = json.dumps(row.get("field_map") or {})
             row["api_outputs_json"] = json.dumps(row.get("api_outputs") or [])
             row["nc_map_json"] = json.dumps(row.get("nc_map") or {}) if row.get("nc_map") else ""
+            row["script_inputs_json"] = json.dumps(row.get("script_inputs") or {}) if row.get("script_inputs") else ""
             si = row.get("showif") or {}
             row["showif_json"] = json.dumps(si) if si.get("field") else ""
     is_edit = mode == "edit"
@@ -7416,6 +7734,7 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         "rows": rows + [{"label": "", "type": "text", "options": "",
                          "required": False, "field_map": {}, "api_outputs": [],
                          "field_map_json": "{}", "api_outputs_json": "[]",
+                         "script_inputs": {}, "script_inputs_json": "",
                          "default": "", "showif": {}, "showif_json": ""}]
                 * max(0, row_count - len(rows)),
         # The mapping endpoint base for the per-row x-api-map JS (a placeholder
@@ -7427,6 +7746,10 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
         "connectors_json_url": reverse("hydrodesk:connectors_json"),
         # The Python-Script field's Test-run endpoint (runs the sandbox on sample inputs).
         "script_test_url": reverse("hydrodesk:script_test"),
+        # Immediate per-field delete (edit mode only; __KEY__ replaced client-side).
+        "delete_field_url_base": (reverse("hydrodesk:delete_field",
+                                          kwargs={"slug": slug, "field_key": "__KEY__"})
+                                  if is_edit and slug else ""),
         # Model binding: the current x-model + the model list for the picker.
         "model": model or "",
         "models_json_url": reverse("hydrodesk:models_json"),
@@ -7547,7 +7870,8 @@ def _assemble_type_spec(post, force_slug=None):
                 continue
             except Exception:
                 pass                          # non-syntax issues surface at run time
-            script_rows.append((idx + 1, prop_name, list(row.get("api_outputs") or [])))
+            script_rows.append((idx + 1, prop_name, list(row.get("api_outputs") or []),
+                                dict(row.get("script_inputs") or {})))
         seen.add(prop_name)
         prop = _schema_for(row["type"], row["options"])
         prop["title"] = label  # _build_widgets/_derive_columns use title as the label
@@ -7698,7 +8022,7 @@ def _assemble_type_spec(post, force_slug=None):
     # key _compute_scripts reads) from the ticked outputs, and emit one read-only
     # COMPUTED property per output (typed) so the outputs are first-class fields
     # (columns, Data API catalog, filtering). Added BEFORE x-order is built below. ---
-    for row_no, prop_name, raw_outputs in script_rows:
+    for row_no, prop_name, raw_outputs, raw_inputs in script_rows:
         x_outputs = []
         for o in raw_outputs:
             if not isinstance(o, dict):
@@ -7711,12 +8035,22 @@ def _assemble_type_spec(post, force_slug=None):
                 ft = "Text"
             label = (o.get("label") or oname.replace("_", " ").title()).strip()
             x_outputs.append({"name": oname, "label": label, "field_type": ft})
-            if oname not in properties:        # one read-only computed property per output
-                properties[oname] = {"type": _script_output_json_type(ft),
-                                     "x-computed": True, "x-computed-by": prop_name,
-                                     "title": label}
-                seen.add(oname)
+            # ALWAYS (re)assert the computed property — even if a stale builder row (a
+            # prior re-edit rendered the output as a plain field) also created this key,
+            # the script output OWNS it, so a re-save never strips its x-computed-by.
+            properties[oname] = {"type": _script_output_json_type(ft),
+                                 "x-computed": True, "x-computed-by": prop_name,
+                                 "title": label}
+            seen.add(oname)
         properties[prop_name]["x-script-outputs"] = x_outputs
+        # var -> source-field mapping; keep only vars mapped to a REAL sibling field
+        # (never the script field itself), so a stale/dangling mapping can't bind.
+        valid_inputs = {var: fk for var, fk in (raw_inputs or {}).items()
+                        if fk in properties and fk != prop_name}
+        if valid_inputs:
+            properties[prop_name]["x-script-inputs"] = valid_inputs
+        else:
+            properties[prop_name].pop("x-script-inputs", None)
 
     if not properties:
         form_errors.append("Add at least one field (a row with a Label).")
@@ -7771,6 +8105,121 @@ def _assemble_type_spec(post, force_slug=None):
     return spec, form_errors, type_name, geometry, rows, row_count, slug
 
 
+def _detect_model_inputs(config):
+    """The record FIELD KEYS a model READS — ``record['x']`` / ``record.get('x')`` in its
+    pre/post Python and ``{x}`` in its command template (excluding ``{workspace}``). These
+    are the INPUT fields the bound doctype must provide; the model writes its OUTPUTS
+    (declared in config['outputs']) separately."""
+    import re as _re
+    text = "\n".join([(config or {}).get("pre_script") or "",
+                      (config or {}).get("post_script") or ""])
+    keys, seen = [], set()
+    for mo in _re.finditer(r"""record\s*(?:\[\s*|\.\s*get\s*\(\s*)['"]([A-Za-z_]\w*)['"]""", text):
+        k = mo.group(1)
+        if k not in seen:
+            seen.add(k); keys.append(k)
+    for mo in _re.finditer(r"\{([A-Za-z_]\w*)\}", (config or {}).get("command") or ""):
+        k = mo.group(1)
+        if k != "workspace" and k not in seen:
+            seen.add(k); keys.append(k)
+    return keys
+
+
+def _apply_model_output_fields(session, field_schema):
+    """If a doctype binds a model (``x-model``), AUTO-CREATE the fields the model needs:
+    its INPUTS (editable fields it reads via record[...]/{...}) and a read-only computed
+    field per declared OUTPUT — so the doctype gets both sides without hand-adding them.
+    A real user-defined field of the same key is never clobbered; computed outputs are
+    (re)asserted every save so they stay in sync (and drop if the model is unbound)."""
+    model_name = (field_schema or {}).get("x-model")
+    if not model_name:
+        return field_schema
+    model = _load_model(session, model_name)
+    if model is None:
+        return field_schema
+    cfg = getattr(model, "config", None) or {}
+    props = field_schema.setdefault("properties", {})
+    order = field_schema.setdefault("x-order", list(props.keys()))
+    cur_inputs = set(_detect_model_inputs(cfg))
+    cur_outputs = {_slugify_underscore(o.get("name") or "")
+                   for o in (cfg.get("outputs") or []) if isinstance(o, dict)}
+    # DROP STALE auto-managed fields: a prior input/output of THIS model that the model no
+    # longer has (e.g. record['n'] renamed to record['manning']) — so the old field doesn't
+    # linger beside the new one.
+    for k in list(props.keys()):
+        p = props[k] or {}
+        if (p.get("x-model-input") == model_name and k not in cur_inputs) or \
+           (p.get("x-computed-by") == model_name and k not in cur_outputs):
+            props.pop(k, None)
+    order = [k for k in order if k in props]
+    # INPUTS: editable fields the model reads. Created as plain Text (safe default — no
+    # numeric mangling of ids; the script coerces). Marked x-model-input so the builder
+    # LOCKS the label (its key must stay = the model variable, e.g. record['n']); the type
+    # stays editable. Re-asserted each save so the marker survives.
+    for key in _detect_model_inputs(cfg):
+        if not key:
+            continue
+        if key in props:
+            if not (props[key] or {}).get("x-computed"):
+                p = dict(props[key] or {})
+                p["x-model-input"] = model_name
+                props[key] = p
+        else:
+            props[key] = {"type": "string", "title": key.replace("_", " ").title(),
+                          "x-model-input": model_name}
+            if key not in order:
+                order.append(key)
+    # OUTPUTS: read-only computed fields.
+    for o in (cfg.get("outputs") or []):
+        if not isinstance(o, dict):
+            continue
+        name = _slugify_underscore(o.get("name") or "")
+        if not name:
+            continue
+        existing = props.get(name)
+        if existing and not existing.get("x-computed"):
+            continue                         # respect a user-defined field of the same key
+        # Build the computed property through _schema_for so the OUTPUT's widget survives
+        # a re-save: Image -> x-widget:image, Table -> x-widget:table + items, List ->
+        # x-widget:list. (Previously only the bare JSON 'type' was kept, so Image/Table
+        # outputs lost their rendering and showed raw text on every builder re-save.)
+        out_prop = dict(_schema_for(o.get("field_type") or "Number", ""))
+        out_prop.update({"x-computed": True, "x-computed-by": model_name,
+                         "title": o.get("label") or name.replace("_", " ").title()})
+        props[name] = out_prop
+        if name not in order:
+            order.append(name)
+    field_schema["x-order"] = order
+    return field_schema
+
+
+def _reorder_field_order(field_schema, raw_order):
+    """Apply the builder's drag-reorder to ``x-order``. ``raw_order`` is the comma-joined
+    list of field KEYS in the visual (dragged) order, from the builder's hidden
+    ``hd_field_order`` input. Keys present in the schema lead in that order; any property
+    NOT named (a just-added field, a renamed one, or a freshly re-asserted model output)
+    keeps its current relative position, appended after. Covers EVERY field type — user
+    fields, Python-script outputs, AND model input/output fields — because each builder
+    row (including the read-only computed rows) carries its key. A no-op when the form
+    sent no order (so it can never wipe the existing order)."""
+    props = (field_schema or {}).get("properties") or {}
+    keys = [k.strip() for k in (raw_order or "").split(",") if k.strip()]
+    want, seen = [], set()
+    for k in keys:
+        if k in props and k not in seen:
+            want.append(k)
+            seen.add(k)
+    if not want:
+        return field_schema
+    cur = field_schema.get("x-order") or list(props.keys())
+    tail = [k for k in cur if k in props and k not in seen]
+    for k in props:                       # safety net: any property in neither list
+        if k not in seen and k not in tail:
+            tail.append(k)
+    field_schema["x-order"] = want + tail
+    return field_schema
+
+
 @controller(name="new_type", url="new-type", title="New HydroType")
 def new_hydrotype(request):
     """DocType Builder: define a NEW HydroType in a UI form and create it.
@@ -7794,6 +8243,8 @@ def new_hydrotype(request):
         engine = App.get_persistent_store_database("hydro_db")
         try:
             with Session(engine) as session:
+                _apply_model_output_fields(session, spec["field_schema"])
+                _reorder_field_order(spec["field_schema"], request.POST.get("hd_field_order"))
                 _, created = registry.import_hydrotype(session, spec, overwrite=False)
         except ValueError as exc:  # malformed spec surfaced by validate_spec
             form_errors.append(str(exc))
@@ -7842,11 +8293,15 @@ def edit_hydrotype(request, slug="monitoring_station"):
             spec["version"] = (cur_version or 1) + 1   # bump on every edit
             try:
                 with Session(engine) as session:
+                    _apply_model_output_fields(session, spec["field_schema"])
+                    _reorder_field_order(spec["field_schema"], request.POST.get("hd_field_order"))
                     registry.import_hydrotype(session, spec, overwrite=True)
             except ValueError as exc:
                 form_errors.append(str(exc))
             else:
-                return redirect(reverse("hydrodesk:list", kwargs={"slug": slug}))
+                # Return to the BUILDER (not the records list) so a script field's computed
+                # output fields are visible immediately for further editing.
+                return redirect(reverse("hydrodesk:edit_type", kwargs={"slug": slug}) + "?saved=1")
         context = _builder_context(form_errors, type_name, geometry, rows, row_count,
                                    mode="edit", slug=slug,
                                    title_field=request.POST.get("title_field", ""),
@@ -7858,6 +8313,14 @@ def edit_hydrotype(request, slug="monitoring_station"):
 
     # GET: reverse the stored schema back into editable builder rows.
     rows = _schema_to_builder_rows(field_schema)
+    # Per-field delete guard: mark which fields currently hold data (locked) vs empty.
+    with Session(engine) as session:
+        counts = _field_value_counts(
+            session, slug, [r.get("key") for r in rows if r.get("key")])
+    for r in rows:
+        n = counts.get(r.get("key"), 0)
+        r["has_data"] = n > 0
+        r["value_count"] = n
     row_count = max(_BUILDER_MIN_ROWS, len(rows))
     geometry = geometry_kind or "none"
     context = _builder_context([], display_name, geometry, rows, row_count,
@@ -7867,6 +8330,55 @@ def edit_hydrotype(request, slug="monitoring_station"):
                                model=(field_schema or {}).get("x-model", ""),
                                perms=(field_schema or {}).get("x-permissions"))
     return render(request, "hydrodesk/new_type.html", context)
+
+
+@controller(name="delete_field", url="delete-field/{slug}/{field_key}", title="Delete Field")
+def delete_field(request, slug=None, field_key=None):
+    """Immediately drop ONE field from a doctype (builder-gated, POST). Refuses if any
+    record holds data for it (a server-side re-check of the same guard that disables the
+    builder's delete button) — so deleting never loses data. Removes the field from
+    properties + x-order + required + x-title-field and bumps the version, so a refresh
+    reflects it right away (the builder's row delete otherwise only applies on Save)."""
+    if not _can_build(request):
+        return JsonResponse({"ok": False, "error": "permission denied"}, status=403)
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST required"}, status=405)
+    from sqlalchemy.orm.attributes import flag_modified
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        ht = session.execute(select(m.HydroType)
+                             .where(m.HydroType.slug == slug)).scalar_one_or_none()
+        if ht is None:
+            return JsonResponse({"ok": False, "error": "unknown doctype"}, status=404)
+        schema = dict(ht.field_schema or {})
+        props = dict(schema.get("properties") or {})
+        if field_key not in props:
+            return JsonResponse({"ok": True, "removed": field_key})   # already gone
+        n = _field_value_counts(session, slug, [field_key]).get(field_key, 0)
+        if n > 0:
+            return JsonResponse({"ok": False, "error": "field holds data in %d record(s)" % n},
+                                status=400)
+        # CASCADE: a script/formula field OWNS its computed output fields (x-computed-by);
+        # they are derived, so they go with it (their computed values aren't user data).
+        removed = [field_key] + [k for k, p in props.items()
+                                 if (p or {}).get("x-computed-by") == field_key and k != field_key]
+        for k in removed:
+            props.pop(k, None)
+        schema["properties"] = props
+        if "x-order" in schema:
+            schema["x-order"] = [k for k in schema["x-order"] if k not in removed]
+        if "required" in schema:
+            req = [k for k in schema["required"] if k not in removed]
+            schema["required"] = req
+            if not req:
+                schema.pop("required", None)
+        if schema.get("x-title-field") in removed:
+            schema.pop("x-title-field", None)
+        ht.field_schema = schema
+        ht.version = (ht.version or 1) + 1
+        flag_modified(ht, "field_schema")
+        session.commit()
+    return JsonResponse({"ok": True, "removed": removed})
 
 
 def _dependent_types(session, slug):
@@ -9020,15 +9532,32 @@ def _model_config_from_post(post):
         timeout = max(1, min(3600, int(post.get("timeout") or 300)))
     except (TypeError, ValueError):
         timeout = 300
+    based_on = (post.get("based_on") or "doctypes").strip().lower()
+    if based_on not in ("doctypes", "hecras", "modflow", "other"):
+        based_on = "doctypes"
+    getlist = getattr(post, "getlist", None)
+    seen_dt = set()
+    input_doctypes = []                       # the doctypes this model reads (data.records)
+    for s in (getlist("input_doctype") if getlist else []):
+        s = (s or "").strip()
+        if s and s not in seen_dt:
+            seen_dt.add(s)
+            input_doctypes.append(s)
     config = {"pre_script": (post.get("pre_script") or "").strip(),
               "command": (post.get("command") or "").strip(),
               "post_script": (post.get("post_script") or "").strip(),
+              "based_on": based_on, "input_doctypes": input_doctypes,
               "timeout": timeout, "outputs": []}
     seen = set()
+    # If the form sends out_keep_* checkboxes, store ONLY the ticked outputs; an old-style
+    # POST with no out_keep_* keys keeps all (backward compatible).
+    has_keep = any(str(k).startswith("out_keep_") for k in post.keys())
     for i in range(60):
         raw = post.get("out_name_%d" % i)
         if not raw:
             continue
+        if has_keep and post.get("out_keep_%d" % i) is None:
+            continue                              # output present but UNticked -> excluded
         nm = _slugify_underscore(raw)
         if not nm or nm in seen:
             continue
@@ -9044,6 +9573,72 @@ def _model_config_from_post(post):
     return name, config, errors
 
 
+def _doctype_field_index():
+    """Every doctype + its field KEYS (the internal names a model's pre/post Python
+    references via ``data.records(slug)`` / ``record[key]``), for the model editor's
+    data-reference panel. A doctype-based model needs the exact slug + keys, which the
+    human labels otherwise hide (label 'C' -> key 'c', 'Sub-catchment' -> 'sub_catchment')."""
+    def _kind(p):
+        if p.get("x-layout"):
+            return None                                   # section/column/tab break: no data
+        if p.get("x-widget") == "table" or p.get("type") == "array":
+            return "table"
+        xf = p.get("x-field")
+        if xf in ("currency", "percent", "duration", "rating", "formula", "color",
+                  "phone", "shapefile", "script"):
+            return xf
+        if p.get("x-api-connector"):
+            return "live"
+        if p.get("x-link-type"):
+            return "link"
+        t = p.get("type", "string")
+        if t in ("number", "integer"):
+            return "number"
+        if t == "boolean":
+            return "checkbox"
+        if p.get("format") == "date":
+            return "date"
+        return "text"
+
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as s:
+        rows = s.execute(select(m.HydroType.slug, m.HydroType.display_name,
+                                m.HydroType.field_schema)
+                         .order_by(m.HydroType.display_name)).all()
+    out = []
+    for slug, dname, fs in rows:
+        props = (fs or {}).get("properties") or {}
+        order = [k for k in ((fs or {}).get("x-order") or []) if k in props]
+        for k in props:                                   # any key not covered by x-order
+            if k not in order:
+                order.append(k)
+        fields = []
+        for k in order:
+            p = props.get(k) or {}
+            kind = _kind(p)
+            if kind is None:
+                continue
+            entry = {"key": k, "kind": kind, "title": p.get("title") or k,
+                     "computed": bool(p.get("x-computed"))}
+            if kind == "table":
+                # surface an INLINE table's columns so a consumer (e.g. a schedule alert)
+                # can target a scalar column, not the un-thresholdable list itself.
+                items = p.get("items") or {}
+                cprops = items.get("properties") or {}
+                corder = [c for c in (items.get("x-order") or []) if c in cprops]
+                for c in cprops:
+                    if c not in corder:
+                        corder.append(c)
+                cols = [{"key": c, "title": (cprops[c] or {}).get("title") or c,
+                         "kind": _kind(cprops[c] or {}) or "text"} for c in corder]
+                if cols:
+                    entry["columns"] = cols
+            fields.append(entry)
+        out.append({"slug": slug, "name": dname or slug,
+                    "model": (fs or {}).get("x-model") or "", "fields": fields})
+    return out
+
+
 def _model_form_context(mode, name, config, errors, model_id=None):
     config = config or {}
     outs = list(config.get("outputs") or [])
@@ -9051,7 +9646,8 @@ def _model_form_context(mode, name, config, errors, model_id=None):
     for i in range(max(6, len(outs) + 2)):     # existing outputs + a couple blank rows
         o = outs[i] if i < len(outs) else {}
         rows.append({"i": i, "name": o.get("name", ""), "label": o.get("label", ""),
-                     "field_type": o.get("field_type", "Number")})
+                     "field_type": o.get("field_type", "Number"),
+                     "keep": bool(o.get("name"))})   # stored outputs start ticked
     is_edit = mode == "edit"
     action = (reverse("hydrodesk:model_edit", kwargs={"model_id": model_id})
               if is_edit else reverse("hydrodesk:models"))
@@ -9060,9 +9656,184 @@ def _model_form_context(mode, name, config, errors, model_id=None):
             "command": config.get("command", ""), "post_script": config.get("post_script", ""),
             "timeout": config.get("timeout", 300), "output_rows": rows,
             "output_types": list(_SCRIPT_OUTPUT_FIELD_TYPES),
+            "field_index": _doctype_field_index(),
+            "based_on": (config.get("based_on") or "doctypes"),
+            "selected_doctypes": list(config.get("input_doctypes") or []),
+            "source_kinds": [{"value": "doctypes", "label": "Doctypes (read app data)"},
+                             {"value": "hecras", "label": "HEC-RAS"},
+                             {"value": "modflow", "label": "MODFLOW"},
+                             {"value": "other", "label": "Other / external"}],
             "page_title": ("Edit Model" if is_edit else "New Model"),
             "submit_label": ("Save model" if is_edit else "Create model"),
+            "detect_outputs_url": reverse("hydrodesk:model_detect_outputs"),
             "models_url": reverse("hydrodesk:models")}
+
+
+def _detect_script_outputs(src):
+    """A model post-script's OUTPUT variables: MODULE-LEVEL assignments that are TERMINAL
+    — assigned but never read again. An intermediate (a value that feeds a later
+    expression, e.g. Manning's A/P/R/V/Q) is excluded, leaving only the results
+    (area/velocity/discharge/…). A name read ONLY to mutate itself (``x.append(...)`` /
+    ``x[i]=...``) still counts as an output (the build-a-list-then-store idiom). A
+    ``record[...]`` read or ``data.*`` load is an input/temp, never an output. Each output
+    gets a guessed field type + default label; the user then selects which to keep."""
+    import ast
+    try:
+        tree = ast.parse(src or "")
+    except SyntaxError:
+        return []
+    # Parent map -> classify each Load of a name as consumption vs in-place mutation.
+    parent = {}
+    for node in ast.walk(tree):
+        for ch in ast.iter_child_nodes(node):
+            parent[ch] = node
+    MUTATORS = {"append", "extend", "insert", "update", "add", "sort", "setdefault",
+                "clear", "pop", "remove", "discard", "popitem"}
+    consumed = set()                                  # names read as an INTERMEDIATE
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            p = parent.get(node)
+            if isinstance(p, ast.Attribute) and p.value is node and p.attr in MUTATORS:
+                continue                              # x.append(...) -> mutation, not consume
+            if isinstance(p, ast.Subscript) and p.value is node and isinstance(p.ctx, ast.Store):
+                continue                              # x[i] = ... -> in-place mutation
+            consumed.add(node.id)
+
+    def is_temp(v):
+        # record['y'] / record.get('y') -> input read;  data.* -> a load. Not outputs.
+        if isinstance(v, ast.Subscript) and isinstance(v.value, ast.Name) and v.value.id == "record":
+            return True
+        if isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute):
+            inner = v.func.value
+            if (v.func.attr in ("records", "fetch", "get", "series")
+                    and isinstance(inner, ast.Name) and inner.id == "data"):
+                return True
+            if v.func.attr == "get" and isinstance(inner, ast.Name) and inner.id == "record":
+                return True
+        return False
+
+    NUM = {"float", "int", "round", "sum", "len", "abs", "min", "max"}
+    SERIES = {"list", "array", "zeros", "ones", "arange", "linspace",
+              "DataFrame", "Series", "sorted"}
+    STR_CALLS = {"str", "format", "join", "upper", "lower", "strip", "title", "replace", "zfill"}
+    # module-level name -> its RHS, so a guess can trace an alias (breakdown = rows -> list).
+    assigns = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    assigns[t.id] = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            assigns[node.target.id] = node.value
+
+    def is_stringy(v, d=0):
+        if v is None or d > 4:
+            return False
+        if isinstance(v, ast.Constant):
+            return isinstance(v.value, str)
+        if isinstance(v, ast.JoinedStr):
+            return True                                  # f-string
+        if isinstance(v, ast.Call):
+            fn = v.func
+            nm = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
+            return nm in STR_CALLS
+        if isinstance(v, ast.BinOp):
+            return is_stringy(v.left, d + 1) or is_stringy(v.right, d + 1)
+        if isinstance(v, ast.IfExp):
+            return is_stringy(v.body, d + 1) or is_stringy(v.orelse, d + 1)
+        if isinstance(v, ast.Name):
+            return is_stringy(assigns.get(v.id), d + 1)
+        return False
+
+    def guess(v, d=0):
+        if v is None or d > 5:
+            return "Number"
+        if isinstance(v, ast.Constant):
+            if isinstance(v.value, bool):
+                return "Text"
+            if isinstance(v.value, (int, float)):
+                return "Number"
+            if isinstance(v.value, str):
+                return "Text"
+        if isinstance(v, (ast.List, ast.ListComp, ast.Tuple, ast.Dict, ast.DictComp)):
+            return "Time-Series"
+        if isinstance(v, ast.JoinedStr):
+            return "Text"
+        if isinstance(v, ast.BinOp):                     # string concat -> Text, else Number
+            return "Text" if (is_stringy(v.left) or is_stringy(v.right)) else "Number"
+        if isinstance(v, ast.IfExp):                     # x if cond else y -> type of a branch
+            return guess(v.body, d + 1)
+        if isinstance(v, ast.Call):
+            fn = v.func
+            nm = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
+            if nm in NUM:
+                return "Number"
+            if nm in SERIES:
+                return "Time-Series"
+            if nm in STR_CALLS:
+                return "Text"
+        if isinstance(v, ast.Name):                      # alias -> trace back to its RHS
+            tv = assigns.get(v.id)
+            if tv is not None and tv is not v:
+                return guess(tv, d + 1)
+        return "Number"
+
+    out, seen = [], set()
+    for node in tree.body:                       # module-level statements only
+        if isinstance(node, ast.Assign):
+            val, targets = node.value, node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            val, targets = node.value, [node.target]
+        else:
+            continue
+        if is_temp(val):
+            continue
+        for t in targets:
+            if not isinstance(t, ast.Name):
+                continue
+            nm = t.id
+            if nm.startswith("_") or nm in seen:
+                continue
+            terminal = nm not in consumed                  # never read again = an output
+            # a consumed (intermediate) name is OFFERED only if descriptively named (>=3
+            # chars); terse math intermediates (A, R, n, V) are dropped entirely. Terminals
+            # are pre-selected; descriptive intermediates are offered UNchecked.
+            if not terminal and len(nm) < 3:
+                continue
+            seen.add(nm)
+            out.append({"name": nm, "field_type": guess(val), "selected": terminal,
+                        "label": nm.replace("_", " ").title()})
+    return out
+
+
+def _script_candidate_outputs(src):
+    """``{var_name: selected}`` — a script's OUTPUT candidates (terminal assignments
+    selected; descriptive intermediates offered un-selected; terse intermediates, helper
+    defs, scratch vars, and record/data reads excluded). Thin wrapper over the same AST
+    analysis the model-output detector uses, so the Python-Script field's Test-run offers
+    exactly the same set (no intermediates)."""
+    return {o["name"]: bool(o.get("selected")) for o in _detect_script_outputs(src)}
+
+
+@controller(name="model_detect_outputs", url="model-detect-outputs", title="Detect Model Outputs")
+def model_detect_outputs(request):
+    """AST-detect a model post-script's likely output variables + guessed types, so the
+    builder can auto-fill the Outputs (the user then only edits labels). Superuser-only
+    (the model editor is); reads nothing, runs nothing — pure static parse."""
+    if not request.user.is_superuser:
+        return JsonResponse({"ok": False, "error": "permission denied"}, status=403)
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST required"}, status=405)
+    try:
+        body = json.loads((request.body or b"").decode("utf-8") or "{}")
+    except (ValueError, TypeError) as exc:
+        return JsonResponse({"ok": False, "error": "bad request: %s" % exc}, status=400)
+    # inputs = record[...] reads across pre/command/post; outputs = assigned variables
+    cfg = {"pre_script": body.get("pre_script") or "", "command": body.get("command") or "",
+           "post_script": body.get("source") or body.get("post_script") or ""}
+    return JsonResponse({"ok": True,
+                         "inputs": _detect_model_inputs(cfg),
+                         "outputs": _detect_script_outputs(cfg["post_script"])})
 
 
 @controller(name="models", url="models", title="Models")
@@ -9155,13 +9926,22 @@ def model_delete(request, model_id=None):
 
 @controller(name="models_json", url="models.json", title="Models JSON")
 def models_json(request):
-    """Every model name, for the DocType builder's model picker."""
+    """Every model name + its declared outputs, for the DocType builder's model picker
+    (so selecting a model can live-preview the output fields it will auto-create)."""
     out = []
     try:
         engine = App.get_persistent_store_database("hydro_db")
         with Session(engine) as session:
-            out = [{"name": r[0]} for r in session.execute(
-                select(m.HydroModel.name).order_by(m.HydroModel.name)).all()]
+            for name, config in session.execute(
+                    select(m.HydroModel.name, m.HydroModel.config)
+                    .order_by(m.HydroModel.name)).all():
+                outs = [{"name": _slugify_underscore(o.get("name") or ""),
+                         "label": o.get("label") or "",
+                         "field_type": o.get("field_type") or "Number"}
+                        for o in ((config or {}).get("outputs") or [])
+                        if isinstance(o, dict) and (o.get("name") or "").strip()]
+                out.append({"name": name, "inputs": _detect_model_inputs(config or {}),
+                            "outputs": outs})
     except Exception:
         out = []
     return JsonResponse({"ok": True, "models": out})
@@ -9202,9 +9982,20 @@ def _evaluate_alerts(rules, attrs):
         if not isinstance(r, dict):
             continue
         field = (r.get("field") or "").strip()
-        if not field or field not in (attrs or {}):
+        if not field:
             continue
-        actual = attrs.get(field)
+        if "." in field:
+            # a table COLUMN ("readings.temp"): threshold the LATEST row's value (a table
+            # is usually append-ordered, so the last row is the most recent reading).
+            tkey, col = field.split(".", 1)
+            rows_ = (attrs or {}).get(tkey)
+            actual = (rows_[-1].get(col)
+                      if isinstance(rows_, list) and rows_ and isinstance(rows_[-1], dict)
+                      else None)
+        else:
+            if field not in (attrs or {}):
+                continue
+            actual = attrs.get(field)
         if actual is None:
             continue
         if _alert_op(actual, r.get("op"), r.get("value")):
@@ -9365,6 +10156,7 @@ def _schedule_form_context(mode, sched, errors, schedule_id=None, slugs=None):
             "interval_minutes": sched.get("interval_minutes", 60),
             "enabled": sched.get("enabled", True), "refresh": sched.get("refresh", True),
             "alert_rows": rows, "errors": errors, "slugs": slugs or [],
+            "field_index": _doctype_field_index(),
             "ops": list(_ALERT_OPS), "severities": list(_ALERT_SEVERITIES),
             "page_title": ("Edit Schedule" if is_edit else "New Schedule"),
             "submit_label": ("Save schedule" if is_edit else "Create schedule"),
@@ -9725,11 +10517,22 @@ def script_test(request):
     try:
         out = _run_python_script(source, bound)       # sandboxed, 5s SIGALRM timeout
     except Exception as exc:
-        return JsonResponse({"ok": False,
-                             "error": ("%s: %s" % (type(exc).__name__, exc))[:240],
+        msg = "%s: %s" % (type(exc).__name__, exc)
+        if "JSON object must be str" in str(exc):
+            # The classic confusion: json.loads() on an input that is already a number /
+            # list. Inputs arrive as their real Python type, so json.loads is not needed.
+            msg += (" — inputs already arrive as their real type (a Number is a number, a "
+                    "Table/series is a list); use the variable directly, don't json.loads() it.")
+        return JsonResponse({"ok": False, "error": msg[:320],
                              "inputs": [{"name": v} for v in free]})
+    # Offer only OUTPUT candidates — terminal assignments (selected) + descriptive
+    # intermediates (offered, unticked); terse intermediates, helper defs, and scratch vars
+    # are NOT offered. Real run-time types still come from _infer_script_output_field_type.
+    candidates = _script_candidate_outputs(source)
     variables = []
     for name, val in out.items():
+        if name not in candidates:
+            continue
         ftype, kind = _infer_script_output_field_type(val)
         try:
             preview = json.dumps(_script_jsonify(val))
@@ -9738,7 +10541,7 @@ def script_test(request):
         if len(preview) > 200:
             preview = preview[:200] + "…"
         variables.append({"name": name, "kind": kind, "field_type": ftype,
-                          "preview": preview})
+                          "preview": preview, "selected": candidates[name]})
     return JsonResponse({"ok": True, "inputs": [{"name": v} for v in free],
                          "variables": variables})
 
@@ -9766,6 +10569,369 @@ def types_json(request):
     except Exception:
         out = []
     return JsonResponse({"ok": True, "types": out})
+
+
+# =========================================================================
+# PUBLISH TO TETHYSDASH -- a NO-CODE mapper. Read a doctype's field_schema and
+# auto-wire a TethysDash dashboard JSON whose tiles (the tethysdash-hydrodesk
+# plugins) read THIS deployment's Data API. The field TYPES pick the tiles:
+# title -> a record dropdown, computed numbers -> KPI cards + a bar chart,
+# geometry -> a locations map, image fields -> image tiles, table fields ->
+# table tiles. No code, no hand-edited JSON: pick a doctype, download, import.
+# =========================================================================
+_TD_METRIC_SUFFIXES = ("_usd", "_km2", "_ha", "_m3", "_mps", "_cms", "_pct", "_m")
+
+
+def _td_primary_metric(num_fields):
+    """The most 'headline' numeric field for the bar chart / map sizing: prefer a
+    $-loss, then area, then the first number."""
+    for suf in _TD_METRIC_SUFFIXES:
+        for k in num_fields:
+            if k.endswith(suf):
+                return k
+    return num_fields[0] if num_fields else ""
+
+
+# Visualization vocabulary for the no-code mapper: each field/output is mapped to
+# ONE of these. The UI offers only the choices that make sense for a field's kind.
+_TD_VIZ_LABELS = {
+    "select": "Record selector (dropdown)",
+    "kpi":    "KPI number card",
+    "bar":    "Bar chart across records",
+    "line":   "Line chart across records",
+    "map":    "Map (record locations)",
+    "image":  "Image / map picture",
+    "table":  "Data table",
+    "ignore": "— don't show —",
+}
+
+
+def _td_field_kind(prop):
+    """Coarse kind of a field property, for choosing which visualizations apply."""
+    p = prop or {}
+    if p.get("x-layout"):
+        return "layout"
+    if p.get("x-widget") == "image":
+        return "image"
+    if p.get("x-widget") == "table":
+        return "table"
+    if p.get("type") == "number":
+        return "number"
+    return "text"
+
+
+def _td_viz_options(kind, is_title):
+    """The visualizations a field of this kind may be mapped to (first = default)."""
+    if kind == "number":
+        return ["kpi", "bar", "line", "ignore"]
+    if kind == "image":
+        return ["image", "ignore"]
+    if kind == "table":
+        return ["table", "ignore"]
+    if is_title:
+        return ["select", "ignore"]
+    return ["ignore"]
+
+
+def _td_order_props(field_schema):
+    """(ordered_keys, props) for a doctype's field schema, honoring x-order."""
+    props = (field_schema or {}).get("properties", {}) or {}
+    order = [k for k in ((field_schema or {}).get("x-order") or list(props.keys())) if k in props]
+    return order, props
+
+
+def _td_title_key(field_schema, order, props):
+    """The field that becomes the record-selector dropdown: the designated title
+    field when it's text, else the first text field in declaration order."""
+    tf = (field_schema or {}).get("x-title-field")
+    if tf and tf in props and _td_field_kind(props[tf]) == "text":
+        return tf
+    for k in order:
+        if _td_field_kind(props.get(k) or {}) == "text":
+            return k
+    return None
+
+
+def _td_default_picks(field_schema, geometry_kind):
+    """The auto-suggested field -> visualization mapping (the starting point the
+    user can override per field). Numbers default to KPI cards except the single
+    headline metric, which defaults to a bar chart; geometry defaults to a map."""
+    order, props = _td_order_props(field_schema)
+    nums_computed = [k for k in order if (props[k] or {}).get("type") == "number"
+                     and (props[k] or {}).get("x-computed")]
+    nums_all = [k for k in order if (props[k] or {}).get("type") == "number"]
+    primary = _td_primary_metric(nums_computed or nums_all)
+    title_key = _td_title_key(field_schema, order, props)
+    picks = {}
+    for k in order:
+        kind = _td_field_kind(props[k] or {})
+        if kind == "layout":
+            continue
+        if k == title_key:
+            picks[k] = "select"
+        elif kind == "number":
+            picks[k] = "bar" if k == primary else "kpi"
+        elif kind == "image":
+            picks[k] = "image"
+        elif kind == "table":
+            picks[k] = "table"
+        else:
+            picks[k] = "ignore"
+    if geometry_kind in ("point", "line", "polygon"):
+        picks["__geom__"] = "map"
+    return picks
+
+
+def _td_picks_from_request(request, field_schema, geometry_kind):
+    """Read the user's per-field viz choices from ``viz_<key>`` GET params, falling
+    back to the auto defaults for anything not (validly) submitted. A submitted choice
+    is ignored unless it is a legal option for that field's kind (so a number can't be
+    mapped to a table, etc.)."""
+    defaults = _td_default_picks(field_schema, geometry_kind)
+    if not any(str(k).startswith("viz_") for k in request.GET):
+        return defaults
+    order, props = _td_order_props(field_schema)
+    title_key = _td_title_key(field_schema, order, props)
+    picks = dict(defaults)
+    for key in list(defaults.keys()):
+        if key == "__geom__":
+            param, allowed = "viz___geom__", ["map", "ignore"]
+        else:
+            param = "viz_" + key
+            allowed = _td_viz_options(_td_field_kind(props.get(key) or {}), key == title_key)
+        if param in request.GET:
+            v = request.GET.get(param)
+            if v in allowed:
+                picks[key] = v
+    return picks
+
+
+def _td_sample_str(v):
+    """A short, safe preview of a sample API value for the picker table."""
+    if v is None:
+        return ""
+    if isinstance(v, str) and v.startswith("data:"):
+        return "[image data]"
+    if isinstance(v, list):
+        return "[%d row%s]" % (len(v), "" if len(v) == 1 else "s")
+    if isinstance(v, dict):
+        return "[object]"
+    s = str(v)
+    return s if len(s) <= 42 else s[:40] + "…"
+
+
+def _td_field_catalog(field_schema, geometry_kind, picks, sample_attrs):
+    """Rows for the no-code picker UI: one per real field (+ a synthetic geometry row),
+    each with its detected kind, a live sample value, and the viz <select> options with
+    the current pick marked selected. Returns (field_rows, geom_row_or_None)."""
+    order, props = _td_order_props(field_schema)
+    title_key = _td_title_key(field_schema, order, props)
+    sample_attrs = sample_attrs or {}
+    rows = []
+    for k in order:
+        prop = props[k] or {}
+        kind = _td_field_kind(prop)
+        if kind == "layout":
+            continue
+        opts = _td_viz_options(kind, k == title_key)
+        cur = picks.get(k, opts[0])
+        if cur not in opts:
+            cur = opts[0]
+        rows.append({
+            "key": k, "label": prop.get("title") or k, "kind": kind,
+            "sample": _td_sample_str(sample_attrs.get(k)),
+            "options": [{"value": o, "label": _TD_VIZ_LABELS[o], "selected": o == cur}
+                        for o in opts],
+        })
+    geom_row = None
+    if geometry_kind in ("point", "line", "polygon"):
+        cur = picks.get("__geom__", "map")
+        if cur not in ("map", "ignore"):
+            cur = "map"
+        geom_row = {
+            "key": "__geom__", "label": "Location (%s geometry)" % geometry_kind,
+            "kind": "geometry", "sample": "",
+            "options": [{"value": o, "label": _TD_VIZ_LABELS[o], "selected": o == cur}
+                        for o in ("map", "ignore")],
+        }
+    return rows, geom_row
+
+
+def _td_picks_querystring(picks):
+    """Encode the current picks as ``viz_<key>=<viz>`` pairs so a download/share link
+    reproduces the exact dashboard the user previewed."""
+    from urllib.parse import urlencode
+    return urlencode({("viz___geom__" if k == "__geom__" else "viz_" + k): v
+                      for k, v in picks.items()})
+
+
+def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_url, token, picks):
+    """Build the TethysDash dashboard JSON (+ human-readable mapping) from an explicit
+    per-field viz mapping. KPI-mapped numbers collapse into one card; each bar/line
+    number becomes its own chart tile; geometry -> a locations map; image/table fields
+    -> their own tiles. The record selector (if any) drives ${Record} on the per-record
+    tiles (KPI card, image, table)."""
+    order, props = _td_order_props(field_schema)
+    base = {"api_url": api_url, "token": token, "slug": slug}
+    var = "Record"
+    tiles, mapping, seq = [], [], [0]
+
+    def add(x, y, w, h, source, args, note):
+        seq[0] += 1
+        tiles.append({"i": str(seq[0]), "x": x, "y": y, "w": w, "h": h,
+                      "source": source, "args_string": args, "metadata_string": {}})
+        mapping.append({"source": source, "note": note})
+
+    kpi_fields = [k for k in order if picks.get(k) == "kpi"]
+    bar_fields = [k for k in order if picks.get(k) == "bar"]
+    line_fields = [k for k in order if picks.get(k) == "line"]
+    image_fields = [k for k in order if picks.get(k) == "image"]
+    table_fields = [k for k in order if picks.get(k) == "table"]
+    select_key = next((k for k in order if picks.get(k) == "select"), None)
+    geom_on = (geometry_kind in ("point", "line", "polygon")
+               and picks.get("__geom__") == "map")
+    scen = ("${%s}" % var) if select_key else None
+
+    y = 0
+    add(0, y, 68 if select_key else 100, 4, "Text",
+        {"text": "<h3 style='margin:0'>%s</h3><p style='margin:0;color:#6b7280'>"
+                 "Live from the HydroDesk Data API</p>" % display_name}, "title")
+    if select_key:
+        add(68, y, 32, 4, "hydrodesk_scenario_select",
+            {**base, "variable_name": var},
+            "record dropdown from '%s' (drives the ${%s} variable)" % (select_key, var))
+    y += 4
+
+    if kpi_fields:
+        kpis = kpi_fields[:6]
+        a = {**base, "fields": ",".join(kpis)}
+        if scen:
+            a["scenario"] = scen
+        add(0, y, 100, 8, "hydrodesk_kpi_card", a, "KPI cards: " + ", ".join(kpis))
+        y += 8
+
+    charts = [("bar", f) for f in bar_fields] + [("line", f) for f in line_fields]
+    i = 0
+    while i < len(charts):
+        row = charts[i:i + 2]
+        for j, (ct, f) in enumerate(row):
+            w = 50 if len(row) == 2 else 100
+            add(j * 50, y, w, 18, "hydrodesk_loss_chart",
+                {**base, "metric": f, "chart_type": ct},
+                "%s chart of %s across records" % (ct, f))
+        y += 18
+        i += 2
+
+    if geom_on:
+        metric = (bar_fields[0] if bar_fields else
+                  (line_fields[0] if line_fields else (kpi_fields[0] if kpi_fields else "")))
+        add(0, y, 100, 18, "hydrodesk_scenario_map", {**base, "metric": metric},
+            "locations map" + (" (points sized by %s)" % metric if metric else ""))
+        y += 18
+
+    for j in range(max(len(image_fields), len(table_fields))):
+        if j < len(image_fields):
+            w = 58 if j < len(table_fields) else 100
+            a = {**base, "map_field": image_fields[j]}
+            if scen:
+                a["scenario"] = scen
+            add(0, y, w, 28, "hydrodesk_flood_map", a,
+                "image: %s%s" % (image_fields[j], " (follows the dropdown)" if scen else ""))
+        if j < len(table_fields):
+            x = 58 if j < len(image_fields) else 0
+            w = 42 if j < len(image_fields) else 100
+            a = {**base, "table_field": table_fields[j]}
+            if scen:
+                a["scenario"] = scen
+            add(x, y, w, 28, "hydrodesk_hazard_table", a,
+                "table: %s%s" % (table_fields[j], " (follows the dropdown)" if scen else ""))
+        y += 28
+
+    dashboard = {
+        "name": display_name,
+        "description": "Generated by HydroDesk's no-code TethysDash mapper from the '%s' doctype." % slug,
+        "accessGroups": [], "unrestrictedPlacement": False,
+        "notes": "Tiles read the HydroDesk Data API; the record dropdown drives ${%s}. "
+                 "Requires the tethysdash-hydrodesk plugin installed in TethysDash." % var,
+        "gridItems": tiles,
+    }
+    return dashboard, mapping
+
+
+def _tethysdash_dashboard_for(slug, display_name, field_schema, geometry_kind,
+                              api_url, token, picks=None):
+    """Map a doctype's fields -> a TethysDash dashboard JSON. With ``picks`` omitted,
+    uses the auto-suggested mapping; pass an explicit per-field mapping (from the no-code
+    picker) to override. Returns (dashboard, mapping)."""
+    if picks is None:
+        picks = _td_default_picks(field_schema, geometry_kind)
+    return _td_build_from_picks(slug, display_name, field_schema, geometry_kind,
+                                api_url, token, picks)
+
+
+def _td_sample_record(session, slug):
+    """The earliest record's attributes for a doctype (to show live sample values in
+    the picker), or {} when the type has no records yet."""
+    row = session.execute(
+        select(m.HydroRecord.attributes)
+        .where(m.HydroRecord.hydrotype_slug == slug)
+        .order_by(m.HydroRecord.created_at).limit(1)
+    ).first()
+    return (row[0] or {}) if row else {}
+
+
+@controller(name="publish_tethysdash", url="publish-tethysdash", title="Publish to TethysDash")
+def publish_tethysdash(request):
+    """No-code mapper: pick a doctype, run its Data API, choose per field what each
+    becomes (KPI / bar / line / map / image / table / dropdown), preview the wired
+    TethysDash dashboard live, then download the JSON to import. Builder-gated."""
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
+    api_url = request.build_absolute_uri("/apps/hydrodesk").rstrip("/")
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        token = _resolve_secret(session, "api_read_token") or ""
+        types = registry.list_hydrotypes(session)            # [(slug, name, count)]
+        slug = request.GET.get("slug") or (types[0][0] if types else None)
+        preview = None
+        if slug:
+            meta = _load_hydrotype(session, slug)
+            if meta is not None:
+                dn, fs, gk = meta
+                picks = _td_picks_from_request(request, fs, gk)
+                sample = _td_sample_record(session, slug)
+                field_rows, geom_row = _td_field_catalog(fs, gk, picks, sample)
+                dash, mapping = _tethysdash_dashboard_for(slug, dn, fs, gk, api_url, token, picks)
+                preview = {"slug": slug, "display_name": dn, "geometry": gk or "none",
+                           "ntiles": len(dash["gridItems"]), "mapping": mapping,
+                           "fields": field_rows, "geom_row": geom_row,
+                           "has_sample": bool(sample), "picks_qs": _td_picks_querystring(picks),
+                           "json": json.dumps(dash, indent=2)}
+    ctx = {"types": [{"slug": s, "name": n, "count": c} for s, n, c in types],
+           "selected": slug, "preview": preview, "api_url": api_url, "has_token": bool(token)}
+    return render(request, "hydrodesk/publish_tethysdash.html", ctx)
+
+
+@controller(name="tethysdash_dashboard_json", url="publish-tethysdash/{slug}/dashboard.json",
+            title="TethysDash dashboard JSON")
+def tethysdash_dashboard_json(request, slug=None):
+    """Download the TethysDash dashboard JSON for one doctype, honoring the per-field
+    ``viz_<key>`` picks from the query string (so the download matches the preview)."""
+    if not _can_build(request):
+        return _denied(request, "manage", "DocTypes")
+    api_url = request.build_absolute_uri("/apps/hydrodesk").rstrip("/")
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        token = _resolve_secret(session, "api_read_token") or ""
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return JsonResponse({"ok": False, "error": "unknown doctype"}, status=404)
+        dn, fs, gk = meta
+        picks = _td_picks_from_request(request, fs, gk)
+        dash, _ = _tethysdash_dashboard_for(slug, dn, fs, gk, api_url, token, picks)
+    resp = JsonResponse(dash, json_dumps_params={"indent": 2})
+    resp["Content-Disposition"] = 'attachment; filename="%s.json"' % slug
+    return resp
 
 
 @controller(name="connectors_json", url="connectors.json", title="Connectors JSON")
