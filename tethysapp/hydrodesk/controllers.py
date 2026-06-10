@@ -460,6 +460,65 @@ def guide_query(request):
                          "point": point if sel else None, "selector": sel})
 
 
+def _strip_code_fences(s):
+    """Drop ```python / ``` fences and stray prose a model wraps code in."""
+    s = (s or "").strip()
+    m = re.search(r"```(?:python|py)?\s*\n(.*?)```", s, re.S)
+    if m:
+        return m.group(1).strip()
+    return s.strip("` \n")
+
+
+@controller(name="ai_codegen", url="ai-codegen", title="AI code")
+def ai_codegen(request):
+    """POST {description, inputs[], outputs[], model?} -> {ok, code}. A local code model
+    writes the Python body for a HydroDesk script field / model post-script: the input
+    vars are already bound, it must assign the named outputs. Returns code only."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not getattr(request.user, "is_authenticated", False):
+        return JsonResponse({"ok": False, "error": "login required"}, status=403)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    description = (data.get("description") or "").strip()
+    if not description:
+        return JsonResponse({"ok": False, "error": "describe what to compute"}, status=400)
+    inputs = [str(x).strip() for x in (data.get("inputs") or []) if str(x).strip()]
+    outputs = [str(x).strip() for x in (data.get("outputs") or []) if str(x).strip()]
+    models = _ai_models()
+    if not models:
+        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
+    want = (data.get("model") or "").strip()
+    model = (want if want in models else
+             next((x for x in models if x.startswith(("deepseek-coder", "qwen", "codellama"))),
+                  next((x for x in models if x.startswith("llama3.2")), models[0])))
+    sys = (
+        "You write short, correct Python for HydroDesk's SANDBOXED script runner. Rules:\n"
+        "- The INPUT variables are ALREADY defined — use them, never redefine or read input().\n"
+        "- COMPUTE and assign exactly these OUTPUT variables by name.\n"
+        "- Available: numpy as np, math, pandas as pd, statistics. NO file/network/os/sys/subprocess; no input().\n"
+        "- A list input is a Python list of numbers (or list of row dicts for a table field).\n"
+        "- Output a NUMBER, string, list, or list-of-dicts (for a table) per output.\n"
+        "- Return ONLY runnable Python — no markdown fences, no prose, no function/class wrapper.\n\n"
+        "INPUT variables (already defined): %s\nOUTPUT variables to assign: %s"
+        % (", ".join(inputs) or "(none)", ", ".join(outputs) or "(infer sensible names)"))
+    try:
+        raw = _ollama_chat(model, [{"role": "system", "content": sys},
+                                   {"role": "user", "content": description[:2000]}], timeout=180)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": "codegen failed: %s" % str(exc)[:120]}, status=502)
+    code = _strip_code_fences(raw)
+    syntax_ok = True
+    try:
+        import ast as _ast
+        _ast.parse(code)
+    except SyntaxError:
+        syntax_ok = False
+    return JsonResponse({"ok": True, "code": code, "model": model, "syntax_ok": syntax_ok})
+
+
 def _ai_data_context(slug, dn, fs, records, max_chars=12000):
     """A compact, LLM-grounding view of a doctype's records: a field summary + the records
     as JSON (images dropped, inline tables capped) so the model answers from real values."""

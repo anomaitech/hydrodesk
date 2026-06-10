@@ -77,8 +77,7 @@
     </div>
   </form>
 
-  {# Per-row Duplicate forms kept OUTSIDE the bulk form (HTML forms can't nest);
-     the in-row buttons submit these via their form= attribute. #}
+  {# Per-row Duplicate forms kept OUTSIDE the bulk form; in-row buttons submit via form= attr. #}
   {% for t in types %}
   <form id="hd-dup-{{ forloop.counter0 }}" method="post"
         action="{% url 'hydrodesk:duplicate_type' slug=t.slug %}" hidden>{% csrf_token %}</form>

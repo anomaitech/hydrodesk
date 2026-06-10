@@ -851,8 +851,6 @@
 {% block app_content %}
   {% block desk_content %}{% endblock %}
 
-  {# --- In-app AI guide ("clicky"-style): ask how-to, get an answer + a pointer at the
-        right nav item. Local model (Ollama) + offline browser TTS. On every page. --- #}
   {% if request.user.is_authenticated %}
   {% csrf_token %}
   <style>
@@ -899,6 +897,9 @@
     var btn=document.getElementById("hd-guide-btn"), panel=document.getElementById("hd-guide-panel"),
         ans=document.getElementById("hd-guide-answer"), q=document.getElementById("hd-guide-q"),
         ask=document.getElementById("hd-guide-ask"), tts=document.getElementById("hd-guide-tts");
+    // A Tethys ancestor uses CSS transform, which makes position:fixed resolve relative to
+    // that box (off-screen) instead of the viewport. Re-parent to <body> so fixed = screen.
+    [btn, panel].forEach(function (e) { if (e && e.parentNode !== document.body) document.body.appendChild(e); });
     function csrf(){ var m=document.cookie.match(/csrftoken=([^;]+)/); if(m) return m[1];
       var el=document.querySelector("[name=csrfmiddlewaretoken]"); return el?el.value:""; }
     btn.addEventListener("click", function(){ panel.hidden=!panel.hidden; if(!panel.hidden) q.focus(); });

@@ -178,8 +178,7 @@
                 Python script &mdash; {{ w.script_outputs|length }} output{{ w.script_outputs|length|pluralize }} computed when you save.
               </div>
             {% elif w.widget == "api" %}
-              {# API field: READ-ONLY. It stores no input — the live value is
-                 fetched from the connector when the record is VIEWED (detail). #}
+              {# API field: read-only; the live value is fetched from the connector when the record is viewed. #}
               <div class="frappe-muted frappe-text-sm"
                    style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
                 <i class="bi bi-cloud-arrow-down"></i>
@@ -195,8 +194,7 @@
                 {% endif %}
               </div>
             {% elif w.widget == "linked-table" %}
-              {# Linked table: rows are real records of another type, added/managed
-                 from the saved record's detail page (the parent id must exist). #}
+              {# Linked table: rows are real records of another type, managed from the saved record's detail. #}
               <div class="frappe-muted frappe-text-sm"
                    style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
                 <i class="bi bi-link-45deg"></i>
@@ -204,9 +202,7 @@
                 record first, then add &amp; manage them from its page.
               </div>
             {% elif w.widget == "table" %}
-              {# Child grid: an editable table. Columns + existing rows are handed to
-                 the JS as JSON; the whole grid serializes into ONE hidden input
-                 (name == field) that _coerce_attributes parses back into rows. #}
+              {# Child grid: an editable table; serializes into ONE hidden input (name==field) parsed back into rows. #}
               <div class="hd-tablefield" data-field="{{ w.name }}"
                    data-columns="{{ w.columns_json }}" data-rows="{{ w.rows_json }}">
                 <table class="hd-series-table hd-tablefield-grid"><thead></thead><tbody></tbody></table>
