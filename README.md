@@ -6,11 +6,16 @@ Define a record type once in a visual builder, and HydroDesk instantly generates
 
 > Packaged as the Tethys app `tethysapp-hydrodesk`; repo [`anomaitech/hydrodesk`](https://github.com/anomaitech/hydrodesk).
 
+![The HydroDesk workspace](docs/screenshots/home.png)
+
+<p align="center"><em>The HydroDesk workspace — every record type you define gets instant List, Form, Detail, and Map views, plus live connectors and a built-in AI assistant.</em></p>
+
 ---
 
 ## Table of contents
 
 - [Why HydroDesk](#why-hydrodesk)
+- [Screenshots](#screenshots)
 - [Core concept](#core-concept)
 - [Features](#features)
   - [No-code DocType builder](#1-no-code-doctype-builder)
@@ -36,6 +41,25 @@ Define a record type once in a visual builder, and HydroDesk instantly generates
 Most Tethys apps are written by developers: define a model, write controllers, build templates, run migrations, redeploy. HydroDesk inverts that. A **domain expert** describes *what they want to track* in a browser form, and the running app gains a new, fully-featured data type **with no code, no DDL, no `syncstores`, no restart**. New type = a single `INSERT`, not a schema change.
 
 It's no-code, spreadsheet-simple ergonomics, purpose-built for **water & environmental data**: spatial-first (PostGIS), with first-class live connectors to USGS, NOAA, GeoGLOWS, NextGen/NGIAB, OPeNDAP/THREDDS, and OGC web services.
+
+---
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/builder.png" alt="No-code type builder"><br><sub><b>No-code type builder</b> — define fields, geometry, the title field, and bind a model. No code, no migrations.</sub></td>
+<td width="50%"><img src="docs/screenshots/detail.png" alt="Record detail with live data"><br><sub><b>Live data in a record</b> — a Monitoring Station pulling real-time USGS discharge (38.2 cfs) on its detail page.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/ai_chat.png" alt="Chat with your data"><br><sub><b>Chat with your data</b> — a local Ollama model answers grounded in your records. Nothing leaves the machine.</sub></td>
+<td width="50%"><img src="docs/screenshots/map.png" alt="Map view"><br><sub><b>Map view</b> — any spatial type rendered on a map, colored by an attribute you choose.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/list.png" alt="Auto-generated list view"><br><sub><b>Auto-generated list</b> — sortable table with one-click Insights, Map, and CSV/Excel import.</sub></td>
+<td width="50%"><img src="docs/screenshots/connectors.png" alt="Connectors"><br><sub><b>Connectors</b> — reusable live-data sources (USGS, GeoGLOWS, OPeNDAP/THREDDS, OGC, GEE…) with a Test panel.</sub></td>
+</tr>
+</table>
 
 ---
 
