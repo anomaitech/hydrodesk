@@ -41,6 +41,13 @@
           <input type="checkbox" name="refresh" {% if refresh %}checked{% endif %}> Refresh computed fields each run</label>
       </div>
 
+      <div class="frappe-form-group" style="margin-top:12px;max-width:480px;">
+        <label class="frappe-label">Notify by email <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+        <input class="form-control form-control-sm" name="notify_email" type="text"
+               value="{{ notify_email }}" placeholder="alerts@example.org, oncall@example.org">
+        <div class="frappe-help">Comma-separated. Emailed once per new breach (deduped while unacknowledged). Requires the portal's email settings to be configured.</div>
+      </div>
+
       <div style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
         <div class="frappe-section-head">Alert rules <span class="frappe-muted frappe-text-sm">(raise an alert when a field crosses a threshold)</span></div>
         <div class="frappe-muted frappe-text-sm" style="margin:-2px 0 8px;">Field choices come from the <strong>target doctype's real fields</strong> — pick a target above to populate them.</div>

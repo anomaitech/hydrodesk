@@ -10207,6 +10207,7 @@ def _run_schedule(session, sched):
         m.HydroRecord.hydrotype_slug == sched.target_slug)).scalars().all()
     rules = sched.alerts or []
     n_refreshed = n_alerts = 0
+    new_breaches = []      # the alerts raised THIS run -> emailed (deduped already)
     for rec in recs:
         attrs = dict(rec.attributes or {})
         if sched.refresh:
@@ -10220,15 +10221,47 @@ def _run_schedule(session, sched):
                 m.HydroAlert.op == b["op"], m.HydroAlert.acknowledged.is_(False))).first()
             if dup is not None:
                 continue
+            title = _label_for(field_schema, attrs) or str(rec.id)[:8]
             session.add(m.HydroAlert(
                 schedule_name=sched.name, slug=sched.target_slug, record_id=rec.id,
-                record_title=(_label_for(field_schema, attrs) or str(rec.id)[:8]),
+                record_title=title,
                 field=b["field"], op=b["op"], threshold=str(b["threshold"]),
                 actual=str(b["actual"]), message=b["message"], severity=b["severity"]))
             n_alerts += 1
+            new_breaches.append({**b, "record_title": title})
     sched.last_run_at = timezone.now()
     session.commit()
+    if new_breaches and (sched.notify_email or "").strip():
+        _send_alert_email(sched, new_breaches)
     return (n_refreshed, n_alerts)
+
+
+def _send_alert_email(sched, breaches):
+    """Email a schedule's NEW threshold breaches to its notify_email recipients. Never
+    raises (fail_silently): a missing/unconfigured mail server must not break the run.
+    Requires the portal's email settings to be configured to actually deliver."""
+    try:
+        from django.core.mail import send_mail
+        from django.conf import settings
+        recipients = [e.strip() for e in (sched.notify_email or "").split(",") if e.strip()]
+        if not recipients:
+            return
+        worst = "critical" if any(b.get("severity") == "critical" for b in breaches) else "warning"
+        subject = "[HydroDesk %s] %d alert%s on %s" % (
+            worst.upper(), len(breaches), "" if len(breaches) == 1 else "s", sched.name)
+        lines = ["Schedule '%s' (%s) raised %d new alert(s):" % (
+            sched.name, sched.target_slug, len(breaches)), ""]
+        for b in breaches:
+            lines.append("  • %s — %s %s %s (now %s) [%s]" % (
+                b.get("record_title", "?"), b.get("field"), b.get("op"),
+                b.get("threshold"), b.get("actual"), b.get("severity", "warning")))
+            if b.get("message"):
+                lines.append("      %s" % b["message"])
+        send_mail(subject, "\n".join(lines),
+                  getattr(settings, "DEFAULT_FROM_EMAIL", None) or "hydrodesk@localhost",
+                  recipients, fail_silently=True)
+    except Exception:
+        pass
 
 
 def _run_due_schedules(force=False):
@@ -10341,6 +10374,7 @@ def _schedule_form_context(mode, sched, errors, schedule_id=None, slugs=None):
             "target_slug": sched.get("target_slug", ""),
             "interval_minutes": sched.get("interval_minutes", 60),
             "enabled": sched.get("enabled", True), "refresh": sched.get("refresh", True),
+            "notify_email": sched.get("notify_email", ""),
             "alert_rows": rows, "errors": errors, "slugs": slugs or [],
             "field_index": _doctype_field_index(),
             "ops": list(_ALERT_OPS), "severities": list(_ALERT_SEVERITIES),
@@ -10373,7 +10407,8 @@ def schedules(request):
                     session.add(m.HydroSchedule(
                         name=name, target_slug=target, interval_minutes=interval,
                         enabled=bool(request.POST.get("enabled")),
-                        refresh=bool(request.POST.get("refresh")), alerts=alerts))
+                        refresh=bool(request.POST.get("refresh")), alerts=alerts,
+                        notify_email=(request.POST.get("notify_email") or "").strip()))
                     session.commit()
                     return redirect(reverse("hydrodesk:schedules"))
         with Session(engine) as session:
@@ -10381,7 +10416,9 @@ def schedules(request):
         return render(request, "hydrodesk/schedule_form.html", _schedule_form_context(
             "new", {"name": name, "target_slug": target, "interval_minutes": interval,
                     "alerts": alerts, "enabled": bool(request.POST.get("enabled")),
-                    "refresh": bool(request.POST.get("refresh"))}, errors, slugs=slugs))
+                    "refresh": bool(request.POST.get("refresh")),
+                    "notify_email": (request.POST.get("notify_email") or "").strip()},
+            errors, slugs=slugs))
     if "new" in request.GET:
         with Session(engine) as session:
             slugs = _all_slugs(session)
@@ -10425,6 +10462,7 @@ def schedule_edit(request, schedule_id=None):
                     s.enabled = bool(request.POST.get("enabled"))
                     s.refresh = bool(request.POST.get("refresh"))
                     s.alerts = alerts
+                    s.notify_email = (request.POST.get("notify_email") or "").strip()
                     session.commit()
                     return redirect(reverse("hydrodesk:schedules"))
         with Session(engine) as session:
@@ -10432,7 +10470,8 @@ def schedule_edit(request, schedule_id=None):
         return render(request, "hydrodesk/schedule_form.html", _schedule_form_context(
             "edit", {"name": name, "target_slug": target, "interval_minutes": interval,
                      "alerts": alerts, "enabled": bool(request.POST.get("enabled")),
-                     "refresh": bool(request.POST.get("refresh"))}, errors,
+                     "refresh": bool(request.POST.get("refresh")),
+                     "notify_email": (request.POST.get("notify_email") or "").strip()}, errors,
             schedule_id=schedule_id, slugs=slugs))
     with Session(engine) as session:
         s = session.execute(select(m.HydroSchedule)
@@ -10441,7 +10480,8 @@ def schedule_edit(request, schedule_id=None):
             return redirect(reverse("hydrodesk:schedules"))
         data = {"name": s.name, "target_slug": s.target_slug,
                 "interval_minutes": s.interval_minutes, "enabled": s.enabled,
-                "refresh": s.refresh, "alerts": s.alerts or []}
+                "refresh": s.refresh, "alerts": s.alerts or [],
+                "notify_email": s.notify_email or ""}
         slugs = _all_slugs(session)
     return render(request, "hydrodesk/schedule_form.html",
                   _schedule_form_context("edit", data, [], schedule_id=schedule_id, slugs=slugs))
