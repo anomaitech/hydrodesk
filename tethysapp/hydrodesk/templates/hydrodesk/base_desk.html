@@ -913,17 +913,37 @@
       el.classList.add("hd-guide-pointed");
       setTimeout(function(){ el.classList.remove("hd-guide-pointed"); }, 7000);
     }
+    // --- Offline text-to-speech (browser voices, no network). Robust against the common
+    //     pitfalls: voices load async, and audio must be primed inside a user gesture. ---
+    var HD_VOICE=null;
+    function loadVoices(){ try{ var vs=window.speechSynthesis.getVoices();
+      HD_VOICE = vs.filter(function(v){return /en[-_]?US/i.test(v.lang);})[0]
+              || vs.filter(function(v){return /^en/i.test(v.lang);})[0] || vs[0] || null; }catch(e){} }
+    if(window.speechSynthesis){ loadVoices(); window.speechSynthesis.onvoiceschanged=loadVoices; }
+    function speak(text){
+      if(!window.speechSynthesis || !text) return;
+      try{ window.speechSynthesis.cancel();
+        var u=new SpeechSynthesisUtterance(String(text).slice(0,600));
+        u.lang="en-US"; u.rate=1.02; if(HD_VOICE) u.voice=HD_VOICE;
+        window._hdUtter=u;                       // hold a ref so Chrome doesn't GC mid-speech
+        window.speechSynthesis.resume(); window.speechSynthesis.speak(u);
+      }catch(e){}
+    }
+    // Toggling "speak" is a user gesture -> prime the engine + speak a confirmation so you
+    // KNOW audio works (if you hear nothing here, the OS/browser has TTS muted/disabled).
+    tts.addEventListener("change", function(){
+      if(tts.checked && window.speechSynthesis){ loadVoices(); speak("Voice on."); } });
     function run(text){
       if(!text.trim()) return; q.value="";
       ans.textContent="…thinking"; ask.disabled=true;
+      if(tts.checked && window.speechSynthesis){ try{ window.speechSynthesis.resume(); }catch(e){} }
       fetch("{% url 'hydrodesk:guide_query' %}", { method:"POST",
         headers:{"Content-Type":"application/json","X-CSRFToken":csrf()},
         body:JSON.stringify({question:text, page:location.pathname}) })
         .then(function(r){return r.json();}).then(function(j){
           if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
           ans.textContent=j.answer; pointAt(j.selector);
-          if(tts.checked && window.speechSynthesis){ try{ speechSynthesis.cancel();
-            speechSynthesis.speak(new SpeechSynthesisUtterance(j.answer)); }catch(e){} }
+          if(tts.checked) speak(j.answer);
         }).catch(function(e){ ans.textContent="⚠ "+e; })
         .finally(function(){ ask.disabled=false; q.focus(); });
     }
