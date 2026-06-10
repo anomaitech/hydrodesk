@@ -79,6 +79,7 @@ def desk_home(request):
         rows = session.execute(
             select(m.HydroType.slug, m.HydroType.display_name,
                    m.HydroType.geometry_kind, m.HydroType.field_schema)
+            .where(_visible_types())
             .order_by(m.HydroType.display_name)
         ).all()
         for slug, display_name, gkind, fs in rows:
@@ -366,6 +367,7 @@ def styled_map(request):
         spatial = [{"slug": r[0], "name": r[1]} for r in session.execute(
             select(m.HydroType.slug, m.HydroType.display_name)
             .where(m.HydroType.geometry_kind.in_(["point", "line", "polygon"]))
+            .where(_visible_types())
             .order_by(m.HydroType.display_name)).all()]
         slug = request.GET.get("slug") or (spatial[0]["slug"] if spatial else None)
         meta = _load_hydrotype(session, slug) if slug else None
@@ -8985,13 +8987,19 @@ def doctypes_list(request):
     management surface."""
     if not _can_build(request):
         return _denied(request, "manage", "DocTypes")
+    show_hidden = bool(request.GET.get("show_hidden"))
     engine = App.get_persistent_store_database("hydro_db")
-    types = []
+    types, hidden_count = [], 0
     with Session(engine) as session:
-        rows = session.execute(select(
-            m.HydroType.slug, m.HydroType.display_name, m.HydroType.geometry_kind,
-            m.HydroType.field_schema, m.HydroType.version,
-        ).order_by(m.HydroType.display_name)).all()
+        q = select(m.HydroType.slug, m.HydroType.display_name, m.HydroType.geometry_kind,
+                   m.HydroType.field_schema, m.HydroType.version)
+        if not show_hidden:
+            q = q.where(_visible_types())
+        rows = session.execute(q.order_by(m.HydroType.display_name)).all()
+        hidden_count = session.execute(
+            select(func.count()).select_from(m.HydroType)
+            .where(func.coalesce(m.HydroType.field_schema["x-hidden"].astext, "false") == "true")
+        ).scalar() or 0
         for slug, dn, gk, fs, ver in rows:
             n_fields = sum(1 for _k, p in _ordered_props(fs)
                            if not (p or {}).get("x-layout"))
@@ -9001,9 +9009,11 @@ def doctypes_list(request):
             types.append({
                 "slug": slug, "display_name": dn, "geometry_kind": gk or "—",
                 "field_count": n_fields, "record_count": count, "version": ver or 1,
+                "hidden": bool((fs or {}).get("x-hidden")),
             })
     return render(request, "hydrodesk/doctypes.html", {
         "types": types, "total": len(types),
+        "show_hidden": show_hidden, "hidden_count": hidden_count,
         "bulk_delete_url": reverse("hydrodesk:doctypes_bulk_delete"),
     })
 
@@ -10709,9 +10719,17 @@ def _schedule_form_context(mode, sched, errors, schedule_id=None, slugs=None):
             "schedules_url": reverse("hydrodesk:schedules")}
 
 
+def _visible_types():
+    """SQLAlchemy WHERE clause excluding doctypes flagged ``x-hidden`` in their
+    field_schema — a reversible 'hide from the UI' (the type + its records stay in the
+    DB; the DocTypes admin page can still reveal them with ?show_hidden=1)."""
+    return func.coalesce(m.HydroType.field_schema["x-hidden"].astext, "false") != "true"
+
+
 def _all_slugs(session):
     return [{"slug": r[0], "name": r[1]} for r in session.execute(
         select(m.HydroType.slug, m.HydroType.display_name)
+        .where(_visible_types())
         .order_by(m.HydroType.display_name)).all()]
 
 

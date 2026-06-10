@@ -92,9 +92,11 @@ def import_hydrotype(session, spec, overwrite=False):
 
 
 def list_hydrotypes(session):
-    """Return [(slug, display_name, record_count)] for every registered doctype."""
+    """Return [(slug, display_name, record_count)] for every VISIBLE doctype (excludes
+    types flagged ``x-hidden`` in their field_schema — a reversible UI hide)."""
     rows = session.execute(
         select(m.HydroType.slug, m.HydroType.display_name)
+        .where(func.coalesce(m.HydroType.field_schema["x-hidden"].astext, "false") != "true")
         .order_by(m.HydroType.display_name)
     ).all()
     out = []

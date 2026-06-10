@@ -21,6 +21,13 @@
     <div class="frappe-title-area">
       <h1 class="frappe-title">DocTypes</h1>
       <span class="indicator-pill gray">{{ total }} type{{ total|pluralize }}</span>
+      {% if hidden_count %}
+        {% if show_hidden %}
+          <a class="frappe-text-sm" href="{% url 'hydrodesk:doctypes' %}" style="margin-left:8px;">hide {{ hidden_count }} hidden</a>
+        {% else %}
+          <a class="frappe-text-sm" href="?show_hidden=1" style="margin-left:8px;">show {{ hidden_count }} hidden</a>
+        {% endif %}
+      {% endif %}
     </div>
     <div class="frappe-page-actions">
       <a class="btn btn-primary btn-sm" href="{% url 'hydrodesk:new_type' %}">
@@ -52,7 +59,7 @@
           {% for t in types %}
           <tr>
             <td class="hd-tcell-check"><input type="checkbox" class="hd-row-check" name="slugs" value="{{ t.slug }}" aria-label="Select {{ t.display_name }}"></td>
-            <td><a href="{% url 'hydrodesk:list' slug=t.slug %}"><strong>{{ t.display_name }}</strong></a></td>
+            <td><a href="{% url 'hydrodesk:list' slug=t.slug %}"><strong>{{ t.display_name }}</strong></a>{% if t.hidden %} <span class="indicator-pill gray" style="font-size:10px;">hidden</span>{% endif %}</td>
             <td><code>{{ t.slug }}</code></td>
             <td>{{ t.geometry_kind }}</td>
             <td>{{ t.field_count }}</td>
