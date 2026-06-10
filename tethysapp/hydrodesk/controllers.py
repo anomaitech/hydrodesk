@@ -271,12 +271,30 @@ def report_builder(request):
     num_fields = [{"key": k, "title": (props[k] or {}).get("title") or k}
                   for k in order if _real(k) and (props[k] or {}).get("type") in ("number", "integer")]
 
+    # Child-table fields: derive columns from the rows (computed tables have empty schema
+    # columns), so a filter can target a table column — matching a record when ANY row in
+    # that table satisfies the condition (the report's version of the Data API's __any).
+    table_cols = {}
+    for k in order:
+        if (props[k] or {}).get("x-widget") == "table":
+            cols = []
+            for r in records:
+                for row in (r.get(k) or []):
+                    if isinstance(row, dict):
+                        for c in row.keys():
+                            if c not in cols:
+                                cols.append(c)
+            if cols:
+                table_cols[k] = cols
+
     # Parse up to 3 filter rows (rf<i>/ro<i>/rv<i>) + the group/metric/agg selections.
+    # A field key "table.column" filters on a child-table column.
     filters = []
     for i in range(3):
         f = (request.GET.get("rf%d" % i) or "").strip()
         v = request.GET.get("rv%d" % i)
-        if f and f in props and v not in (None, ""):
+        ok = f in props or ("." in f and f.split(".", 1)[0] in table_cols)
+        if f and ok and v not in (None, ""):
             op = request.GET.get("ro%d" % i) or "="
             if op not in _REPORT_OPS:
                 op = "="
@@ -285,8 +303,16 @@ def report_builder(request):
     metric = request.GET.get("metric") or ""
     agg = request.GET.get("agg") if request.GET.get("agg") in _REPORT_AGGS else "count"
 
-    filtered = [r for r in records
-                if all(_report_cmp(r.get(fl["field"]), fl["op"], fl["value"]) for fl in filters)]
+    def _match_filter(r, fl):
+        f = fl["field"]
+        if "." in f and f.split(".", 1)[0] in table_cols:    # any row in the child table
+            tk, col = f.split(".", 1)
+            return any(isinstance(row, dict)
+                       and _report_cmp(row.get(col), fl["op"], fl["value"])
+                       for row in (r.get(tk) or []))
+        return _report_cmp(r.get(f), fl["op"], fl["value"])
+
+    filtered = [r for r in records if all(_match_filter(r, fl) for fl in filters)]
 
     rows, total = [], {"count": len(filtered), "metric": 0.0}
     if group_by:
@@ -326,8 +352,12 @@ def report_builder(request):
     ctx = {"slugs": slugs, "selected": slug, "display_name": dn,
            "group_fields": group_fields, "num_fields": num_fields,
            "group_by": group_by, "metric": metric, "agg": agg, "aggs": list(_REPORT_AGGS),
-           "ops": list(_REPORT_OPS), "all_fields": [{"key": k, "title": (props[k] or {}).get("title") or k}
-                                                    for k in order if _real(k)],
+           "ops": list(_REPORT_OPS),
+           "all_fields": ([{"key": k, "title": (props[k] or {}).get("title") or k}
+                           for k in order if _real(k)]
+                          + [{"key": "%s.%s" % (tk, c),
+                              "title": "%s → %s" % ((props[tk] or {}).get("title") or tk, c)}
+                             for tk, cols in table_cols.items() for c in cols]),
            "filters": filters, "rows": rows, "colname": colname, "total": total,
            "chart_svg": chart_svg, "matched": len(filtered), "csv_qs": qs}
     return render(request, "hydrodesk/report.html", ctx)
