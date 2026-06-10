@@ -85,12 +85,23 @@
         {% else %}
         {% if w.is_geom %}{% ifchanged %}
           </div></div></div><div class="frappe-form-section">
-          <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">(point geometry)</span></div>
+          <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">({{ w.geometry_kind|default:"point" }} geometry &mdash; draw on the map)</span></div>
           <div class="frappe-section-cols"><div class="frappe-section-col">
         {% endifchanged %}{% endif %}
 
         <div class="frappe-form-group"{% if w.show_if %} data-showif-field="{{ w.show_if.field }}" data-showif-value="{{ w.show_if.value }}"{% endif %}>
-          {% if w.widget == "checkbox" %}
+          {% if w.widget == "geommap" %}
+            <div id="hd-geom-map" class="hd-geom-map"
+                 data-kind="{{ w.geometry_kind }}" data-geojson="{{ w.geojson }}"
+                 data-lon="{{ w.lon }}" data-lat="{{ w.lat }}"></div>
+            <input type="hidden" name="_geom_geojson" id="id__geom_geojson" value="{{ w.geojson }}">
+            <div class="frappe-help">Use the toolbar (top-right of the map) to draw the {{ w.geometry_kind }}. Drawing a new shape replaces the old one.{% if w.geometry_kind == "point" %} You can also type or edit the coordinates below.{% endif %}</div>
+            <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+            <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+            <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+            <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+            <script>document.addEventListener("DOMContentLoaded", function(){ hdInitGeomMap(); });</script>
+          {% elif w.widget == "checkbox" %}
             <div class="form-check">
               <input class="form-check-input" type="checkbox" id="id_{{ w.name }}"
                      name="{{ w.name }}" value="true"{% if w.checked %} checked{% endif %}>
@@ -400,5 +411,82 @@
   card.insertBefore(nav, sections[0]);
   activate(0);
 })();
+</script>
+
+<style>
+  .hd-geom-map { height: 360px; width: 100%; border: 1px solid #e6e9ee; border-radius: 6px; }
+  .hd-geom-map .leaflet-draw-toolbar a { background-color: #fff; }
+  .hd-geom-fallback { padding: 10px 12px; border: 1px dashed #f5c2c7; border-radius: 6px;
+                      background: #fff5f5; color: #b42318; font-size: 13px; }
+</style>
+<script>
+// Map-draw geometry widget: draw a point/line/polygon -> GeoJSON in #id__geom_geojson.
+function hdInitGeomMap() {
+  var el = document.getElementById('hd-geom-map');
+  if (!el) return;
+  var hidden = document.getElementById('id__geom_geojson');
+  if (typeof L === 'undefined' || !L.Control || !L.Control.Draw) {
+    el.outerHTML = '<div class="hd-geom-fallback">Map library could not load (offline?). '
+      + 'You can still enter coordinates below for a point type.</div>';
+    return;
+  }
+  var kind = el.dataset.kind;
+  var lonInput = document.getElementById('id_longitude');
+  var latInput = document.getElementById('id_latitude');
+  var map = L.map(el).setView([39.5, -98.35], 4);   // CONUS default
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+  var drawn = new L.FeatureGroup().addTo(map);
+
+  function write() {
+    var layers = drawn.getLayers();
+    if (!layers.length) { hidden.value = ''; return; }
+    var gj = layers[0].toGeoJSON();           // a Feature
+    var geom = gj.geometry || gj;
+    hidden.value = JSON.stringify(geom);
+    if (kind === 'point' && geom.type === 'Point') {
+      if (lonInput) lonInput.value = geom.coordinates[0];
+      if (latInput) latInput.value = geom.coordinates[1];
+    }
+  }
+
+  // Pre-fill from the saved geometry, else a point's lon/lat.
+  var init = el.dataset.geojson;
+  if (init) {
+    try {
+      L.geoJSON(JSON.parse(init)).eachLayer(function (l) { drawn.addLayer(l); });
+      if (drawn.getLayers().length) map.fitBounds(drawn.getBounds(), { maxZoom: 14, padding: [25, 25] });
+    } catch (e) {}
+  } else if (kind === 'point' && el.dataset.lon && el.dataset.lat) {
+    var la = parseFloat(el.dataset.lat), lo = parseFloat(el.dataset.lon);
+    if (isFinite(la) && isFinite(lo)) { drawn.addLayer(L.marker([la, lo])); map.setView([la, lo], 12); }
+  }
+
+  var d = { polyline: false, polygon: false, marker: false, circle: false,
+            circlemarker: false, rectangle: false };
+  if (kind === 'point') d.marker = true;
+  else if (kind === 'line') d.polyline = true;
+  else if (kind === 'polygon') d.polygon = true;
+  map.addControl(new L.Control.Draw({ position: 'topright',
+    draw: d, edit: { featureGroup: drawn } }));
+
+  map.on(L.Draw.Event.CREATED, function (e) { drawn.clearLayers(); drawn.addLayer(e.layer); write(); });
+  map.on(L.Draw.Event.EDITED, write);
+  map.on(L.Draw.Event.DELETED, write);
+
+  // Point: typing/editing lon-lat moves the marker (two-way sync).
+  function fromInputs() {
+    if (kind !== 'point') return;
+    var lo = parseFloat(lonInput && lonInput.value), la = parseFloat(latInput && latInput.value);
+    if (isFinite(lo) && isFinite(la)) {
+      drawn.clearLayers(); drawn.addLayer(L.marker([la, lo]));
+      hidden.value = JSON.stringify({ type: 'Point', coordinates: [lo, la] });
+      map.panTo([la, lo]);
+    }
+  }
+  if (lonInput) lonInput.addEventListener('change', fromInputs);
+  if (latInput) latInput.addEventListener('change', fromInputs);
+  setTimeout(function () { map.invalidateSize(); }, 150);
+}
 </script>
 {% endblock %}

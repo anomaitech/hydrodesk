@@ -4505,17 +4505,30 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
         if own_session is not None:
             own_session.close()
 
-    if _resolve_geometry_kind(schema, geometry_kind) == "point":
+    _gk = _resolve_geometry_kind(schema, geometry_kind)
+    if _gk in ("point", "line", "polygon"):
+        # A draw-on-map widget for the geometry: writes the drawn shape as GeoJSON into a
+        # hidden _geom_geojson input. Pre-filled with the record's existing geometry on
+        # edit (values['_geom_geojson']) so it shows + round-trips.
+        fields.append({
+            "name": "_geom_map", "widget": "geommap", "is_geom": True,
+            "geometry_kind": _gk,
+            "geojson": values.get("_geom_geojson", ""),
+            "lon": values.get("longitude", ""),
+            "lat": values.get("latitude", ""),
+        })
+    if _gk == "point":
+        # Keep editable lon/lat (kept in sync with the map both ways).
         fields.append({
             "name": "longitude", "label": "Longitude", "widget": "number",
             "step": "any", "required": True, "is_geom": True,
-            "help": "Decimal degrees (-180 to 180)",
+            "help": "Decimal degrees (-180 to 180) — or click the map",
             "value": values.get("longitude", ""),
         })
         fields.append({
             "name": "latitude", "label": "Latitude", "widget": "number",
             "step": "any", "required": True, "is_geom": True,
-            "help": "Decimal degrees (-90 to 90)",
+            "help": "Decimal degrees (-90 to 90) — or click the map",
             "value": values.get("latitude", ""),
         })
     return fields
@@ -5620,6 +5633,63 @@ def _parse_point(post):
     return WKTElement(f"POINT({lon} {lat})", srid=4326), None
 
 
+def _geojson_to_wkt(geom):
+    """A GeoJSON geometry dict -> a WKT string (lon lat order), or None for an empty /
+    unsupported shape. Supports Point / LineString / Polygon / MultiPolygon."""
+    if not isinstance(geom, dict):
+        return None
+    t = geom.get("type") or ""
+    c = geom.get("coordinates")
+
+    def pt(p):
+        return "%g %g" % (float(p[0]), float(p[1]))
+
+    def ring(r):
+        return "(%s)" % ", ".join(pt(p) for p in r)
+
+    try:
+        if t == "Point":
+            return "POINT(%s)" % pt(c)
+        if t == "LineString" and len(c) >= 2:
+            return "LINESTRING(%s)" % ", ".join(pt(p) for p in c)
+        if t == "Polygon" and c:
+            return "POLYGON(%s)" % ", ".join(ring(r) for r in c)
+        if t == "MultiPolygon" and c:
+            return "MULTIPOLYGON(%s)" % ", ".join(
+                "(%s)" % ", ".join(ring(r) for r in poly) for poly in c)
+    except (TypeError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _parse_drawn_geom(post, geometry_kind):
+    """(WKTElement | None, error | None) for the record form. Uses a drawn ``_geom_geojson``
+    (a GeoJSON geometry/Feature the map widget writes) for ANY geometry kind; falls back to
+    the longitude/latitude inputs for a point (back-compat with old forms / CSV import).
+    Empty line/polygon is allowed (no geometry); an empty point falls through to lon/lat."""
+    if geometry_kind not in ("point", "line", "polygon"):
+        return None, None
+    raw = (post.get("_geom_geojson") or "").strip()
+    if raw:
+        try:
+            gj = json.loads(raw)
+        except (ValueError, TypeError):
+            return None, "The drawn geometry is not valid GeoJSON."
+        if isinstance(gj, dict) and gj.get("type") == "Feature":
+            gj = gj.get("geometry") or {}
+        wkt = _geojson_to_wkt(gj)
+        if not wkt:
+            return None, "The drawn geometry is empty or unsupported."
+        want = {"point": ("POINT",), "line": ("LINESTRING",),
+                "polygon": ("POLYGON", "MULTIPOLYGON")}[geometry_kind]
+        if not wkt.startswith(want):
+            return None, "Draw a %s for this doctype." % geometry_kind
+        return WKTElement(wkt, srid=4326), None
+    if geometry_kind == "point":
+        return _parse_point(post)         # lon/lat fallback (required for a point)
+    return None, None                     # line/polygon with nothing drawn -> no geometry
+
+
 def _naming_parts(field_schema):
     """Parse a type's naming series (x-naming, e.g. 'INV-#####') into the target
     field + fixed prefix/suffix + counter width + a matcher. None when there's no
@@ -5803,8 +5873,8 @@ def hydrotype_new(request, slug="monitoring_station"):
                 errors.append(vmsg)
 
         geom = None
-        if geometry_kind == "point":
-            geom, gmsg = _parse_point(post)
+        if geometry_kind in ("point", "line", "polygon"):
+            geom, gmsg = _parse_drawn_geom(post, geometry_kind)
             if gmsg:
                 errors.append(gmsg)
 
@@ -6114,8 +6184,9 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
             if vmsg:
                 errors.append(vmsg)
         geom, gmsg = (None, None)
-        if geometry_kind == "point":
-            geom, gmsg = _parse_point(post)
+        is_spatial = geometry_kind in ("point", "line", "polygon")
+        if is_spatial:
+            geom, gmsg = _parse_drawn_geom(post, geometry_kind)
             if gmsg:
                 errors.append(gmsg)
         if not errors:
@@ -6132,7 +6203,7 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
                 preserved = {k: v for k, v in (rec.attributes or {}).items()
                              if k.startswith("_")}
                 rec.attributes = {**validated, **preserved}
-                if geometry_kind == "point":
+                if is_spatial:
                     rec.geom = geom
                 session.commit()
             return redirect(detail_url)
@@ -6150,6 +6221,7 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
                 # valid for ANY type so editing a polygon/line record doesn't 500.
                 func.ST_X(func.ST_PointOnSurface(m.HydroRecord.geom)),
                 func.ST_Y(func.ST_PointOnSurface(m.HydroRecord.geom)),
+                func.ST_AsGeoJSON(m.HydroRecord.geom),    # full shape -> the map widget
             )
             .where(m.HydroRecord.hydrotype_slug == slug)
             .where(m.HydroRecord.id == record_id)
@@ -6159,6 +6231,8 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
     values = dict(row[0] or {})
     if row[1] is not None and row[2] is not None:
         values["longitude"], values["latitude"] = row[1], row[2]
+    if row[3]:
+        values["_geom_geojson"] = row[3]   # pre-fill the draw widget with the saved shape
     widgets = _build_widgets(field_schema, geometry_kind, values=values)
     return render(request, "hydrodesk/form.html",
                   _form_context(slug, display_name, type_found, widgets, [], "edit", record_id))
