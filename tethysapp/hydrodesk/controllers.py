@@ -10652,16 +10652,24 @@ def _td_primary_metric(num_fields):
 # Visualization vocabulary for the no-code mapper: each field/output is mapped to
 # ONE of these. The UI offers only the choices that make sense for a field's kind.
 _TD_VIZ_LABELS = {
-    "select":  "Record selector (dropdown)",
-    "kpi":     "KPI number card",
-    "bar":     "Bar chart across records",
-    "line":    "Line chart across records",
-    "map":     "Map (record locations)",
-    "image":   "Image / map picture",
-    "table":   "Data table (this record's rows)",
-    "records": "Column in records table",
-    "ignore":  "— don't show —",
+    "select":    "Record selector (dropdown)",
+    "kpi":       "KPI number card",
+    "bar":       "Bar chart across records",
+    "line":      "Line chart across records",
+    "scatter":   "Scatter plot across records",
+    "area":      "Area chart across records",
+    "pie":       "Pie / donut (share by record)",
+    "histogram": "Histogram (value distribution)",
+    "box":       "Box plot (value spread)",
+    "map":       "Map (record locations)",
+    "image":     "Image / map picture",
+    "table":     "Data table (this record's rows)",
+    "records":   "Column in records table",
+    "ignore":    "— don't show —",
 }
+
+# Every viz key that renders as a chart tile (hydrodesk_loss_chart with chart_type=key).
+_TD_CHART_TYPES = ("bar", "line", "scatter", "area", "pie", "histogram", "box")
 
 
 def _td_field_kind(prop):
@@ -10691,7 +10699,8 @@ def _td_viz_options(kind, is_title):
     Any scalar field (number or plain text) can also be a column in the records table —
     the dataset-level view that mirrors the Data API record list."""
     if kind == "number":
-        return ["kpi", "bar", "line", "records", "ignore"]
+        return ["kpi", "bar", "line", "scatter", "area", "pie",
+                "histogram", "box", "records", "ignore"]
     if kind == "image":
         return ["image", "ignore"]
     if kind == "table":            # inline table OR a live Time-Series connector
@@ -10874,8 +10883,8 @@ def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_ur
         mapping.append({"source": source, "note": note})
 
     kpi_fields = [k for k in order if picks.get(k) == "kpi"]
-    bar_fields = [k for k in order if picks.get(k) == "bar"]
-    line_fields = [k for k in order if picks.get(k) == "line"]
+    # Any chart-type pick (bar/line/scatter/area/pie/histogram/box) -> a chart tile.
+    chart_fields = [(picks[k], k) for k in order if picks.get(k) in _TD_CHART_TYPES]
     image_fields = [k for k in order if picks.get(k) == "image"]
     table_fields = [k for k in order if picks.get(k) == "table"]
     records_fields = [k for k in order if picks.get(k) == "records"]
@@ -10902,10 +10911,9 @@ def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_ur
         add(0, y, 100, 8, "hydrodesk_kpi_card", a, "KPI cards: " + ", ".join(kpis))
         y += 8
 
-    charts = [("bar", f) for f in bar_fields] + [("line", f) for f in line_fields]
     i = 0
-    while i < len(charts):
-        row = charts[i:i + 2]
+    while i < len(chart_fields):
+        row = chart_fields[i:i + 2]
         for j, (ct, f) in enumerate(row):
             w = 50 if len(row) == 2 else 100
             add(j * 50, y, w, 18, "hydrodesk_loss_chart",
@@ -10915,8 +10923,8 @@ def _td_build_from_picks(slug, display_name, field_schema, geometry_kind, api_ur
         i += 2
 
     if geom_on:
-        metric = (bar_fields[0] if bar_fields else
-                  (line_fields[0] if line_fields else (kpi_fields[0] if kpi_fields else "")))
+        metric = (chart_fields[0][1] if chart_fields else
+                  (kpi_fields[0] if kpi_fields else ""))
         add(0, y, 100, 18, "hydrodesk_scenario_map", {**base, "metric": metric},
             "locations map" + (" (points sized by %s)" % metric if metric else ""))
         y += 18
