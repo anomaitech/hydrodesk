@@ -679,6 +679,9 @@ def ai_build_doctype(request):
 # matches a VERIFIED endpoint instead of inventing a URL. Freeform is the escape
 # hatch (preset "none" + a full URL) for anything not on the menu.
 _AI_CONNECTOR_PRESETS = {
+    "nldi_basin": (
+        "USGS NLDI — the upstream-drainage basin polygon (GeoJSON) for an NHD COMID. "
+        "inputs: comid (an NHD COMID / flowline id, an integer)."),
     "geoglows_forecast": (
         "GeoGLOWS — 15-day ensemble streamflow forecast for a single river reach. "
         "inputs: river_id (the GeoGLOWS reach / river ID, a long integer, e.g. 760021951)."),
@@ -4017,6 +4020,42 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
 # Each prefills a connector config for the builder; auth-less for the public
 # water APIs. Keys mirror HydroConnector.config exactly. ---
 CONNECTOR_PRESETS = {
+    "epqs_3dep": {
+        "label": "USGS 3DEP — point elevation (EPQS)",
+        "config": {
+            "kind": "rest",
+            "url_template": "https://epqs.nationalmap.gov/v1/json?x={lon}&y={lat}&units={units}&wkid=4326&includeDate=false",
+            "method": "GET", "headers": {}, "query": {},
+            "auth": {"scheme": "none", "credential": "", "placement": "header", "param": ""},
+            "inputs": [
+                # _lon/_lat are the reserved centroid keys a point record exposes, so a
+                # station auto-fetches its own ground elevation with no extra fields.
+                {"name": "lon", "label": "Longitude", "type": "number", "source": "field",
+                 "field": "_lon", "value": "", "default": "-111.65", "required": True, "in": "url"},
+                {"name": "lat", "label": "Latitude", "type": "number", "source": "field",
+                 "field": "_lat", "value": "", "default": "40.23", "required": True, "in": "url"},
+                {"name": "units", "label": "Units", "type": "string", "source": "constant",
+                 "field": "", "value": "Meters", "default": "Meters", "required": False, "in": "url"},
+            ],
+            "result_kind": "value", "output_path": "value",
+            "ttl_seconds": 86400, "timeout": 20,
+        },
+    },
+    "nldi_basin": {
+        "label": "USGS NLDI — upstream basin for an NHD COMID (GeoJSON)",
+        "config": {
+            "kind": "rest",
+            "url_template": "https://api.water.usgs.gov/nldi/linked-data/comid/{comid}/basin",
+            "method": "GET", "headers": {}, "query": {},
+            "auth": {"scheme": "none", "credential": "", "placement": "header", "param": ""},
+            "inputs": [
+                {"name": "comid", "label": "NHD COMID", "type": "string", "source": "field",
+                 "field": "comid", "value": "", "default": "13294314", "required": True, "in": "url"},
+            ],
+            "result_kind": "json", "output_path": "features",
+            "ttl_seconds": 86400, "timeout": 30,
+        },
+    },
     "geoglows_forecast": {
         "label": "GeoGLOWS — 15-day streamflow forecast (by reach / river ID)",
         "config": {
@@ -6813,6 +6852,40 @@ def _valid_parent_link(session, parent, child_slug):
     return exists is not None
 
 
+def _snapshot_revision(session, record_id, slug, attributes, geom, action, actor):
+    """Append an immutable history snapshot for a record (powers the History tab +
+    Restore). Call inside the same session, after the record id is known, before commit."""
+    session.add(m.HydroRecordRevision(
+        record_id=record_id, hydrotype_slug=slug,
+        attributes=dict(attributes or {}), geom=geom,
+        action=action, actor=actor or None))
+
+
+def _diff_str(v):
+    """Compact one-cell display of a value for the History diff."""
+    if v in (None, ""):
+        return "—"
+    if isinstance(v, str) and v.startswith("data:"):
+        return "(binary)"
+    s = json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
+    return s if len(s) <= 80 else s[:77] + "…"
+
+
+def _revision_diff(prev_attrs, curr_attrs):
+    """Field-level diff between two attribute snapshots -> [{field, old, new}],
+    skipping reserved (_-prefixed) keys. Used to show 'what changed' per revision."""
+    prev, curr = (prev_attrs or {}), (curr_attrs or {})
+    out = []
+    for k in sorted(set(prev) | set(curr)):
+        if k.startswith("_"):
+            continue
+        a, b = prev.get(k), curr.get(k)
+        if a == b:
+            continue
+        out.append({"field": k, "old": _diff_str(a), "new": _diff_str(b)})
+    return out
+
+
 @controller(name="new", url="new/{slug}", title="New Record")
 def hydrotype_new(request, slug="monitoring_station"):
     """Generic auto-form for creating a HydroRecord of one HydroType.
@@ -6892,6 +6965,9 @@ def hydrotype_new(request, slug="monitoring_station"):
                     created_by=getattr(request.user, "username", None),
                 )
                 session.add(record)
+                session.flush()                     # populate record.id for the snapshot
+                _snapshot_revision(session, record.id, slug, attrs_to_store, geom,
+                                   "create", getattr(request.user, "username", None))
                 session.commit()
             # Reverse-link create (the child's own Link field carries the relation):
             # return to the parent detail, where the child now appears in the
@@ -7109,9 +7185,13 @@ def import_records(request, slug="monitoring_station"):
             if name_parts and not str(attrs_to_store.get(name_parts["field"]) or "").strip():
                 name_counter += 1
                 attrs_to_store[name_parts["field"]] = _format_name(name_parts, name_counter)
-            session.add(m.HydroRecord(
+            new_rec = m.HydroRecord(
                 hydrotype_slug=slug, attributes=attrs_to_store, geom=geom,
-                created_by=getattr(request.user, "username", None)))
+                created_by=getattr(request.user, "username", None))
+            session.add(new_rec)
+            session.flush()
+            _snapshot_revision(session, new_rec.id, slug, attrs_to_store, geom,
+                               "create", getattr(request.user, "username", None))
             created += 1
         session.commit()
 
@@ -7193,6 +7273,9 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
                 rec.attributes = {**validated, **preserved}
                 if is_spatial:
                     rec.geom = geom
+                _snapshot_revision(session, rec.id, slug, rec.attributes,
+                                   geom if is_spatial else None, "update",
+                                   getattr(request.user, "username", None))
                 session.commit()
             return redirect(detail_url)
         widgets = _build_widgets(field_schema, geometry_kind, values=post)
@@ -8278,6 +8361,78 @@ def api_params_update(request, slug=None, record_id=None, field=None):
     return redirect(detail_url + "?refresh=" + urllib.parse.quote(field or ""))
 
 
+@controller(name="record_restore", url="record/{slug}/{record_id}/restore/{rev_id}",
+            title="Restore revision")
+def record_restore(request, slug=None, record_id=None, rev_id=None):
+    """POST: roll a record back to a prior revision's attributes + geometry, recording
+    the rollback itself as a new 'restore' revision. Write-gated like edit."""
+    detail = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST":
+        return redirect(detail)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+    field_schema = meta[1] if meta else {}
+    if not _user_can(request, field_schema, "write"):
+        return _denied(request, "edit", meta[0] if meta else slug)
+    with Session(engine) as session:
+        rev = session.execute(
+            select(m.HydroRecordRevision)
+            .where(m.HydroRecordRevision.id == rev_id)
+            .where(m.HydroRecordRevision.record_id == record_id)).scalar_one_or_none()
+        rec = session.execute(
+            select(m.HydroRecord)
+            .where(m.HydroRecord.id == record_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalar_one_or_none()
+        if rev is None or rec is None:
+            return redirect(detail)
+        preserved = {k: v for k, v in (rec.attributes or {}).items() if k.startswith("_")}
+        rec.attributes = {**(rev.attributes or {}), **preserved}
+        rec.geom = rev.geom
+        _snapshot_revision(session, rec.id, slug, rec.attributes, rev.geom,
+                           "restore", getattr(request.user, "username", None))
+        session.commit()
+    return redirect(detail)
+
+
+@controller(name="comment_add", url="record/{slug}/{record_id}/comment", title="Add comment")
+def comment_add(request, slug=None, record_id=None):
+    """POST a discussion comment on a record. Any authenticated user with read access."""
+    detail = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST" or not getattr(request.user, "is_authenticated", False):
+        return redirect(detail)
+    body = (request.POST.get("body") or "").strip()
+    if body:
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            session.add(m.HydroComment(
+                record_id=record_id, hydrotype_slug=slug,
+                author=getattr(request.user, "username", None), body=body[:4000]))
+            session.commit()
+    return redirect(detail)
+
+
+@controller(name="comment_delete",
+            url="record/{slug}/{record_id}/comment/{comment_id}/delete",
+            title="Delete comment")
+def comment_delete(request, slug=None, record_id=None, comment_id=None):
+    """POST: delete a comment — its author, or any staff/superuser."""
+    detail = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST":
+        return redirect(detail)
+    user = getattr(request.user, "username", None)
+    privileged = bool(getattr(request.user, "is_staff", False)
+                      or getattr(request.user, "is_superuser", False))
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        c = session.execute(
+            select(m.HydroComment).where(m.HydroComment.id == comment_id)).scalar_one_or_none()
+        if c is not None and (privileged or (user and c.author == user)):
+            session.delete(c)
+            session.commit()
+    return redirect(detail)
+
+
 @controller(name="detail", url="record/{slug}/{record_id}", title="Record")
 def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     """Read-style detail view for one HydroRecord: a definition list of its
@@ -8291,6 +8446,8 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     record_found = False
     lon = lat = None
     geom_geojson = None
+    revisions = []
+    comments = []
 
     with Session(engine) as session:
         meta = _load_hydrotype(session, slug)
@@ -8362,6 +8519,43 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
                                     refresh_urls=refresh_urls,
                                     parent_slug=slug, parent_id=record_id)
 
+            # History: revisions oldest->newest to diff each against its predecessor,
+            # then reversed for newest-first display.
+            revs_raw = session.execute(
+                select(m.HydroRecordRevision)
+                .where(m.HydroRecordRevision.record_id == record_id)
+                .order_by(m.HydroRecordRevision.created_at.asc(),
+                          m.HydroRecordRevision.id.asc())).scalars().all()
+            can_restore = _user_can(request, field_schema, "write")
+            prev_attrs = {}
+            for rv in revs_raw:
+                revisions.append({
+                    "id": str(rv.id), "action": rv.action or "update",
+                    "actor": rv.actor or "system", "when": rv.created_at,
+                    "changes": _revision_diff(prev_attrs, rv.attributes),
+                    "restore_url": reverse("hydrodesk:record_restore", kwargs={
+                        "slug": slug, "record_id": record_id, "rev_id": str(rv.id)}),
+                    "can_restore": can_restore,
+                })
+                prev_attrs = rv.attributes or {}
+            revisions.reverse()
+
+            # Comments oldest->newest; deletable by author or staff.
+            me = getattr(request.user, "username", None)
+            privileged = bool(getattr(request.user, "is_staff", False)
+                              or getattr(request.user, "is_superuser", False))
+            for c in session.execute(
+                    select(m.HydroComment)
+                    .where(m.HydroComment.record_id == record_id)
+                    .order_by(m.HydroComment.created_at.asc())).scalars().all():
+                comments.append({
+                    "id": str(c.id), "author": c.author or "anon",
+                    "body": c.body, "when": c.created_at,
+                    "can_delete": bool(privileged or (me and c.author == me)),
+                    "delete_url": reverse("hydrodesk:comment_delete", kwargs={
+                        "slug": slug, "record_id": record_id, "comment_id": str(c.id)}),
+                })
+
     has_geom = lon is not None and lat is not None
     # The record's human TITLE (designated title field / name / first field), shown
     # as the detail H1 instead of a bare UUID. Falls back to a short id.
@@ -8389,6 +8583,14 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         "run_model_url": reverse("hydrodesk:run_model",
                                  kwargs={"slug": slug, "record_id": record_id}),
         "model_job_base": reverse("hydrodesk:model_job_status", kwargs={"job_id": 0}),
+        # History + collaboration
+        "revisions": revisions,
+        "revision_count": len(revisions),
+        "comments": comments,
+        "comment_count": len(comments),
+        "can_comment": bool(getattr(request.user, "is_authenticated", False)),
+        "comment_add_url": reverse("hydrodesk:comment_add",
+                                   kwargs={"slug": slug, "record_id": record_id}),
     }
     return render(request, "hydrodesk/detail.html", context)
 

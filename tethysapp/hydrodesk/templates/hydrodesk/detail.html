@@ -105,6 +105,97 @@
     </div>
     {% endif %}
   </div>
+
+  <style>
+    .hd-badge { font-size:11px; padding:1px 8px; border-radius:10px; font-weight:600; text-transform:capitalize; }
+    .hd-badge.create { background:#e6f4ea; color:#1f7a4d; }
+    .hd-badge.update { background:#e8f0fe; color:#1a56c4; }
+    .hd-badge.restore { background:#fdeccd; color:#9a6700; }
+    .hd-rev { padding:10px 0; border-bottom:1px solid var(--fr-border,#eef0f2); }
+    .hd-rev:last-child { border-bottom:none; }
+    .hd-rev-head { display:flex; align-items:center; gap:8px; }
+    .hd-diff { margin:6px 0 0; border-collapse:collapse; font-size:12px; width:100%; }
+    .hd-diff td { padding:2px 8px 2px 0; vertical-align:top; }
+    .hd-diff-field { font-weight:600; color:#444; white-space:nowrap; }
+    .hd-diff-old { color:#b94a48; text-decoration:line-through; }
+    .hd-diff-arrow { color:#aaa; }
+    .hd-diff-new { color:#1f7a4d; }
+    .hd-comment { padding:8px 0; border-bottom:1px solid var(--fr-border,#eef0f2); }
+    .hd-comment:last-of-type { border-bottom:none; }
+    .hd-comment-head { display:flex; align-items:center; gap:8px; }
+    .hd-comment-body { margin-top:2px; white-space:pre-wrap; }
+    .hd-comment-del { border:none; background:none; color:#b94a48; cursor:pointer; font-size:16px; line-height:1; }
+    .hd-comment-form { margin-top:12px; }
+  </style>
+
+  {# History — revision timeline with field-level diffs + Restore #}
+  <div class="frappe-form-card" style="margin-top:16px;">
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">History <span class="frappe-muted frappe-text-sm">({{ revision_count }})</span></div>
+      {% for r in revisions %}
+      <div class="hd-rev">
+        <div class="hd-rev-head">
+          <span class="hd-badge {{ r.action }}">{{ r.action }}</span>
+          <span class="frappe-text-sm">{{ r.when|date:"Y-m-d H:i" }}</span>
+          <span class="frappe-muted frappe-text-sm">by {{ r.actor }}</span>
+          {% if not forloop.first and r.can_restore %}
+          <form method="post" action="{{ r.restore_url }}" style="display:inline;margin-left:auto;"
+                onsubmit="return confirm('Restore the record to this revision?');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-default btn-sm">Restore</button>
+          </form>
+          {% endif %}
+        </div>
+        {% if r.changes %}
+        <table class="hd-diff"><tbody>
+          {% for c in r.changes %}
+          <tr><td class="hd-diff-field">{{ c.field }}</td>
+              <td class="hd-diff-old">{{ c.old }}</td>
+              <td class="hd-diff-arrow">&rarr;</td>
+              <td class="hd-diff-new">{{ c.new }}</td></tr>
+          {% endfor %}
+        </tbody></table>
+        {% else %}
+        <div class="frappe-muted frappe-text-sm">No field changes.</div>
+        {% endif %}
+      </div>
+      {% empty %}
+      <div class="frappe-muted frappe-text-sm">No history yet.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# Comments — record discussion #}
+  <div class="frappe-form-card" style="margin-top:16px;">
+    <div class="frappe-form-section">
+      <div class="frappe-section-head">Comments <span class="frappe-muted frappe-text-sm">({{ comment_count }})</span></div>
+      {% for c in comments %}
+      <div class="hd-comment">
+        <div class="hd-comment-head">
+          <strong>{{ c.author }}</strong>
+          <span class="frappe-muted frappe-text-sm">{{ c.when|date:"Y-m-d H:i" }}</span>
+          {% if c.can_delete %}
+          <form method="post" action="{{ c.delete_url }}" style="display:inline;margin-left:auto;"
+                onsubmit="return confirm('Delete this comment?');">
+            {% csrf_token %}
+            <button type="submit" class="hd-comment-del" title="Delete comment">&times;</button>
+          </form>
+          {% endif %}
+        </div>
+        <div class="hd-comment-body">{{ c.body|linebreaksbr }}</div>
+      </div>
+      {% empty %}
+      <div class="frappe-muted frappe-text-sm">No comments yet.</div>
+      {% endfor %}
+      {% if can_comment %}
+      <form method="post" action="{{ comment_add_url }}" class="hd-comment-form">
+        {% csrf_token %}
+        <textarea name="body" class="form-control" rows="2" placeholder="Add a comment&hellip;" required></textarea>
+        <button type="submit" class="btn btn-primary btn-sm" style="margin-top:8px;">Comment</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
   {% endif %}
 
 </div>

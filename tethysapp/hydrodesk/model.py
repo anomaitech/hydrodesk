@@ -172,6 +172,38 @@ class HydroAlert(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class HydroRecordRevision(Base):
+    """One immutable snapshot of a HydroRecord, written on every create/edit/restore.
+    Powers the record History tab (field-level diff) and one-click Restore. Stores the
+    full ``attributes`` (and ``geom``) as they were, plus who/when/what action. Cascades
+    away with its record."""
+    __tablename__ = 'hydro_record_revision'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    record_id = Column(UUID(as_uuid=True),
+                       ForeignKey('hydro_record.id', ondelete='CASCADE'),
+                       index=True, nullable=False)
+    hydrotype_slug = Column(String, index=True, nullable=False)
+    attributes = Column(JSONB, nullable=False, default=dict)
+    geom = Column(Geometry(geometry_type='GEOMETRY', srid=4326))
+    action = Column(Text)                                       # create | update | restore
+    actor = Column(String)                                      # username, or None
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class HydroComment(Base):
+    """A discussion note on a single HydroRecord (collaboration). Cascades with its
+    record. Plain text body; author is the posting user's username."""
+    __tablename__ = 'hydro_comment'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    record_id = Column(UUID(as_uuid=True),
+                       ForeignKey('hydro_record.id', ondelete='CASCADE'),
+                       index=True, nullable=False)
+    hydrotype_slug = Column(String, index=True)
+    author = Column(String)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 def init_hydro_db(engine, first_time):
     """Tethys persistent-store initializer. Enables PostGIS, then creates the
     fixed schema (the geom column + its GiST index come from the geoalchemy2
