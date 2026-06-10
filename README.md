@@ -1,8 +1,8 @@
-# TethysDesk
+# HydroDesk
 
 A **Frappe-style, no-code metadata engine** for the [Tethys Platform](https://www.tethysplatform.org/) — so non-coding hydrologists (and anyone else) can define record types and get instant List, Form, Detail, and Map views, plus live API integrations, **without writing code or running database migrations**.
 
-> Packaged as the Tethys app `tethysapp-hydrodesk` ("HydroDesk" in the UI).
+> Packaged as the Tethys app `tethysapp-hydrodesk`; repo [`anomaitech/hydrodesk`](https://github.com/anomaitech/hydrodesk).
 
 ## What it does
 
