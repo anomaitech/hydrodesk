@@ -136,8 +136,12 @@ def _svg_hbar(pairs, color="#2490ef", unit="", width=560):
             '<text x="%d" y="%d" font-size="11" fill="#667085">%s</text>'
             % (y + 12, lbl, label_w, y, bw, color, label_w + bw + 6, y + 12, vtxt))
         y += bh + gap
-    return mark_safe('<svg width="%d" height="%d" role="img" '
-                     'xmlns="http://www.w3.org/2000/svg">%s</svg>' % (width, y, "".join(parts)))
+    # viewBox + preserveAspectRatio so the chart scales DOWN to its container (CSS
+    # max-width:100%) instead of overflowing a narrow card.
+    return mark_safe('<svg width="%d" height="%d" viewBox="0 0 %d %d" '
+                     'preserveAspectRatio="xMinYMin meet" role="img" '
+                     'xmlns="http://www.w3.org/2000/svg">%s</svg>'
+                     % (width, y, width, y, "".join(parts)))
 
 
 def _insights_for(field_schema, records):
@@ -11808,7 +11812,21 @@ def _schedule_form_context(mode, sched, errors, schedule_id=None, slugs=None):
 # hydro_dashboard row (JSONB config), like a HydroType — a pure INSERT.
 # ---------------------------------------------------------------------------
 _DASH_WIDGET_TYPES = ("kpi", "bar", "table", "map")
-_DASH_AGGS = ("count", "sum", "avg", "min", "max")
+# count/sum/avg/min/max aggregate; first/latest show ONE record's value AS-IS (no maths).
+_DASH_AGGS = ("count", "sum", "avg", "min", "max", "first", "latest")
+
+
+def _dash_cell(v, prop):
+    """Format one dashboard-table cell. A child/inline TABLE field becomes a row count so
+    child-table data is surfaced; long text is truncated; everything else via _diff_str."""
+    p = prop or {}
+    if p.get("x-widget") == "table" or p.get("x-child-type"):
+        if isinstance(v, list):
+            return "%d row%s" % (len(v), "" if len(v) == 1 else "s")
+        return "—"
+    if isinstance(v, str) and len(v) > 48:
+        return v[:46] + "…"
+    return _diff_str(v)
 
 
 def _dash_records(session, slug):
@@ -11843,9 +11861,19 @@ def _dashboard_widget_view(session, fs_cache, w):
     if wtype == "kpi":
         recs = _dash_records(session, slug)
         agg = (w.get("agg") or "count").lower()
-        val = len(recs) if agg == "count" else _report_agg(_dash_numbers(recs, w.get("field")), agg)
-        out["value"] = _fmt_stat(val)
-        out["sub"] = "%s%s · %d records" % (agg, ("" if agg == "count" else " of " + (w.get("field") or "")), len(recs))
+        fld = w.get("field")
+        if agg == "count":
+            out["value"] = _fmt_stat(len(recs))
+            out["sub"] = "count · %d records" % len(recs)
+        elif agg in ("first", "latest"):
+            # AS-IS: show one record's raw value (no aggregation), text or number.
+            src = (recs[0] if recs else {}) if agg == "first" else (recs[-1] if recs else {})
+            v = src.get(fld)
+            out["value"] = _fmt_stat(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else _diff_str(v)
+            out["sub"] = "%s %s" % (agg, fld or "")
+        else:
+            out["value"] = _fmt_stat(_report_agg(_dash_numbers(recs, fld), agg))
+            out["sub"] = "%s of %s · %d records" % (agg, fld or "", len(recs))
     elif wtype == "bar":
         recs = _dash_records(session, slug)
         field, group = w.get("field"), w.get("group_field")
@@ -11867,18 +11895,43 @@ def _dashboard_widget_view(session, fs_cache, w):
     elif wtype == "table":
         recs = _dash_records(session, slug)
         props = (fs or {}).get("properties") or {}
-        order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
-        cols = []
-        for k in order:
-            p = props[k] or {}
-            if p.get("x-layout") or p.get("x-widget") in ("image", "table") or p.get("x-api-connector"):
-                continue
-            cols.append((k, p.get("title") or k))
-            if len(cols) >= 6:
-                break
-        out["columns"] = [t for _, t in cols]
-        out["rows"] = [[_diff_str(r.get(k)) for k, _ in cols] for r in recs[:20]]
-        out["row_total"] = len(recs)
+        field = w.get("field")
+        fprop = props.get(field) or {}
+        if field and fprop.get("x-widget") == "table":
+            # EXPAND a child/inline table: flatten its rows across all parent records, so a
+            # dashboard can show the child-table data itself (not just a count).
+            rows_data = [row for r in recs for row in (r.get(field) or []) if isinstance(row, dict)]
+            itemprops = ((fprop.get("items") or {}).get("properties")) or {}
+            colkeys = list(itemprops.keys())
+            if not colkeys:                       # no declared columns -> infer from the data
+                seen = set()
+                for row in rows_data:
+                    for k in row:
+                        if k not in seen:
+                            seen.add(k)
+                            colkeys.append(k)
+            colkeys = colkeys[:8]
+            out["columns"] = [(itemprops.get(k) or {}).get("title") or k for k in colkeys]
+            out["rows"] = [[_dash_cell(row.get(k), itemprops.get(k)) for k in colkeys]
+                           for row in rows_data[:50]]
+            out["row_total"] = len(rows_data)
+            if not out["title"]:
+                out["title"] = fprop.get("title") or field
+        else:
+            order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+            cols = []
+            for k in order:
+                p = props[k] or {}
+                # keep child/inline TABLE fields (shown as a row count) so child-table data
+                # is surfaced; drop only layout, images, and live API fields (not stored).
+                if p.get("x-layout") or p.get("x-widget") == "image" or p.get("x-api-connector"):
+                    continue
+                cols.append((k, p.get("title") or k, p))
+                if len(cols) >= 8:
+                    break
+            out["columns"] = [t for _, t, _ in cols]
+            out["rows"] = [[_dash_cell(r.get(k), p) for k, _, p in cols] for r in recs[:20]]
+            out["row_total"] = len(recs)
     elif wtype == "map":
         out["geojson"] = json.dumps(_records_geojson(slug)).replace("<", "\\u003c")
         out["title_field"] = (fs or {}).get("x-title-field") or ""
