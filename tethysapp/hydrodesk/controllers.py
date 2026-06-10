@@ -3624,6 +3624,41 @@ def _materialize_connector_series(session, prop, attrs, cache):
     return None
 
 
+def _materialize_connector_value(session, prop, attrs, cache):
+    """Materialize a connector-output field to a JSON-safe value of ANY kind, for the
+    Data API's ?include=: a list of row dicts for a Time-Series output (so ?field__any=
+    row-filters keep working), else the scalar/string value, else an image URL. None when
+    unresolvable. Series is tried FIRST so row-filtering is preserved; otherwise this runs
+    the SAME connector fetch the record detail view uses (TTL-cached via fetch_api), so a
+    value connector like a live gage reading surfaces as its number — not as null."""
+    rows = _materialize_connector_series(session, prop, attrs, cache)
+    if rows is not None:
+        return rows
+    connector_name = (prop or {}).get("x-api-connector")
+    if not connector_name:
+        return None
+    connector = cache.get(connector_name)
+    if connector is None and connector_name not in cache:
+        connector = _load_connector(session, connector_name)
+        cache[connector_name] = connector
+    if connector is None:
+        return None
+    cfg, mapped = _apply_nc_map(connector.config or {}, attrs, prop.get("x-nc-map"))
+    for entry in (prop.get("x-api-outputs") or [{}]):
+        oname = ((entry.get("output") or "").strip() or None) if isinstance(entry, dict) else None
+        try:
+            result = fetch_api(cfg, mapped, connector_name=connector_name,
+                               field_map=prop.get("x-api-map"), output=oname)
+        except Exception:
+            continue
+        kind = (result or {}).get("kind")
+        if kind == "value":
+            return result.get("value")
+        if kind == "image":
+            return result.get("url") or result.get("value")
+    return None
+
+
 def _parse_table_expr(expr):
     """Parse ONE row condition 'col:value' / 'col>val' into (col, op, value_str), or
     None when malformed. The atom of a (possibly compound) __any predicate."""
@@ -3759,8 +3794,10 @@ def _eval_predicate(ast, row):
 
 
 def _rows_match_any(rows, ast):
-    """True if ANY row in ``rows`` satisfies the predicate AST (live-series __any)."""
-    return any(isinstance(r, dict) and _eval_predicate(ast, r) for r in (rows or []))
+    """True if ANY row in ``rows`` satisfies the predicate AST (live-series __any). A
+    non-list (a scalar/value connector materialized for ?include=) has no rows to match."""
+    return any(isinstance(r, dict) and _eval_predicate(ast, r)
+               for r in (rows if isinstance(rows, list) else []))
 
 
 def _connector_series_columns(cfg, output_name=None):
@@ -3825,6 +3862,19 @@ def api_records(request, slug=None):
         else:
             include = {x.strip() for x in inc_raw.split(",") if x.strip()} & set(conn_fields)
 
+        # A doctype's human title may live in a field other than literal 'name'
+        # (x-title-field). We expose that title AS 'name' on every record (below), so a
+        # ?name= filter must target the title field for doctypes that have no real 'name'.
+        props_map = (field_schema or {}).get("properties") or {}
+        title_field = (field_schema or {}).get("x-title-field")
+        has_name_prop = "name" in props_map
+
+        def _retarget(key):
+            fld, sep, op = key.partition("__")
+            if fld == "name" and not has_name_prop and title_field:
+                return title_field + (sep + op if sep else "")
+            return key
+
         # Split connector __any filters out of the SQL params (they can't be a jsonpath).
         conn_filters, sql_get = [], {}
         for k, v in request.GET.items():
@@ -3838,7 +3888,7 @@ def api_records(request, slug=None):
                 conn_filters.append((fld, ast))
                 include.add(fld)          # filtering a connector field implies fetching it
             else:
-                sql_get[k] = v
+                sql_get[_retarget(k)] = v
 
         base = select(m.HydroRecord.id, m.HydroRecord.attributes,
                       func.ST_AsGeoJSON(m.HydroRecord.geom)).where(
@@ -3850,12 +3900,15 @@ def api_records(request, slug=None):
         conn_cache = {}
 
         def _materialize(rec_attrs):
-            """{field: rows} for the requested connector-output fields of one record."""
+            """{field: value} for the requested connector-output fields of one record.
+            A Time-Series output yields a list of row dicts (so ?field__any= row-filters
+            still work); a value/string/image output yields its scalar/URL — so a live
+            gage reading surfaces as its number rather than being dropped."""
             out = {}
             for fld in include:
-                rows = _materialize_connector_series(session, conn_fields[fld], rec_attrs, conn_cache)
-                if rows is not None:
-                    out[fld] = rows
+                val = _materialize_connector_value(session, conn_fields[fld], rec_attrs, conn_cache)
+                if val is not None:
+                    out[fld] = val
             return out
 
         # Both the count and the page can fail on a numeric filter over mixed-type data
@@ -3895,6 +3948,10 @@ def api_records(request, slug=None):
 
     def _project(attrs, mats):
         a = {k: v for k, v in (attrs or {}).items() if not k.startswith("_")}  # hide reserved
+        # Always expose the record's human title as 'name' (from x-title-field / first
+        # field) so consumers — and our own dashboard tiles — can rely on it for any
+        # doctype, even when the title lives in a differently-named field.
+        a.setdefault("name", _label_for(field_schema, attrs) or "")
         if drop_tables:                                # lean payload: omit inline tables
             a = {k: v for k, v in a.items() if not isinstance(v, list)
                  or (v and not isinstance(v[0], dict))}
@@ -10608,7 +10665,9 @@ _TD_VIZ_LABELS = {
 
 
 def _td_field_kind(prop):
-    """Coarse kind of a field property, for choosing which visualizations apply."""
+    """Coarse kind of a field property, for choosing which visualizations apply.
+    A live connector field is split by output: a Time-Series connector reads as a
+    'table' (its rows), any other connector as a scalar 'connector' value."""
     p = prop or {}
     if p.get("x-layout"):
         return "layout"
@@ -10616,6 +10675,12 @@ def _td_field_kind(prop):
         return "image"
     if p.get("x-widget") == "table":
         return "table"
+    if p.get("x-api-connector"):
+        outs = p.get("x-api-outputs") or []
+        if any(isinstance(o, dict) and (o.get("field_type") or "") == "Time-Series"
+               for o in outs):
+            return "table"        # live Time-Series connector -> a table tile of its rows
+        return "connector"        # live value/string connector -> a records-table column
     if p.get("type") == "number":
         return "number"
     return "text"
@@ -10629,8 +10694,10 @@ def _td_viz_options(kind, is_title):
         return ["kpi", "bar", "line", "records", "ignore"]
     if kind == "image":
         return ["image", "ignore"]
-    if kind == "table":
-        return ["table", "ignore"]
+    if kind == "table":            # inline table OR a live Time-Series connector
+        return ["table", "records", "ignore"]
+    if kind == "connector":        # a live value/string connector
+        return ["records", "ignore"]
     if is_title:
         return ["select", "records", "ignore"]
     return ["records", "ignore"]
@@ -10684,11 +10751,12 @@ def _td_default_picks(field_schema, geometry_kind):
         elif kind == "image":
             picks[k] = "image"
         elif kind == "table":
+            # Inline table OR a live Time-Series connector -> its own table tile.
             picks[k] = "table"
-        elif prop.get("x-api-connector"):
-            # Live connector field: a records column would re-fetch per record, so keep
-            # it off by default (still selectable as a column).
-            picks[k] = "ignore"
+        elif kind == "connector":
+            # A live value connector (e.g. a gage reading) -> a records-table column,
+            # materialized via the Data API's include=.
+            picks[k] = "records"
         else:
             # Descriptive text columns go to the records table by default.
             picks[k] = "records"
@@ -10752,9 +10820,17 @@ def _td_field_catalog(field_schema, geometry_kind, picks, sample_attrs):
         cur = picks.get(k, opts[0])
         if cur not in opts:
             cur = opts[0]
+        # Connector fields aren't stored, so a stored-attr sample is blank — show that
+        # they're fetched live (and whether as a series or a value) instead.
+        if prop.get("x-api-connector"):
+            sample = "[live series]" if kind == "table" else "[live value]"
+            kind_label = "connector (live %s)" % ("series" if kind == "table" else "value")
+        else:
+            sample = _td_sample_str(sample_attrs.get(k))
+            kind_label = kind
         rows.append({
-            "key": k, "label": prop.get("title") or k, "kind": kind,
-            "sample": _td_sample_str(sample_attrs.get(k)),
+            "key": k, "label": prop.get("title") or k, "kind": kind_label,
+            "sample": sample,
             "options": [{"value": o, "label": _TD_VIZ_LABELS[o], "selected": o == cur}
                         for o in opts],
         })
