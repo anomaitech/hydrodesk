@@ -5880,7 +5880,70 @@ def _importable_fields(field_schema):
     return out
 
 
-@controller(name="import_records", url="import/{slug}", title="Import CSV")
+def _import_cell_str(v):
+    """Stringify an Excel cell to the form the record form posts: dates -> ISO, whole
+    floats -> ints (so an Integer field's int() doesn't choke on '5.0'), bools -> words."""
+    import datetime as _dt
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, _dt.datetime):
+        return v.date().isoformat() if (v.hour == v.minute == v.second == 0) else v.isoformat()
+    if isinstance(v, _dt.date):
+        return v.isoformat()
+    if isinstance(v, float):
+        return str(int(v)) if v.is_integer() else repr(v)
+    if isinstance(v, str):
+        return v.strip()
+    return str(v)
+
+
+def _read_tabular_upload(upload):
+    """(headers, rows) from an uploaded CSV or Excel (.xlsx/.xlsm) file. ``rows`` is a
+    list of {header: cell_str} dicts (same shape as csv.DictReader), so the importer's
+    row loop is format-agnostic. Raises ValueError with a user-facing message."""
+    import io
+    name = (getattr(upload, "name", "") or "").lower()
+    if name.endswith((".xlsx", ".xlsm")):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(upload.read()), read_only=True, data_only=True)
+        except Exception:
+            raise ValueError("Could not read the Excel file — is it a valid .xlsx?")
+        ws = wb.active
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            raise ValueError("The Excel sheet is empty.")
+        headers = [("" if c is None else str(c)).strip() for c in header_row]
+        while headers and headers[-1] == "":          # trim trailing empty header cells
+            headers.pop()
+        if not any(headers):
+            raise ValueError("The Excel sheet has no header row.")
+        rows = []
+        for r in rows_iter:
+            cells = list(r) if r is not None else []
+            if all(c is None or str(c).strip() == "" for c in cells):
+                continue                               # skip fully blank rows
+            rows.append({h: _import_cell_str(cells[j] if j < len(cells) else None)
+                         for j, h in enumerate(headers) if h})
+        return headers, rows
+    # default: CSV
+    try:
+        text = upload.read().decode("utf-8-sig", "replace")
+    except Exception:
+        raise ValueError("Could not read the file as UTF-8 text.")
+    import csv as _csvmod
+    reader = _csvmod.DictReader(io.StringIO(text), skipinitialspace=True)
+    headers = reader.fieldnames or []
+    if not headers:
+        raise ValueError("The CSV has no header row.")
+    return headers, list(reader)
+
+
+@controller(name="import_records", url="import/{slug}", title="Import records")
 def import_records(request, slug="monitoring_station"):
     """Bulk-create HydroRecords of one HydroType from an uploaded CSV, auto-mapped by
     header name. GET shows the upload form + the expected headers; POST parses the
@@ -5916,21 +5979,13 @@ def import_records(request, slug="monitoring_station"):
 
     upload = request.FILES.get("csv_file")
     if upload is None:
-        ctx["error"] = "Choose a CSV file to import."
+        ctx["error"] = "Choose a CSV or Excel file to import."
         return render(request, "hydrodesk/import_records.html", ctx)
 
-    import csv as _csvmod
-    import io
     try:
-        text = upload.read().decode("utf-8-sig", "replace")
-    except Exception:
-        ctx["error"] = "Could not read the file as UTF-8 text."
-        return render(request, "hydrodesk/import_records.html", ctx)
-
-    reader = _csvmod.DictReader(io.StringIO(text), skipinitialspace=True)
-    headers = reader.fieldnames or []
-    if not headers:
-        ctx["error"] = "The CSV has no header row."
+        headers, reader = _read_tabular_upload(upload)   # reader = list of row dicts
+    except ValueError as exc:
+        ctx["error"] = str(exc)
         return render(request, "hydrodesk/import_records.html", ctx)
 
     # Map each importable field -> a CSV header (by field key or slugified title).

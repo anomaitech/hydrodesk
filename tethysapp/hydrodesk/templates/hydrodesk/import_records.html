@@ -76,10 +76,10 @@
           class="frappe-form-card" style="max-width:760px;">
       {% csrf_token %}
       <div class="frappe-form-section">
-        <div class="frappe-section-head">Upload a CSV</div>
+        <div class="frappe-section-head">Upload a CSV or Excel file</div>
         <div class="frappe-form-group">
-          <label class="frappe-label" for="id_csv_file">CSV file<span class="req">*</span></label>
-          <input class="form-control" type="file" id="id_csv_file" name="csv_file" accept=".csv,text/csv" required>
+          <label class="frappe-label" for="id_csv_file">CSV / Excel file<span class="req">*</span></label>
+          <input class="form-control" type="file" id="id_csv_file" name="csv_file" accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
           <div class="frappe-help">
             The first row must be a header. Columns are matched to fields by name
             (case-insensitive); unmatched columns are ignored and each row is
