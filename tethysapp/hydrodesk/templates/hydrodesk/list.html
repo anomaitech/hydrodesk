@@ -107,7 +107,12 @@
           {% if not forloop.first %}<span class="frappe-list-col">{{ cell }}</span>{% endif %}
         {% endfor %}
         <span class="frappe-list-activity">
-          <a class="btn btn-link btn-sm" href="{% url 'hydrodesk:detail' slug=slug record_id=row.id %}">Open <i class="bi bi-chevron-right"></i></a>
+          <button type="button" class="hd-kebab" aria-label="Actions for this record"
+            data-name="{{ row.cells.0|striptags|default:'record' }}"
+            data-open="{% url 'hydrodesk:detail' slug=slug record_id=row.id %}"
+            data-edit="{% url 'hydrodesk:edit' slug=slug record_id=row.id %}"
+            data-newver="{% url 'hydrodesk:record_new_version' slug=slug record_id=row.id %}"
+            data-delete="{% url 'hydrodesk:delete' slug=slug record_id=row.id %}">&#8942;</button>
         </span>
       </div>
       {% endfor %}
@@ -124,7 +129,27 @@
 
 </div>
 
+{# Shared kebab row-action menu — reparented to <body> by JS (escapes the Tethys CSS transform). #}
+<div id="hd-rowmenu" class="hd-rowmenu" hidden>
+  <div id="hd-rm-title" class="hd-rm-title"></div>
+  <a id="hd-rm-open" class="hd-rm-item" href="#"><i class="bi bi-box-arrow-up-right"></i> Open</a>
+  <a id="hd-rm-edit" class="hd-rm-item" href="#"><i class="bi bi-pencil"></i> Edit</a>
+  <form id="hd-rm-newver" method="post" style="margin:0;">{% csrf_token %}
+    <button class="hd-rm-item" type="submit"><i class="bi bi-files"></i> Save as new version</button></form>
+  <div class="hd-rm-sep"></div>
+  <form id="hd-rm-delete" method="post" style="margin:0;">{% csrf_token %}
+    <button class="hd-rm-item danger" type="submit"><i class="bi bi-trash"></i> Delete</button></form>
+</div>
+
 <style>
+  .hd-kebab { border:none; background:none; cursor:pointer; font-size:18px; line-height:1; padding:2px 9px; color:var(--fr-text-muted,#5f6368); border-radius:6px; }
+  .hd-kebab:hover { background:var(--gray-100,#f1f3f4); color:var(--fr-text-color); }
+  .hd-rowmenu { position:fixed; z-index:3000; min-width:200px; background:var(--fr-fg-color,#fff); border:1px solid var(--fr-border-color,#dadce0); border-radius:8px; box-shadow:0 8px 24px rgba(60,64,67,.2); padding:6px; }
+  .hd-rm-title { font-size:11px; color:var(--fr-text-muted,#5f6368); padding:4px 10px 6px; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hd-rm-item { display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:7px 10px; border:none; background:none; font:inherit; font-size:13px; color:var(--fr-text-color); border-radius:6px; cursor:pointer; text-decoration:none; box-sizing:border-box; }
+  .hd-rm-item:hover { background:var(--gray-100,#f1f3f4); text-decoration:none; }
+  .hd-rm-item.danger { color:var(--red-600,#d93025); }
+  .hd-rm-sep { height:1px; background:var(--fr-border-color,#dadce0); margin:4px 0; }
   .hd-bulk-bar {
     display:flex; align-items:center; gap:12px;
     padding:8px 14px; margin-bottom:10px;
@@ -186,6 +211,43 @@
     }
   });
   update();
+})();
+
+// Kebab (⋮) per-row action menu — a single shared popup, reparented to <body> to escape
+// the Tethys CSS transform, positioned at the clicked dot (flips up near the bottom).
+(function () {
+  var menu = document.getElementById('hd-rowmenu');
+  if (!menu) return;
+  if (menu.parentNode !== document.body) document.body.appendChild(menu);
+  var open = document.getElementById('hd-rm-open'),
+      edit = document.getElementById('hd-rm-edit'),
+      newver = document.getElementById('hd-rm-newver'),
+      del = document.getElementById('hd-rm-delete'),
+      title = document.getElementById('hd-rm-title');
+  function hide() { menu.hidden = true; }
+  function showFor(btn) {
+    open.href = btn.dataset.open;
+    edit.href = btn.dataset.edit;
+    newver.action = btn.dataset.newver;
+    del.action = btn.dataset.delete;
+    var name = btn.dataset.name || 'record';
+    if (title) title.textContent = name;
+    del.onsubmit = function () { return window.confirm('Delete "' + name + '"? This cannot be undone.'); };
+    menu.hidden = false;
+    var r = btn.getBoundingClientRect();
+    var left = Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8);
+    var top = r.bottom + 4;
+    if (top + menu.offsetHeight > window.innerHeight) top = r.top - menu.offsetHeight - 4;
+    menu.style.left = Math.max(8, left) + 'px';
+    menu.style.top = Math.max(8, top) + 'px';
+  }
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.hd-kebab');
+    if (btn) { e.preventDefault(); var wasOpen = !menu.hidden; hide(); if (!wasOpen) showFor(btn); return; }
+    if (!menu.contains(e.target)) hide();
+  });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hide(); });
+  window.addEventListener('scroll', hide, true);
 })();
 </script>
 {% endblock %}
