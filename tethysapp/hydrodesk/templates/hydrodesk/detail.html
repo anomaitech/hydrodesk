@@ -147,6 +147,34 @@
     .hd-comment-form { margin-top:12px; }
   </style>
 
+  {% if can_version %}
+  <div class="frappe-form-card" style="margin-top:16px;">
+    <div class="frappe-form-section">
+      <div class="frappe-section-head" style="display:flex;align-items:center;gap:8px;">
+        Versions{% if version_count > 1 %} <span class="frappe-muted frappe-text-sm">({{ version_count }})</span>{% endif %}
+        <form method="post" action="{{ new_version_url }}" style="margin-left:auto;">{% csrf_token %}
+          <button type="submit" class="btn btn-default btn-sm"><i class="bi bi-files"></i> Save as new version</button>
+        </form>
+      </div>
+      {% if version_count > 1 %}
+        {% for v in versions %}
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--fr-border-color);">
+          <span style="font-weight:600;min-width:40px;">v{{ v.no }}</span>
+          {% if v.label %}<span>{{ v.label }}</span>{% endif %}
+          {% if v.current %}<span style="font-size:11px;padding:1px 9px;border-radius:10px;background:#e6f4ea;color:#1e8e3e;font-weight:600;">current</span>{% endif %}
+          {% if v.is_self %}<span class="frappe-muted frappe-text-sm">viewing</span>{% endif %}
+          <span class="frappe-muted frappe-text-sm" style="margin-left:auto;">{{ v.when|date:"Y-m-d H:i" }}</span>
+          {% if not v.is_self %}<a class="btn btn-default btn-sm" href="{{ v.url }}">Open</a>{% endif %}
+          {% if not v.current %}<form method="post" action="{{ v.set_current_url }}" style="display:inline;">{% csrf_token %}<button class="btn btn-default btn-sm" type="submit">Set current</button></form>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="frappe-muted frappe-text-sm">This is the only version. &ldquo;Save as new version&rdquo; branches an editable copy (a re-survey, a model re-run, a revision) &mdash; it becomes the current version and shows in the list.</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if wf_log %}
   <div class="frappe-form-card" style="margin-top:16px;">
     <div class="frappe-form-section">

@@ -101,6 +101,7 @@
           <a href="{% url 'hydrodesk:detail' slug=slug record_id=row.id %}">
             {% if row.cells.0 %}{{ row.cells.0 }}{% else %}Record {{ forloop.counter }}{% endif %}
           </a>
+          {% if row.versions %}<span title="{{ row.versions }} versions" style="font-size:10px;padding:1px 7px;border-radius:9px;background:var(--blue-100,#e8f0fe);color:var(--blue-600,#1967d2);font-weight:600;margin-left:6px;white-space:nowrap;">v{{ row.version_no }} &middot; {{ row.versions }}</span>{% endif %}
         </span>
         {% for cell in row.cells %}
           {% if not forloop.first %}<span class="frappe-list-col">{{ cell }}</span>{% endif %}

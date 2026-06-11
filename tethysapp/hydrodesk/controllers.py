@@ -995,6 +995,7 @@ def _records_geojson(slug):
             )
             .where(m.HydroRecord.hydrotype_slug == slug)
             .where(m.HydroRecord.geom.isnot(None))
+            .where(_current_only())
         ).all()
     for rid, attrs, geom in rows:
         props = dict(attrs or {})
@@ -5312,12 +5313,20 @@ def hydrotype_list(request, slug="monitoring_station"):
 
         columns = _derive_columns(field_schema)
 
-        # 2) Load every record of this type; build a flat row per record.
+        # 2) Load every record of this type (current version of each group only);
+        #    build a flat row per record.
         record_rows = session.execute(
             select(m.HydroRecord.id, m.HydroRecord.attributes)
             .where(m.HydroRecord.hydrotype_slug == slug)
+            .where(_current_only())
             .order_by(m.HydroRecord.created_at)
         ).all()
+        # version count per group, for a "vN · M versions" badge on the shown row.
+        vcounts = dict(session.execute(
+            select(m.HydroRecord.attributes["_version_group"].astext, func.count())
+            .where(m.HydroRecord.hydrotype_slug == slug)
+            .where(m.HydroRecord.attributes.has_key("_version_group"))
+            .group_by(m.HydroRecord.attributes["_version_group"].astext)).all())
 
         # The property fragment per column drives typed (Link/email/url) cells.
         props = (field_schema or {}).get("properties") or {}
@@ -5353,7 +5362,12 @@ def hydrotype_list(request, slug="monitoring_station"):
     for rec_id, attributes in record_rows:
         attrs = attributes or {}
         cells = [_cell(prop, attrs.get(key)) for key, prop in column_props]
-        rows.append({"id": str(rec_id), "cells": cells})
+        row = {"id": str(rec_id), "cells": cells}
+        g = attrs.get("_version_group")
+        if g and vcounts.get(g, 1) > 1:
+            row["versions"] = vcounts[g]
+            row["version_no"] = attrs.get("_version_no") or 1
+        rows.append(row)
 
     # Pre-sort deterministically on the first column so the static render is
     # already ordered for a headless screenshot (no client-side JS required).
@@ -7720,7 +7734,23 @@ def hydrotype_delete(request, slug="monitoring_station", record_id=None):
                 .where(m.HydroRecord.id == record_id)
             ).scalar_one_or_none()
             if rec is not None:
+                vgroup = (rec.attributes or {}).get("_version_group")
+                was_current = bool((rec.attributes or {}).get("_version_current"))
                 session.delete(rec)
+                session.flush()
+                # If the CURRENT version was deleted, promote the highest-numbered
+                # survivor so the version group never silently vanishes from the list.
+                if vgroup and was_current:
+                    survivors = session.execute(
+                        select(m.HydroRecord).where(m.HydroRecord.hydrotype_slug == slug)
+                        .where(m.HydroRecord.attributes["_version_group"].astext == vgroup)
+                    ).scalars().all()
+                    if survivors:
+                        winner = max(survivors,
+                                     key=lambda r: (r.attributes or {}).get("_version_no") or 1)
+                        a = dict(winner.attributes or {})
+                        a["_version_current"] = True
+                        winner.attributes = a
                 session.commit()
     return redirect(reverse("hydrodesk:list", kwargs={"slug": slug}))
 
@@ -8829,6 +8859,129 @@ def comment_delete(request, slug=None, record_id=None, comment_id=None):
     return redirect(detail)
 
 
+# ---------------------------------------------------------------------------
+# RECORD VERSIONS — a record can have multiple same-doctype "versions" (editable
+# variants: a model re-run, an annual re-survey, a revision). Distinct from the
+# immutable History. A version group is identified by reserved attribute keys:
+#   _version_group   = the group id (the first/original record's id; shared)
+#   _version_no      = sequential version number (1, 2, ...)
+#   _version_current = exactly one version per group is the "current" one
+#   _version_label   = optional human label
+# A record with no _version_group is standalone (implicitly v1, a group of one).
+# ---------------------------------------------------------------------------
+def _current_only():
+    """SQLAlchemy predicate keeping only the CURRENT version of each version group, plus
+    standalone/legacy records (no _version_group — implicitly current). Applied to
+    COLLECTION surfaces (list, map/OGC, dashboards) so a multi-version record counts once;
+    per-id pages (detail/edit/history) are intentionally unaffected."""
+    return or_(m.HydroRecord.attributes["_version_current"].astext == "true",
+               ~m.HydroRecord.attributes.has_key("_version_group"))
+
+
+def _record_versions(session, slug, record_id, attrs):
+    """All versions in this record's group as [{id,no,label,current,when,is_self}] sorted
+    by version number, plus the group id. Empty list for a standalone record."""
+    group = (attrs or {}).get("_version_group") or str(record_id)
+    rows = session.execute(
+        select(m.HydroRecord.id, m.HydroRecord.attributes, m.HydroRecord.created_at)
+        .where(m.HydroRecord.hydrotype_slug == slug)
+        .where(m.HydroRecord.attributes["_version_group"].astext == group)).all()
+    out = [{"id": str(rid), "no": (a or {}).get("_version_no") or 1,
+            "label": (a or {}).get("_version_label") or "",
+            "current": bool((a or {}).get("_version_current")),
+            "when": created, "is_self": str(rid) == str(record_id)}
+           for rid, a, created in rows]
+    out.sort(key=lambda v: (v["no"], v["id"]))
+    return out, group
+
+
+@controller(name="record_new_version", url="record/{slug}/{record_id}/new-version",
+            title="New version")
+def record_new_version(request, slug=None, record_id=None):
+    """POST: clone this record into a NEW VERSION of the same doctype, make it the current
+    version, and open it. Field values + geometry copy; if the doctype has a workflow the
+    new version's status resets to the first state (a new version needs re-review)."""
+    detail = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST":
+        return redirect(detail)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+    if meta is None:
+        return redirect(detail)
+    dn, field_schema, gk = meta
+    if not _user_can(request, field_schema, "write"):
+        return _denied(request, "edit", dn)
+    with Session(engine) as session:
+        src = session.execute(
+            select(m.HydroRecord).where(m.HydroRecord.id == record_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalar_one_or_none()
+        if src is None:
+            return redirect(detail)
+        group = (src.attributes or {}).get("_version_group") or str(src.id)
+        members = session.execute(
+            select(m.HydroRecord).where(m.HydroRecord.hydrotype_slug == slug)
+            .where(m.HydroRecord.attributes["_version_group"].astext == group)).scalars().all()
+        if not members:                       # source was standalone -> make it v1 (not current)
+            a = dict(src.attributes or {})
+            a.update({"_version_group": group, "_version_no": 1, "_version_current": False})
+            src.attributes = a
+            members = [src]
+        max_no = max(((mm.attributes or {}).get("_version_no") or 1) for mm in members)
+        for mm in members:                    # clear current on the whole group
+            a = dict(mm.attributes or {})
+            a["_version_current"] = False
+            mm.attributes = a
+        new_attrs = {k: v for k, v in (src.attributes or {}).items() if not k.startswith("_version")}
+        new_attrs.update({"_version_group": group, "_version_no": max_no + 1, "_version_current": True})
+        wf = _workflow_def(field_schema)
+        if wf:
+            names = _workflow_state_names(field_schema, wf)
+            if names:
+                new_attrs[wf["field"]] = names[0]
+        new = m.HydroRecord(hydrotype_slug=slug, attributes=new_attrs, geom=src.geom,
+                            created_by=getattr(request.user, "username", None))
+        session.add(new)
+        session.flush()
+        _snapshot_revision(session, new.id, slug, new_attrs, src.geom, "create",
+                           getattr(request.user, "username", None))
+        new_id = str(new.id)
+        session.commit()
+    return redirect(reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": new_id}))
+
+
+@controller(name="record_set_current", url="record/{slug}/{record_id}/set-current",
+            title="Set current version")
+def record_set_current(request, slug=None, record_id=None):
+    """POST: make this version the current one in its group (clears the flag on the rest)."""
+    detail = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST":
+        return redirect(detail)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+    if meta is None:
+        return redirect(detail)
+    if not _user_can(request, meta[1], "write"):
+        return _denied(request, "edit", meta[0])
+    with Session(engine) as session:
+        target = session.execute(
+            select(m.HydroRecord).where(m.HydroRecord.id == record_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalar_one_or_none()
+        if target is None:
+            return redirect(detail)
+        group = (target.attributes or {}).get("_version_group")
+        if group:
+            for mm in session.execute(
+                    select(m.HydroRecord).where(m.HydroRecord.hydrotype_slug == slug)
+                    .where(m.HydroRecord.attributes["_version_group"].astext == group)).scalars().all():
+                a = dict(mm.attributes or {})
+                a["_version_current"] = (str(mm.id) == str(record_id))
+                mm.attributes = a
+            session.commit()
+    return redirect(detail)
+
+
 @controller(name="record_transition", url="record/{slug}/{record_id}/transition/{tindex}",
             title="Workflow transition")
 def record_transition(request, slug=None, record_id=None, tindex=None):
@@ -9022,6 +9175,7 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     wf_status_hex = "#5f6368"
     wf_transitions = []
     wf_log = []
+    versions = []
 
     with Session(engine) as session:
         meta = _load_hydrotype(session, slug)
@@ -9149,6 +9303,13 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
                     wf_log.append({"from": a.from_state, "to": a.to_state,
                                    "actor": a.actor or "system", "when": a.at})
 
+            # Versions of this record (same-doctype editable variants).
+            versions, _vgroup = _record_versions(session, slug, record_id, attributes)
+            for v in versions:
+                v["url"] = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": v["id"]})
+                v["set_current_url"] = reverse("hydrodesk:record_set_current",
+                                               kwargs={"slug": slug, "record_id": v["id"]})
+
     has_geom = lon is not None and lat is not None
     # The record's human TITLE (designated title field / name / first field), shown
     # as the detail H1 instead of a bare UUID. Falls back to a short id.
@@ -9193,6 +9354,12 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         "wf_log": wf_log,
         "can_build": _can_build(request),
         "wf_edit_url": reverse("hydrodesk:workflow_edit", kwargs={"slug": slug}),
+        # Versions (same-doctype editable variants)
+        "versions": versions,
+        "version_count": len(versions),
+        "can_version": (record_found and _user_can(request, field_schema, "write")),
+        "new_version_url": reverse("hydrodesk:record_new_version",
+                                   kwargs={"slug": slug, "record_id": record_id}),
     }
     return render(request, "hydrodesk/detail.html", context)
 
@@ -12244,10 +12411,11 @@ def _dash_cell(v, prop):
 
 
 def _dash_records(session, slug):
-    """All records of a doctype as attribute dicts."""
+    """All records of a doctype as attribute dicts (current version of each group only)."""
     return [dict(a or {}) for a in session.execute(
         select(m.HydroRecord.attributes)
-        .where(m.HydroRecord.hydrotype_slug == slug)).scalars().all()]
+        .where(m.HydroRecord.hydrotype_slug == slug)
+        .where(_current_only())).scalars().all()]
 
 
 def _dash_numbers(records, field):
