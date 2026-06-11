@@ -1,0 +1,133 @@
+{% extends "hydrodesk/base_desk.html" %}
+{% comment %}
+  Side-by-side VERSION DIFF for one record. Context (controllers.record_compare):
+  slug, display_name, rows:[{label,a,b,changed}], changed, total, versions:[{id,no,
+  label,is_a,is_b}], a_label, b_label, compare_tmpl (with __A__/__B__ placeholders),
+  list_url, detail_url. Zero CDN.
+{% endcomment %}
+{% load static %}
+
+{% block title %}Compare versions - {{ display_name }} - {{ block.super }}{% endblock %}
+
+{% block desk_content %}
+<div class="frappe-page frappe-page--form">
+
+  <div class="frappe-breadcrumb">
+    <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
+    <span class="sep">/</span><a href="{{ list_url }}">{{ display_name }}</a>
+    <span class="sep">/</span><a href="{{ detail_url }}">Record</a>
+    <span class="sep">/</span>Compare
+  </div>
+
+  <div class="frappe-page-head">
+    <div class="frappe-title-area">
+      <h1 class="frappe-title">Compare versions</h1>
+      {% if changed %}<span class="indicator-pill orange">{{ changed }} of {{ total }} field{{ total|pluralize }} differ</span>
+      {% else %}<span class="indicator-pill green">Identical</span>{% endif %}
+    </div>
+    <div class="frappe-page-actions">
+      <a class="btn btn-default btn-sm" href="{{ detail_url }}"><i class="bi bi-arrow-left"></i> Back to record</a>
+    </div>
+  </div>
+
+  <style>
+    .cmp-pickers { display:flex; align-items:flex-end; gap:18px; flex-wrap:wrap; }
+    .cmp-pick { display:flex; flex-direction:column; gap:5px; }
+    .cmp-pick label { font-size:11px; font-weight:600; letter-spacing:.04em;
+      text-transform:uppercase; color:var(--fr-text-muted); }
+    .cmp-pick select { padding:7px 10px; border:1px solid var(--fr-border-color);
+      border-radius:8px; background:var(--fr-fg-color); color:var(--fr-text-color);
+      font-size:13px; min-width:200px; }
+    .cmp-vs { padding-bottom:9px; font-weight:600; color:var(--fr-text-muted); }
+    .cmp-swap { padding-bottom:4px; }
+    .cmp-toggle { display:flex; align-items:center; gap:7px; padding-bottom:7px;
+      margin-left:auto; font-size:12px; color:var(--fr-text-muted); user-select:none; }
+
+    table.cmp { width:100%; border-collapse:collapse; margin-top:6px; }
+    table.cmp th { text-align:left; font-size:11px; font-weight:600; letter-spacing:.04em;
+      text-transform:uppercase; color:var(--fr-text-muted); padding:9px 12px;
+      border-bottom:2px solid var(--fr-border-color); }
+    table.cmp th.col-a, table.cmp th.col-b { width:38%; }
+    table.cmp td { padding:9px 12px; border-bottom:1px solid var(--fr-border-color);
+      font-size:13px; vertical-align:top; }
+    table.cmp td.fld { font-weight:600; color:var(--fr-text-color); width:24%; }
+    table.cmp td .val { white-space:pre-wrap; word-break:break-word; }
+    table.cmp td .muted { color:var(--fr-text-muted); }
+    tr.changed { background:rgba(255,193,7,.07); }
+    tr.changed td.fld { box-shadow:inset 3px 0 0 var(--fr-orange,#f9ab00); }
+    td.a.changed-cell .val { background:#fce8e6; color:#c5221f; border-radius:4px; padding:1px 5px; }
+    td.b.changed-cell .val { background:#e6f4ea; color:#188038; border-radius:4px; padding:1px 5px; }
+    html[data-theme="dark"] td.a.changed-cell .val { background:rgba(217,48,37,.22); color:#f6aea9; }
+    html[data-theme="dark"] td.b.changed-cell .val { background:rgba(24,128,56,.24); color:#a8dab5; }
+    html[data-theme="dark"] tr.changed { background:rgba(249,171,0,.08); }
+  </style>
+
+  <div class="frappe-form-card" style="margin-top:16px;padding:16px 20px;">
+    <div class="cmp-pickers">
+      <div class="cmp-pick">
+        <label>Version A</label>
+        <select id="cmp-a">
+          {% for v in versions %}<option value="{{ v.id }}" {% if v.is_a %}selected{% endif %}>v{{ v.no }}{% if v.label %} · {{ v.label }}{% endif %}</option>{% endfor %}
+        </select>
+      </div>
+      <button type="button" class="btn btn-default btn-sm cmp-swap" id="cmp-swap" title="Swap A and B"><i class="bi bi-arrow-left-right"></i></button>
+      <div class="cmp-pick">
+        <label>Version B</label>
+        <select id="cmp-b">
+          {% for v in versions %}<option value="{{ v.id }}" {% if v.is_b %}selected{% endif %}>v{{ v.no }}{% if v.label %} · {{ v.label }}{% endif %}</option>{% endfor %}
+        </select>
+      </div>
+      <label class="cmp-toggle"><input type="checkbox" id="cmp-onlydiff"> Only differences</label>
+    </div>
+  </div>
+
+  <div class="frappe-form-card" style="margin-top:16px;padding:0;overflow:hidden;">
+    <table class="cmp">
+      <thead>
+        <tr>
+          <th class="col-f">Field</th>
+          <th class="col-a">{{ a_label }}</th>
+          <th class="col-b">{{ b_label }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="cmp-row {% if r.changed %}changed{% endif %}" data-changed="{{ r.changed|yesno:"1,0" }}">
+          <td class="fld">{{ r.label }}</td>
+          <td class="a {% if r.changed %}changed-cell{% endif %}">{% if r.a %}<span class="val">{{ r.a }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="b {% if r.changed %}changed-cell{% endif %}">{% if r.b %}<span class="val">{{ r.b }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="3" class="muted" style="padding:18px;">No comparable fields.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+  (function () {
+    var tmpl = "{{ compare_tmpl|escapejs }}";
+    var a = document.getElementById("cmp-a");
+    var b = document.getElementById("cmp-b");
+    function go() {
+      window.location = tmpl.replace("__A__", encodeURIComponent(a.value))
+                            .replace("__B__", encodeURIComponent(b.value));
+    }
+    if (a) a.addEventListener("change", go);
+    if (b) b.addEventListener("change", go);
+    var swap = document.getElementById("cmp-swap");
+    if (swap) swap.addEventListener("click", function () {
+      window.location = tmpl.replace("__A__", encodeURIComponent(b.value))
+                            .replace("__B__", encodeURIComponent(a.value));
+    });
+    var only = document.getElementById("cmp-onlydiff");
+    if (only) only.addEventListener("change", function () {
+      document.querySelectorAll("tr.cmp-row").forEach(function (row) {
+        row.style.display = (only.checked && row.getAttribute("data-changed") === "0") ? "none" : "";
+      });
+    });
+  })();
+  </script>
+
+</div>
+{% endblock %}

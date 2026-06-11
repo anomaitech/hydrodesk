@@ -9191,6 +9191,62 @@ def permissions_edit(request, slug=None):
         "list_url": reverse("hydrodesk:list", kwargs={"slug": slug})})
 
 
+@controller(name="record_compare", url="record/{slug}/{record_id}/compare/{other_id}",
+            title="Compare versions")
+def record_compare(request, slug=None, record_id=None, other_id=None):
+    """Side-by-side field diff of two versions of a record (A=record_id vs B=other_id).
+    Read-gated. Two version pickers let you re-pick A/B without leaving the page."""
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(reverse("hydrodesk:home"))
+        dn, fs, gk = meta
+        if not _user_can(request, fs, "read"):
+            return _denied(request, "view", dn)
+        a_attrs = session.execute(
+            select(m.HydroRecord.attributes).where(m.HydroRecord.id == record_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalar_one_or_none()
+        b_attrs = session.execute(
+            select(m.HydroRecord.attributes).where(m.HydroRecord.id == other_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalar_one_or_none()
+        if a_attrs is None or b_attrs is None:
+            return redirect(reverse("hydrodesk:detail",
+                                    kwargs={"slug": slug, "record_id": record_id}))
+        versions, _g = _record_versions(session, slug, record_id, a_attrs)
+
+    props = (fs or {}).get("properties") or {}
+    order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
+    rows, changed = [], 0
+    for k in order:
+        p = props[k] or {}
+        if (k.startswith("_") or p.get("x-layout") or p.get("x-widget") == "image"
+                or p.get("x-api-connector")):
+            continue
+        av, bv = a_attrs.get(k), b_attrs.get(k)
+        diff = (av != bv)
+        if diff:
+            changed += 1
+        rows.append({"label": p.get("title") or k, "a": _diff_str(av), "b": _diff_str(bv),
+                     "changed": diff})
+
+    def _vlabel(rid):
+        v = next((x for x in versions if x["id"] == str(rid)), None)
+        return ("v%d %s" % (v["no"], v["label"])).strip() if v else str(rid)[:8]
+    for v in versions:
+        v["is_a"] = (v["id"] == str(record_id))
+        v["is_b"] = (v["id"] == str(other_id))
+    return render(request, "hydrodesk/compare.html", {
+        "slug": slug, "display_name": dn, "rows": rows,
+        "changed": changed, "total": len(rows), "versions": versions,
+        "a_label": _vlabel(record_id), "b_label": _vlabel(other_id),
+        "compare_tmpl": reverse("hydrodesk:record_compare",
+                                kwargs={"slug": slug, "record_id": "__A__", "other_id": "__B__"}),
+        "list_url": reverse("hydrodesk:list", kwargs={"slug": slug}),
+        "detail_url": reverse("hydrodesk:detail",
+                              kwargs={"slug": slug, "record_id": record_id})})
+
+
 @controller(name="detail", url="record/{slug}/{record_id}", title="Record")
 def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     """Read-style detail view for one HydroRecord: a definition list of its
@@ -9347,6 +9403,12 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
                                                kwargs={"slug": slug, "record_id": v["id"]})
                 v["relabel_url"] = reverse("hydrodesk:record_relabel_version",
                                            kwargs={"slug": slug, "record_id": v["id"]})
+                # Compare this version against the one being viewed (A=viewing, B=this).
+                if not v["is_self"]:
+                    v["compare_url"] = reverse("hydrodesk:record_compare",
+                                               kwargs={"slug": slug,
+                                                       "record_id": str(record_id),
+                                                       "other_id": v["id"]})
 
     has_geom = lon is not None and lat is not None
     # The record's human TITLE (designated title field / name / first field), shown

@@ -168,6 +168,7 @@
           {% if v.current %}<span style="font-size:11px;padding:1px 9px;border-radius:10px;background:#e6f4ea;color:#1e8e3e;font-weight:600;">current</span>{% endif %}
           {% if v.is_self %}<span class="frappe-muted frappe-text-sm">viewing</span>{% endif %}
           <span class="frappe-muted frappe-text-sm" style="margin-left:auto;">{{ v.when|date:"Y-m-d H:i" }}</span>
+          {% if not v.is_self %}<a class="btn btn-default btn-sm" href="{{ v.compare_url }}" title="Compare with the version you're viewing"><i class="bi bi-distribute-horizontal"></i> Compare</a>{% endif %}
           {% if not v.is_self %}<a class="btn btn-default btn-sm" href="{{ v.url }}">Open</a>{% endif %}
           {% if not v.current %}<form method="post" action="{{ v.set_current_url }}" style="display:inline;">{% csrf_token %}<button class="btn btn-default btn-sm" type="submit">Set current</button></form>{% endif %}
         </div>
