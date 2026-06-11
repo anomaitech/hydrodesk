@@ -52,6 +52,10 @@
       <a href="{% url 'hydrodesk:ogc_landing' %}" target="_blank"><code>/ogc</code></a>
       (uses the same read token).
     </div>
+    <div class="frappe-help" style="margin-top:8px;">
+      <strong>Versioned records:</strong> the API returns the <em>current</em> version of each record by default;
+      add <code>?versions=all</code> to get every version (the full audit set).
+    </div>
   </div>
 
   <div class="hd-api-grid">

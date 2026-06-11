@@ -4514,7 +4514,7 @@ def _format_cell(value):
 # credential), so external consumers can pull with ?token=/X-API-Token.
 # ===========================================================================
 _API_RESERVED = {"limit", "offset", "order", "fields", "format", "bbox", "q", "token",
-                 "tables", "include"}
+                 "tables", "include", "versions"}
 _API_OPS = {"gt", "lt", "gte", "lte", "ne", "contains", "in", "any"}
 
 
@@ -5043,7 +5043,8 @@ def api_records(request, slug=None):
     """Outbound JSON/GeoJSON of a doctype's records (any slug). Query params: attribute
     filters (field / field__gt/lt/gte/lte/ne/contains/in), table-row filter (field__any=
     col OP val), bbox=, q=, order=, fields=, limit= (<=1000), offset=, format=json|geojson,
-    include= (materialize live connector-output fields), token=. Read-gated by perm/token."""
+    include= (materialize live connector-output fields), versions=current|all (current
+    version of each group, the default, vs every version), token=. Read-gated by perm/token."""
     MAT_CAP = 50   # per-request live-fetch ceiling (each materialized field = 1+ HTTP hit)
     engine = App.get_persistent_store_database("hydro_db")
     page, total, notes = [], 0, []
@@ -5108,6 +5109,10 @@ def api_records(request, slug=None):
         base = select(m.HydroRecord.id, m.HydroRecord.attributes,
                       func.ST_AsGeoJSON(m.HydroRecord.geom)).where(
                           m.HydroRecord.hydrotype_slug == slug)
+        # versions=current (default) returns one row per version group; versions=all
+        # returns every version (the full audit set).
+        if (request.GET.get("versions") or "current").strip().lower() != "all":
+            base = base.where(_current_only())
         filtered, ferr = _api_apply_filters(base, sql_get)
         if ferr:
             return JsonResponse({"ok": False, "error": "; ".join(ferr)}, status=400)
@@ -8982,6 +8987,37 @@ def record_set_current(request, slug=None, record_id=None):
     return redirect(detail)
 
 
+@controller(name="record_relabel_version", url="record/{slug}/{record_id}/relabel",
+            title="Rename version")
+def record_relabel_version(request, slug=None, record_id=None):
+    """POST {label}: rename a version (sets _version_label; an empty value clears it so the
+    version falls back to its default 'vN' name). Write-gated."""
+    detail = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": record_id})
+    if request.method != "POST":
+        return redirect(detail)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+    if meta is None:
+        return redirect(detail)
+    if not _user_can(request, meta[1], "write"):
+        return _denied(request, "edit", meta[0])
+    label = (request.POST.get("label") or "").strip()[:64]
+    with Session(engine) as session:
+        rec = session.execute(
+            select(m.HydroRecord).where(m.HydroRecord.id == record_id)
+            .where(m.HydroRecord.hydrotype_slug == slug)).scalar_one_or_none()
+        if rec is not None:
+            a = dict(rec.attributes or {})
+            if label:
+                a["_version_label"] = label
+            else:
+                a.pop("_version_label", None)
+            rec.attributes = a
+            session.commit()
+    return redirect(detail)
+
+
 @controller(name="record_transition", url="record/{slug}/{record_id}/transition/{tindex}",
             title="Workflow transition")
 def record_transition(request, slug=None, record_id=None, tindex=None):
@@ -9309,6 +9345,8 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
                 v["url"] = reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": v["id"]})
                 v["set_current_url"] = reverse("hydrodesk:record_set_current",
                                                kwargs={"slug": slug, "record_id": v["id"]})
+                v["relabel_url"] = reverse("hydrodesk:record_relabel_version",
+                                           kwargs={"slug": slug, "record_id": v["id"]})
 
     has_geom = lon is not None and lat is not None
     # The record's human TITLE (designated title field / name / first field), shown

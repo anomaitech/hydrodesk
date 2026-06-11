@@ -160,7 +160,11 @@
         {% for v in versions %}
         <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--fr-border-color);">
           <span style="font-weight:600;min-width:40px;">v{{ v.no }}</span>
-          {% if v.label %}<span>{{ v.label }}</span>{% endif %}
+          <form method="post" action="{{ v.relabel_url }}" style="display:inline-flex;gap:5px;align-items:center;margin:0;">{% csrf_token %}
+            <input name="label" value="{{ v.label }}" placeholder="name this version&hellip;"
+                   style="font-size:12px;padding:3px 8px;border:1px solid var(--fr-border-color);border-radius:6px;max-width:190px;background:var(--fr-fg-color);color:var(--fr-text-color);">
+            <button type="submit" class="btn btn-default btn-sm" style="padding:2px 9px;" title="Rename this version">Rename</button>
+          </form>
           {% if v.current %}<span style="font-size:11px;padding:1px 9px;border-radius:10px;background:#e6f4ea;color:#1e8e3e;font-weight:600;">current</span>{% endif %}
           {% if v.is_self %}<span class="frappe-muted frappe-text-sm">viewing</span>{% endif %}
           <span class="frappe-muted frappe-text-sm" style="margin-left:auto;">{{ v.when|date:"Y-m-d H:i" }}</span>
