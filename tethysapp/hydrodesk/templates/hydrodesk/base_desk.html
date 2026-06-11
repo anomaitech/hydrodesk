@@ -106,59 +106,60 @@
   {{ block.super }}
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     /* =====================================================================
-       FRAPPE DESK — design tokens (classic 'Frappe Desk' look: blue primary,
-       cool-gray scale, Inter). Grounded in frappe/frappe css_variables.scss.
+       Theme tokens — Google Cloud Console look (Google blue primary, Google
+       gray scale, Roboto / Google Sans, Material elevation). Variable NAMES are
+       kept (referenced throughout); only the VALUES change.
        ===================================================================== */
     :root {
-      /* gray scale (cool / blue-tinted) */
-      --gray-50:#f9fafa;  --gray-100:#f4f5f6; --gray-200:#ebeef0;
-      --gray-300:#dce0e3; --gray-400:#c0c6cc; --gray-500:#98a1a9;
-      --gray-600:#687178; --gray-700:#505a62; --gray-800:#333c44;
-      --gray-900:#1f272e;
+      /* Google gray scale */
+      --gray-50:#f8f9fa;  --gray-100:#f1f3f4; --gray-200:#e8eaed;
+      --gray-300:#dadce0; --gray-400:#bdc1c6; --gray-500:#9aa0a6;
+      --gray-600:#80868b; --gray-700:#5f6368; --gray-800:#3c4043;
+      --gray-900:#202124;
 
-      /* blue (primary / accent) */
-      --blue-100:#d3e9fc; --blue-200:#a7d3f9; --blue-300:#7cbcf5;
-      --blue-400:#50a6f2; --blue-500:#2490ef; --blue-600:#1673c5;
-      --blue-700:#1366ae; --blue-800:#154875; --blue-900:#1a4469;
+      /* Google blue (primary / accent) */
+      --blue-100:#e8f0fe; --blue-200:#d2e3fc; --blue-300:#aecbfa;
+      --blue-400:#669df6; --blue-500:#1a73e8; --blue-600:#1967d2;
+      --blue-700:#185abc; --blue-800:#174ea6; --blue-900:#0d47a1;
 
-      /* red / green semantic */
-      --red-100:#fddfdf; --red-500:#ff5858; --red-600:#c53030; --red-700:#9b2c2c;
-      --green-100:#e6f9ec; --green-500:#48bb74; --green-600:#38a160; --green-700:#2f855a;
-      --orange-100:#fff1e7; --orange-700:#bd3e0c;
+      /* red / green / orange semantic (Google) */
+      --red-100:#fce8e6; --red-500:#ea4335; --red-600:#d93025; --red-700:#c5221f;
+      --green-100:#e6f4ea; --green-500:#34a853; --green-600:#1e8e3e; --green-700:#188038;
+      --orange-100:#fef7e0; --orange-700:#e37400;
 
       /* semantic */
       --fr-text-color:var(--gray-900);
       --fr-text-light:var(--gray-800);
       --fr-text-muted:var(--gray-700);
       --fr-heading-color:var(--gray-900);
-      --fr-border-color:var(--gray-200);
+      --fr-border-color:var(--gray-300);
       --fr-bg-color:var(--gray-50);
       --fr-fg-color:#ffffff;
       --fr-control-bg:var(--gray-100);
       --fr-primary:var(--blue-500);
 
-      /* typography */
-      --fr-font:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+      /* typography — Google Sans / Roboto */
+      --fr-font:"Google Sans","Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
       --fr-text-xs:11px; --fr-text-sm:12px; --fr-text-base:13px;
-      --fr-text-md:14px; --fr-text-lg:16px; --fr-text-xl:18px; --fr-text-2xl:20px;
+      --fr-text-md:14px; --fr-text-lg:16px; --fr-text-xl:20px; --fr-text-2xl:22px;
 
-      /* radius */
-      --fr-radius-sm:4px; --fr-radius:6px; --fr-radius-md:8px;
-      --fr-radius-lg:10px; --fr-radius-full:999px;
+      /* radius — Material */
+      --fr-radius-sm:4px; --fr-radius:4px; --fr-radius-md:8px;
+      --fr-radius-lg:8px; --fr-radius-full:999px;
 
-      /* shadows (very subtle) */
-      --fr-shadow-xs:rgba(0,0,0,0.05) 0px 0.5px 0px 0px, rgba(0,0,0,0.08) 0px 0px 0px 1px, rgba(0,0,0,0.05) 0px 2px 4px 0px;
-      --fr-shadow-sm:0px 1px 2px rgba(0,0,0,0.1);
-      --fr-card-shadow:var(--fr-shadow-sm);
+      /* shadows — Material elevation (Google gray-tinted) */
+      --fr-shadow-xs:0 1px 2px 0 rgba(60,64,67,.08);
+      --fr-shadow-sm:0 1px 2px 0 rgba(60,64,67,.30), 0 1px 3px 1px rgba(60,64,67,.15);
+      --fr-card-shadow:0 1px 2px 0 rgba(60,64,67,.10), 0 1px 3px 1px rgba(60,64,67,.06);
 
       /* sizing */
       --fr-navbar-height:50px;
-      --fr-input-height:28px;
-      --fr-btn-height:28px;
-      --fr-list-row-height:32px;
+      --fr-input-height:32px;
+      --fr-btn-height:32px;
+      --fr-list-row-height:36px;
       --fr-sidebar-width:300px;   /* matches Tethys #app-navigation width */
       --fr-page-max:900px;
     }
@@ -220,8 +221,8 @@
        ===================================================================== */
     #app-content-wrapper #app-content #app-navigation,
     #app-navigation {
-      background:#fafafa;              /* off-white --surface-menu-bar */
-      border-right:1px solid #ededed;
+      background:#ffffff;              /* GCP nav drawer */
+      border-right:1px solid var(--fr-border-color);
       padding:14px 8px;
       padding-top:64px;               /* clear the 50px fixed navbar */
     }
@@ -249,23 +250,23 @@
       font-size:var(--fr-text-base);
       font-weight:500;
       color:var(--fr-text-light);
-      border-radius:var(--fr-radius-md);
+      border-radius:var(--fr-radius-full);   /* Google full-pill nav items */
     }
     #app-content-wrapper #app-content #app-navigation .nav li a:hover,
     #app-navigation .nav li a:hover {
-      background:#f3f3f3;
+      background:var(--gray-100);
       color:var(--fr-text-color);
       text-decoration:none;
     }
-    /* active item = a white 'lifted' pill (Frappe), NOT a colored fill */
+    /* active item = the Google light-blue rounded pill with blue text + icon */
     #app-content-wrapper #app-content #app-navigation .nav li a.active,
     #app-content-wrapper #app-content #app-navigation .nav li.active a,
     #app-navigation .nav li a.active,
     #app-navigation .nav li.active a {
-      background:#ffffff !important;
-      color:var(--fr-text-color) !important;
-      box-shadow:var(--fr-shadow-sm);
-      font-weight:600;
+      background:var(--blue-100) !important;   /* #e8f0fe */
+      color:var(--blue-600) !important;        /* #1967d2 */
+      box-shadow:none !important;
+      font-weight:500;
     }
     .frappe-sidebar-ico {
       display:inline-flex;
@@ -349,8 +350,8 @@
       font-weight:500;
       line-height:1;
       border:1px solid transparent;
-      border-radius:var(--fr-radius-md);
-      box-shadow:var(--fr-shadow-xs);
+      border-radius:var(--fr-radius);
+      box-shadow:none;
       cursor:pointer;
       white-space:nowrap;
       transition:background-color .12s, border-color .12s, color .12s;
@@ -372,16 +373,17 @@
     #inner-app-content .btn-default,
     #inner-app-content .btn-outline-secondary,
     #inner-app-content .btn-outline-primary {
-      background-color:var(--fr-control-bg);
-      color:var(--fr-text-color);
-      border-color:transparent;
+      background-color:var(--fr-fg-color);
+      color:var(--fr-primary);
+      border-color:var(--fr-border-color);
+      font-weight:500;
     }
     #inner-app-content .btn-default:hover,
     #inner-app-content .btn-outline-secondary:hover,
     #inner-app-content .btn-outline-primary:hover {
-      background-color:var(--gray-300);
-      color:var(--fr-text-color);
-      border-color:transparent;
+      background-color:rgba(26,115,232,0.05);
+      color:var(--blue-700);
+      border-color:var(--blue-300);
     }
     #inner-app-content .btn-danger { background:var(--red-600); color:#fff; border-color:var(--red-600); }
     #inner-app-content .btn-success { background:var(--green-600); color:#fff; border-color:var(--green-600); }
@@ -405,8 +407,8 @@
       font-family:var(--fr-font);
       font-size:var(--fr-text-base);
       color:var(--fr-text-color);
-      background-color:var(--fr-control-bg);
-      border:1px solid transparent;
+      background-color:var(--fr-fg-color);
+      border:1px solid var(--fr-border-color);
       border-radius:var(--fr-radius-sm);
       box-shadow:none;
       transition:border-color .12s, box-shadow .12s, background-color .12s;
@@ -416,8 +418,8 @@
     #inner-app-content .form-select:focus {
       outline:none;
       background-color:var(--fr-fg-color);
-      border-color:var(--gray-400);
-      box-shadow:0 0 0 2px var(--blue-100);
+      border-color:var(--fr-primary);
+      box-shadow:0 0 0 1px var(--fr-primary);
     }
     #inner-app-content .form-control::placeholder { color:var(--gray-500); }
     #inner-app-content .form-control-sm,
