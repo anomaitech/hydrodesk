@@ -53,7 +53,7 @@
       <div><label class="frappe-label">State name</label>
         <input class="form-control" name="name" placeholder="e.g. In Review" required style="min-width:200px;"></div>
       <div><label class="frappe-label">Colour</label>
-        <select class="form-select" name="color">{% for c in palette %}<option value="{{ c.key }}">{{ c.key }}</option>{% endfor %}</select></div>
+        <select class="form-select" name="color" style="min-width:120px;">{% for c in palette %}<option value="{{ c.key }}">{{ c.key }}</option>{% endfor %}</select></div>
       <button class="btn btn-primary" type="submit">+ Add state</button>
     </form>
   </div>

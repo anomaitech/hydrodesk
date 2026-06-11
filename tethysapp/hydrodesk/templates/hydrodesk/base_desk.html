@@ -554,6 +554,9 @@
       box-shadow:var(--fr-card-shadow);
       overflow:hidden;
     }
+    /* Cards whose content isn't wrapped in a .frappe-form-section still get inner
+       padding, so content never sits flush against the card edge. */
+    .frappe-form-card:not(:has(> .frappe-form-section)) { padding:18px 20px; }
     .frappe-form-section { padding:18px 24px; }
     .frappe-form-section + .frappe-form-section { border-top:1px solid var(--fr-border-color); }
     /* Column Break: side-by-side columns within a section (one column = full width) */
