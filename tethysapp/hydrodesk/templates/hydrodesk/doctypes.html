@@ -37,6 +37,9 @@
   </div>
 
   {% if types %}
+  <input type="search" class="hd-search form-control" data-items=".hd-doctypes-table tbody tr"
+         placeholder="Search doctypes&hellip;" aria-label="Search doctypes"
+         style="max-width:340px;margin-bottom:14px;">
   <form id="hd-bulk-form" method="post" action="{{ bulk_delete_url }}">
     {% csrf_token %}
     <div id="hd-bulk-bar" class="hd-bulk-bar" hidden>

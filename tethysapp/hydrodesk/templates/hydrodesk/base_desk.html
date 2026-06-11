@@ -100,6 +100,12 @@
       <span class="frappe-sidebar-ico">&#8644;</span> Data API
     </a>
   </li>
+  <li class="nav-item" style="margin-top:8px;border-top:1px solid var(--fr-border-color);padding-top:8px;">
+    <a class="nav-link" href="#" id="hd-theme-toggle" role="button">
+      <span class="frappe-sidebar-ico" id="hd-theme-ico">&#9790;</span>
+      <span id="hd-theme-label">Dark theme</span>
+    </a>
+  </li>
 {% endblock %}
 
 {% block app_styles %}
@@ -852,11 +858,72 @@
     }
     .frappe-row { padding:6px 0; }
     .frappe-row .form-check { margin:0; display:flex; justify-content:center; }
+
+    /* =====================================================================
+       DARK THEME — Google Cloud Console dark mode. Inverts the gray scale and
+       lightens the blue so every token-based component flips automatically;
+       a few hardcoded-light surfaces are overridden below.
+       ===================================================================== */
+    html[data-theme="dark"] {
+      --gray-50:#202124;  --gray-100:#303134; --gray-200:#3c4043;
+      --gray-300:#3c4043; --gray-400:#5f6368; --gray-500:#80868b;
+      --gray-600:#9aa0a6; --gray-700:#bdc1c6; --gray-800:#dadce0;
+      --gray-900:#e8eaed;
+
+      --blue-100:#283142; --blue-200:#34425c; --blue-300:#3c5072;
+      --blue-400:#669df6; --blue-500:#8ab4f8; --blue-600:#aecbfa;
+      --blue-700:#c8d8fb; --blue-800:#d2e3fc; --blue-900:#e8f0fe;
+
+      --red-500:#f28b82; --red-600:#f28b82; --red-700:#f6aea9;
+      --green-500:#81c995; --green-600:#81c995; --green-700:#a8dab5;
+      --orange-700:#fdd663;
+
+      --fr-fg-color:#292a2d;          /* cards (hardcoded #fff in :root -> override) */
+      --fr-border-color:#3c4043;
+      --fr-control-bg:#303134;
+      --fr-card-shadow:0 1px 2px rgba(0,0,0,.45), 0 1px 3px 1px rgba(0,0,0,.25);
+      --fr-shadow-sm:0 1px 3px rgba(0,0,0,.5);
+      color-scheme:dark;
+    }
+    /* hardcoded-light surfaces that aren't token-driven */
+    html[data-theme="dark"] #app-content-wrapper #app-content #app-navigation,
+    html[data-theme="dark"] #app-navigation { background:var(--fr-bg-color); }
+    html[data-theme="dark"] #hd-guide-panel,
+    html[data-theme="dark"] .hd-w { background:var(--fr-fg-color); border-color:var(--fr-border-color); }
+    html[data-theme="dark"] #app-header .tethys-app-header { background:var(--fr-fg-color) !important; }
   </style>
 {% endblock %}
 
 {% block app_content %}
+  {# apply the saved theme as early as possible to avoid a flash #}
+  <script>(function(){try{if(localStorage.getItem('hd-theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}})();</script>
   {% block desk_content %}{% endblock %}
+  <script>
+  (function(){
+    var root=document.documentElement;
+    function applyTheme(dark){
+      root.setAttribute('data-theme', dark?'dark':'light');
+      var ico=document.getElementById('hd-theme-ico'), lbl=document.getElementById('hd-theme-label');
+      if(ico) ico.innerHTML = dark ? '&#9788;' : '&#9790;';        /* sun when dark, moon when light */
+      if(lbl) lbl.textContent = dark ? 'Light theme' : 'Dark theme';
+      try{ localStorage.setItem('hd-theme', dark?'dark':'light'); }catch(e){}
+    }
+    applyTheme(root.getAttribute('data-theme')==='dark');
+    var t=document.getElementById('hd-theme-toggle');
+    if(t) t.addEventListener('click', function(e){ e.preventDefault();
+      applyTheme(root.getAttribute('data-theme')!=='dark'); });
+    /* instant client-side filter for any list/cards: input.hd-search[data-items] */
+    document.querySelectorAll('input.hd-search').forEach(function(inp){
+      var sel=inp.getAttribute('data-items'); if(!sel) return;
+      inp.addEventListener('input', function(){
+        var q=inp.value.trim().toLowerCase();
+        document.querySelectorAll(sel).forEach(function(el){
+          el.style.display=(!q || el.textContent.toLowerCase().indexOf(q)>=0)?'':'none';
+        });
+      });
+    });
+  })();
+  </script>
 
   {% if request.user.is_authenticated %}
   {% csrf_token %}
