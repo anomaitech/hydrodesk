@@ -7073,25 +7073,51 @@ def _revision_diff(prev_attrs, curr_attrs):
     return out
 
 
+# Workflow state colour palette (Google hues). States cycle through it by default.
+_WF_PALETTE = ["gray", "blue", "amber", "green", "red", "purple", "teal"]
+_WF_HEX = {"gray": "#5f6368", "blue": "#1a73e8", "amber": "#e37400",
+           "green": "#1e8e3e", "red": "#d93025", "purple": "#9334e6", "teal": "#129eaf"}
+
+
 def _workflow_def(field_schema):
     """The approval-workflow definition for a doctype, or None. Lives in
-    field_schema['x-workflow'] = {field:<status select field>, transitions:[...]}."""
+    field_schema['x-workflow'] = {field:<auto status field>, states:[{name,color}],
+    transitions:[{from,to,label,role}]}. The workflow OWNS its states — the field is
+    managed for it, so no pre-existing Select field is required."""
     wf = (field_schema or {}).get("x-workflow")
     return wf if isinstance(wf, dict) and wf.get("field") else None
 
 
 def _workflow_states(field_schema, wf):
-    """Ordered states = the enum of the workflow's status field."""
+    """Workflow states as [{name,color,hex}] in order. Prefers wf['states'] (the inline
+    model); falls back to the bound field's enum (back-compat) with palette colours."""
+    out = []
+    raw = (wf or {}).get("states")
+    if isinstance(raw, list) and raw:
+        for i, s in enumerate(raw):
+            name = s.get("name") if isinstance(s, dict) else s
+            if not name:
+                continue
+            color = (s.get("color") if isinstance(s, dict) else None) or _WF_PALETTE[i % len(_WF_PALETTE)]
+            out.append({"name": str(name), "color": color, "hex": _WF_HEX.get(color, "#5f6368")})
+        return out
     props = (field_schema or {}).get("properties") or {}
-    p = props.get((wf or {}).get("field")) or {}
-    return [str(x) for x in (p.get("enum") or [])]
+    enum = (props.get((wf or {}).get("field")) or {}).get("enum") or []
+    for i, e in enumerate(enum):
+        c = _WF_PALETTE[i % len(_WF_PALETTE)]
+        out.append({"name": str(e), "color": c, "hex": _WF_HEX.get(c, "#5f6368")})
+    return out
+
+
+def _workflow_state_names(field_schema, wf):
+    return [s["name"] for s in _workflow_states(field_schema, wf)]
 
 
 def _record_status(field_schema, wf, attrs):
     """A record's current workflow state — its status field's value, else the first state."""
-    states = _workflow_states(field_schema, wf)
+    names = _workflow_state_names(field_schema, wf)
     v = (attrs or {}).get((wf or {}).get("field"))
-    return v if v in states else (states[0] if states else "")
+    return v if v in names else (names[0] if names else "")
 
 
 def _allowed_transitions(field_schema, wf, attrs, request):
@@ -7100,6 +7126,7 @@ def _allowed_transitions(field_schema, wf, attrs, request):
     staff = bool(getattr(request.user, "is_staff", False)
                  or getattr(request.user, "is_superuser", False))
     can_write = _user_can(request, field_schema, "write")
+    hexmap = {s["name"]: s["hex"] for s in _workflow_states(field_schema, wf)}
     out = []
     for i, t in enumerate((wf or {}).get("transitions") or []):
         if t.get("from") != cur or not can_write:
@@ -7108,8 +7135,33 @@ def _allowed_transitions(field_schema, wf, attrs, request):
             continue
         out.append({"i": i, "to": t.get("to"),
                     "label": t.get("label") or ("→ " + str(t.get("to"))),
-                    "role": (t.get("role") or "any").lower()})
+                    "role": (t.get("role") or "any").lower(),
+                    "hex": hexmap.get(t.get("to"), "#1a73e8")})
     return out
+
+
+def _ensure_workflow_field(field_schema, state_names, existing_field=None):
+    """Ensure the doctype has the Select field that stores workflow status, with its enum
+    synced to state_names. Auto-creates a 'status' field when none is bound yet, so the
+    user never has to pre-create one. Returns (field_key, new_field_schema)."""
+    fs = dict(field_schema or {})
+    props = dict(fs.get("properties") or {})
+    order = list(fs.get("x-order") or list(props.keys()))
+    key = existing_field
+    if not key or key not in props:
+        key, n = "status", 2
+        while key in props:
+            key = "workflow_status" if n == 2 else "workflow_status_%d" % n
+            n += 1
+    prop = dict(props.get(key) or {})
+    prop.update({"type": "string", "title": prop.get("title") or "Status",
+                 "enum": list(state_names)})
+    props[key] = prop
+    if key not in order:
+        order.append(key)
+    fs["properties"] = props
+    fs["x-order"] = order
+    return key, fs
 
 
 @controller(name="new", url="new/{slug}", title="New Record")
@@ -8781,8 +8833,9 @@ def record_transition(request, slug=None, record_id=None, tindex=None):
 
 @controller(name="workflow_edit", url="workflow/{slug}", title="Workflow")
 def workflow_edit(request, slug=None):
-    """Define a doctype's approval workflow: pick a Select field as the status, then add
-    role-gated transitions between its states. Builder-gated. Stored in x-workflow."""
+    """Design a doctype's approval workflow: name its STATES inline (the workflow owns them
+    and auto-manages the Status field — no pre-existing Select field needed), then add
+    role-gated transitions. Builder-gated. Stored in x-workflow."""
     if not _can_build(request):
         return _denied(request, "edit", "Workflow")
     engine = App.get_persistent_store_database("hydro_db")
@@ -8793,49 +8846,68 @@ def workflow_edit(request, slug=None):
         dn, fs, gk = meta
         ht = session.execute(select(m.HydroType)
                              .where(m.HydroType.slug == slug)).scalar_one()
+
         if request.method == "POST":
             action = request.POST.get("action")
             wf = dict((fs or {}).get("x-workflow") or {})
+            field = wf.get("field")
+            # normalize current states/transitions (also migrates an enum-only legacy wf)
+            states = [{"name": s["name"], "color": s["color"]}
+                      for s in _workflow_states(fs, wf)]
             trans = list(wf.get("transitions") or [])
-            new_fs = dict(fs or {})
-            if action == "set_field":
-                field = request.POST.get("field") or ""
-                if field:
-                    keep = trans if wf.get("field") == field else []
-                    new_fs["x-workflow"] = {"field": field, "transitions": keep}
-                else:
-                    new_fs.pop("x-workflow", None)
-            elif action == "add_transition" and wf.get("field"):
-                trans.append({"from": request.POST.get("from") or "",
-                              "to": request.POST.get("to") or "",
-                              "label": (request.POST.get("label") or "").strip(),
-                              "role": request.POST.get("role") or "any"})
-                new_fs["x-workflow"] = {"field": wf["field"], "transitions": trans}
-            elif action == "remove_transition" and wf.get("field"):
+
+            if action == "add_state":
+                name = (request.POST.get("name") or "").strip()
+                color = (request.POST.get("color") or "").strip()
+                if color not in _WF_HEX:
+                    color = _WF_PALETTE[len(states) % len(_WF_PALETTE)]
+                if name and name not in [s["name"] for s in states]:
+                    states.append({"name": name, "color": color})
+            elif action == "remove_state":
+                name = (request.POST.get("name") or "").strip()
+                states = [s for s in states if s["name"] != name]
+                trans = [t for t in trans
+                         if t.get("from") != name and t.get("to") != name]
+            elif action == "add_transition":
+                f, t2 = request.POST.get("from") or "", request.POST.get("to") or ""
+                names = [s["name"] for s in states]
+                if f in names and t2 in names:
+                    trans.append({"from": f, "to": t2,
+                                  "label": (request.POST.get("label") or "").strip(),
+                                  "role": request.POST.get("role") or "any"})
+            elif action == "remove_transition":
                 try:
                     idx = int(request.POST.get("idx"))
                     if 0 <= idx < len(trans):
                         trans.pop(idx)
                 except (TypeError, ValueError):
                     pass
-                new_fs["x-workflow"] = {"field": wf["field"], "transitions": trans}
+
+            new_fs = dict(fs or {})
+            if states or field:
+                key, new_fs = _ensure_workflow_field(
+                    new_fs, [s["name"] for s in states], field)
+                new_fs["x-workflow"] = {"field": key, "states": states, "transitions": trans}
+            else:
+                new_fs.pop("x-workflow", None)
             ht.field_schema = new_fs                  # reassign so the JSONB change is tracked
             session.commit()
             return redirect(reverse("hydrodesk:workflow_edit", kwargs={"slug": slug}))
 
         wf = _workflow_def(fs)
-        props = (fs or {}).get("properties") or {}
-        order = [k for k in ((fs or {}).get("x-order") or list(props.keys())) if k in props]
-        select_fields = [
-            {"key": k, "title": (props[k] or {}).get("title") or k,
-             "states": [str(x) for x in ((props[k] or {}).get("enum") or [])]}
-            for k in order if (props[k] or {}).get("enum")]
         states = _workflow_states(fs, wf) if wf else []
-        transitions = [{"i": i, **t} for i, t in enumerate((wf or {}).get("transitions") or [])]
+        hexmap = {s["name"]: s["hex"] for s in states}
+        transitions = [{
+            "i": i, "from": t.get("from"), "to": t.get("to"),
+            "label": t.get("label") or "", "role": t.get("role") or "any",
+            "from_hex": hexmap.get(t.get("from"), "#5f6368"),
+            "to_hex": hexmap.get(t.get("to"), "#1a73e8"),
+        } for i, t in enumerate((wf or {}).get("transitions") or [])]
     return render(request, "hydrodesk/workflow_edit.html", {
         "slug": slug, "display_name": dn,
-        "wf_field": (wf or {}).get("field") or "",
-        "select_fields": select_fields, "states": states, "transitions": transitions,
+        "states": states, "state_names": [s["name"] for s in states],
+        "transitions": transitions, "has_workflow": bool(wf),
+        "palette": [{"key": c, "hex": _WF_HEX[c]} for c in _WF_PALETTE],
         "list_url": reverse("hydrodesk:list", kwargs={"slug": slug})})
 
 
@@ -8897,6 +8969,7 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
     comments = []
     wf_field = ""
     wf_status = ""
+    wf_status_hex = "#5f6368"
     wf_transitions = []
     wf_log = []
 
@@ -9012,6 +9085,9 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
             if wf:
                 wf_field = wf.get("field") or ""
                 wf_status = _record_status(field_schema, wf, attributes)
+                wf_status_hex = {s["name"]: s["hex"]
+                                 for s in _workflow_states(field_schema, wf)
+                                 }.get(wf_status, "#5f6368")
                 for tr in _allowed_transitions(field_schema, wf, attributes, request):
                     tr["url"] = reverse("hydrodesk:record_transition", kwargs={
                         "slug": slug, "record_id": record_id, "tindex": tr["i"]})
@@ -9062,6 +9138,7 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         "wf_has": bool(wf_field),
         "wf_field": wf_field,
         "wf_status": wf_status,
+        "wf_status_hex": wf_status_hex,
         "wf_transitions": wf_transitions,
         "wf_log": wf_log,
         "can_build": _can_build(request),

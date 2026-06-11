@@ -57,11 +57,11 @@
   {% if record_found and wf_has %}
   <div class="frappe-form-card" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
     <span class="frappe-muted frappe-text-sm">Status</span>
-    <span style="font-size:13px;padding:2px 12px;border-radius:12px;font-weight:600;background:#e8f0fe;color:#1a56c4;">{{ wf_status|default:"&mdash;" }}</span>
+    <span style="font-size:13px;padding:3px 14px;border-radius:14px;font-weight:600;background:{{ wf_status_hex }}22;color:{{ wf_status_hex }};">{{ wf_status|default:"&mdash;" }}</span>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       {% for tr in wf_transitions %}
       <form method="post" action="{{ tr.url }}" style="display:inline;">{% csrf_token %}
-        <button type="submit" class="btn btn-primary btn-sm">{{ tr.label }}{% if tr.role == 'staff' %} &#128274;{% endif %}</button>
+        <button type="submit" class="btn btn-sm" style="background:{{ tr.hex }};border-color:{{ tr.hex }};color:#fff;">{{ tr.label }}{% if tr.role == 'staff' %} &#128274;{% endif %}</button>
       </form>
       {% empty %}
       <span class="frappe-muted frappe-text-sm">No actions available from &ldquo;{{ wf_status }}&rdquo;.</span>

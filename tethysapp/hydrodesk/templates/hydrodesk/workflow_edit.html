@@ -1,6 +1,7 @@
 {% extends "hydrodesk/base_desk.html" %}
-{# Approval-workflow builder for a doctype: pick a Select field as the status, then add
-   role-gated transitions between its states. Stored in field_schema['x-workflow']. #}
+{# Approval-workflow designer. The workflow OWNS its states (defined inline, each with a
+   colour) and auto-manages the Status field — no pre-existing Select field needed. Then
+   role-gated transitions move records between states. Stored in field_schema['x-workflow']. #}
 {% block title %}Workflow: {{ display_name }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
@@ -13,75 +14,89 @@
   <div class="frappe-page-head">
     <div class="frappe-title-area">
       <h1 class="frappe-title">Approval workflow</h1>
-      <div class="frappe-sub-heading">{{ display_name }} &mdash; states come from a Select field; add role-gated transitions between them.</div>
+      <div class="frappe-sub-heading">{{ display_name }} &mdash; name the states a record moves through, then the actions that move it. A <strong>Status</strong> field is created and kept in sync for you.</div>
     </div>
     <div class="frappe-page-actions"><a class="btn btn-default btn-sm" href="{{ list_url }}">&larr; Back to list</a></div>
   </div>
 
+  <style>
+    .wf-chip { display:inline-flex; align-items:center; gap:7px; padding:3px 12px; border-radius:14px; font-weight:600; font-size:13px; }
+    .wf-chip .x { cursor:pointer; border:none; background:none; font:inherit; font-size:15px; line-height:1; padding:0; opacity:.65; }
+    .wf-chip .x:hover { opacity:1; }
+    .wf-flow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:4px 0 16px; }
+    .wf-flow .arrow { color:var(--gray-400); }
+    .wf-trow { display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--fr-border-color); }
+    .wf-trow:last-of-type { border-bottom:none; }
+  </style>
+
+  {# ---- States ---- #}
   <div class="frappe-form-card" style="margin-bottom:16px;">
-    <div class="frappe-section-head">Status field</div>
-    {% if select_fields %}
-    <form method="post" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">{% csrf_token %}
-      <input type="hidden" name="action" value="set_field">
-      <div style="min-width:260px;">
-        <label class="frappe-label">Which Select field holds the status?</label>
-        <select class="form-select" name="field">
-          <option value="">(none &mdash; disable workflow)</option>
-          {% for f in select_fields %}
-          <option value="{{ f.key }}"{% if f.key == wf_field %} selected{% endif %}>{{ f.title }} ({{ f.states|length }} states)</option>
-          {% endfor %}
-        </select>
-      </div>
-      <button class="btn btn-primary" type="submit">Save</button>
-    </form>
+    <div class="frappe-section-head">States <span class="frappe-muted frappe-text-sm">({{ states|length }})</span></div>
     {% if states %}
-    <div class="frappe-text-sm" style="margin-top:12px;">States:
-      {% for s in states %}<span style="padding:2px 9px;border-radius:10px;background:#eef2f7;margin-right:5px;">{{ s }}</span>{% endfor %}
+    <div class="wf-flow">
+      {% for s in states %}
+        <span class="wf-chip" style="background:{{ s.hex }}22;color:{{ s.hex }};">{{ s.name }}
+          <form method="post" style="display:inline;">{% csrf_token %}
+            <input type="hidden" name="action" value="remove_state">
+            <input type="hidden" name="name" value="{{ s.name }}">
+            <button class="x" type="submit" title="Remove state" style="color:{{ s.hex }};">&times;</button>
+          </form>
+        </span>
+        {% if not forloop.last %}<span class="arrow">&rarr;</span>{% endif %}
+      {% endfor %}
     </div>
-    {% endif %}
     {% else %}
-    <div class="frappe-muted">This doctype has no Select field yet. Add a Select field (e.g. &ldquo;Status&rdquo; with options Draft, In&nbsp;Review, Approved) to the type, then return here.</div>
+    <div class="frappe-muted frappe-text-sm" style="margin-bottom:12px;">No states yet &mdash; add the first one (e.g. <em>Draft</em>) below.</div>
     {% endif %}
+    <form method="post" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">{% csrf_token %}
+      <input type="hidden" name="action" value="add_state">
+      <div><label class="frappe-label">State name</label>
+        <input class="form-control" name="name" placeholder="e.g. In Review" required style="min-width:200px;"></div>
+      <div><label class="frappe-label">Colour</label>
+        <select class="form-select" name="color">{% for c in palette %}<option value="{{ c.key }}">{{ c.key }}</option>{% endfor %}</select></div>
+      <button class="btn btn-primary" type="submit">+ Add state</button>
+    </form>
   </div>
 
-  {% if wf_field and states %}
-  <div class="frappe-form-card" style="margin-bottom:16px;">
+  {# ---- Transitions ---- #}
+  {% if states|length > 1 %}
+  <div class="frappe-form-card">
     <div class="frappe-section-head">Transitions ({{ transitions|length }})</div>
     {% for t in transitions %}
-    <div style="display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid #eef0f2;">
-      <strong>{{ t.label|default:t.to }}</strong>
-      <span class="frappe-muted frappe-text-sm">{{ t.from }} &rarr; {{ t.to }} &middot; {{ t.role }}{% if t.role == 'staff' %} &#128274;{% endif %}</span>
+    <div class="wf-trow">
+      <strong style="min-width:120px;">{{ t.label|default:t.to }}</strong>
+      <span class="wf-chip" style="background:{{ t.from_hex }}22;color:{{ t.from_hex }};font-size:12px;">{{ t.from }}</span>
+      <span class="arrow">&rarr;</span>
+      <span class="wf-chip" style="background:{{ t.to_hex }}22;color:{{ t.to_hex }};font-size:12px;">{{ t.to }}</span>
+      <span class="frappe-muted frappe-text-sm">{{ t.role }}{% if t.role == 'staff' %} &#128274;{% endif %}</span>
       <form method="post" style="margin-left:auto;">{% csrf_token %}
         <input type="hidden" name="action" value="remove_transition">
         <input type="hidden" name="idx" value="{{ t.i }}">
-        <button class="btn btn-default btn-sm" style="color:#e24c4c;">Remove</button>
+        <button class="btn btn-default btn-sm" style="color:var(--red-600);">Remove</button>
       </form>
     </div>
     {% empty %}
     <div class="frappe-muted frappe-text-sm">No transitions yet &mdash; add one below.</div>
     {% endfor %}
-  </div>
 
-  <div class="frappe-form-card">
-    <div class="frappe-section-head">Add a transition</div>
-    <form method="post">{% csrf_token %}
+    <form method="post" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;border-top:1px solid var(--fr-border-color);padding-top:14px;">{% csrf_token %}
       <input type="hidden" name="action" value="add_transition">
-      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
-        <div><label class="frappe-label">From</label>
-          <select class="form-select" name="from">{% for s in states %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
-        <div><label class="frappe-label">To</label>
-          <select class="form-select" name="to">{% for s in states %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
-        <div style="min-width:160px;"><label class="frappe-label">Button label</label>
-          <input class="form-control" name="label" placeholder="e.g. Submit"></div>
-        <div><label class="frappe-label">Who can</label>
-          <select class="form-select" name="role">
-            <option value="any">Any editor</option>
-            <option value="staff">Staff / admin only</option>
-          </select></div>
-        <button class="btn btn-primary" type="submit">+ Add transition</button>
-      </div>
+      <div><label class="frappe-label">From</label>
+        <select class="form-select" name="from">{% for s in states %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+      <div><label class="frappe-label">To</label>
+        <select class="form-select" name="to">{% for s in states %}<option value="{{ s.name }}">{{ s.name }}</option>{% endfor %}</select></div>
+      <div style="min-width:150px;"><label class="frappe-label">Button label</label>
+        <input class="form-control" name="label" placeholder="e.g. Submit"></div>
+      <div><label class="frappe-label">Who can</label>
+        <select class="form-select" name="role">
+          <option value="any">Any editor</option>
+          <option value="staff">Staff / admin only</option>
+        </select></div>
+      <button class="btn btn-primary" type="submit">+ Add transition</button>
     </form>
   </div>
+  {% elif states %}
+  <div class="frappe-muted frappe-text-sm">Add at least two states to define transitions between them.</div>
   {% endif %}
 </div>
 {% endblock %}
