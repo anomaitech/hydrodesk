@@ -85,7 +85,7 @@
         {% else %}
         {% if w.is_geom %}{% ifchanged %}
           </div></div></div><div class="frappe-form-section">
-          <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">({{ w.geometry_kind|default:"point" }} geometry &mdash; draw on the map)</span></div>
+          <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">({{ w.geometry_kind|default:"point" }} geometry &mdash; {% if w.geometry_kind == "polygon" %}draw or import a shapefile{% else %}draw on the map{% endif %})</span></div>
           <div class="frappe-section-cols"><div class="frappe-section-col">
         {% endifchanged %}{% endif %}
 
@@ -96,6 +96,13 @@
                  data-lon="{{ w.lon }}" data-lat="{{ w.lat }}"></div>
             <input type="hidden" name="_geom_geojson" id="id__geom_geojson" value="{{ w.geojson }}">
             <div class="frappe-help">Use the toolbar (top-right of the map) to draw the {{ w.geometry_kind }}. Drawing a new shape replaces the old one.{% if w.geometry_kind == "point" %} You can also type or edit the coordinates below.{% endif %}</div>
+            {% if w.geometry_kind == "polygon" %}
+            <div style="margin-top:12px;">
+              <label class="frappe-label">&hellip; or import a shapefile</label>
+              <input class="form-control" type="file" name="_geom_shapefile" accept=".zip,.shp,application/zip">
+              <div class="frappe-help">Upload a zipped shapefile (<code>.shp</code>+<code>.shx</code>+<code>.dbf</code>) or a bare <code>.shp</code> &mdash; its polygons become this record's geometry on save (overrides a drawn shape). Multi-polygon files are merged into one geometry.</div>
+            </div>
+            {% endif %}
             <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
             <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
             <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

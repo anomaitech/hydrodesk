@@ -6876,6 +6876,50 @@ def _geojson_to_wkt(geom):
     return None
 
 
+def _geom_from_shapefile(file_obj):
+    """An uploaded shapefile (.zip bundle or bare .shp) -> a single (Multi)Polygon GeoJSON
+    geometry dict (all polygon parts merged), or None. Reuses the existing pyshp importer."""
+    raw = _shapefile_to_featurecollection(file_obj)
+    if not raw:
+        return None
+    try:
+        fc = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return None
+    polys = []
+    for f in ((fc or {}).get("features") or []):
+        g = f.get("geometry") or {}
+        if g.get("type") == "Polygon":
+            polys.append(g.get("coordinates"))
+        elif g.get("type") == "MultiPolygon":
+            polys.extend(g.get("coordinates") or [])
+    if not polys:
+        return None
+    return ({"type": "Polygon", "coordinates": polys[0]} if len(polys) == 1
+            else {"type": "MultiPolygon", "coordinates": polys})
+
+
+def _geom_from_request(request, geometry_kind):
+    """Resolve a record's geometry from the form. A SHAPEFILE upload (``_geom_shapefile``)
+    takes precedence; otherwise fall back to the drawn ``_geom_geojson`` / lon-lat. Returns
+    (WKTElement | None, error | None) — same contract as _parse_drawn_geom."""
+    if geometry_kind in ("point", "line", "polygon"):
+        f = request.FILES.get("_geom_shapefile")
+        if f is not None and getattr(f, "size", 0):
+            geom = _geom_from_shapefile(f)
+            if not geom:
+                return None, ("Could not read polygons from that shapefile — upload a "
+                              "zipped .shp+.shx+.dbf bundle or a bare .shp.")
+            wkt = _geojson_to_wkt(geom)
+            want = {"point": ("POINT",), "line": ("LINESTRING",),
+                    "polygon": ("POLYGON", "MULTIPOLYGON")}[geometry_kind]
+            if not wkt or not wkt.startswith(want):
+                return None, ("The shapefile must contain %s geometry for this doctype."
+                              % geometry_kind)
+            return WKTElement(wkt, srid=4326), None
+    return _parse_drawn_geom(request.POST, geometry_kind)
+
+
 def _parse_drawn_geom(post, geometry_kind):
     """(WKTElement | None, error | None) for the record form. Uses a drawn ``_geom_geojson``
     (a GeoJSON geometry/Feature the map widget writes) for ANY geometry kind; falls back to
@@ -7219,7 +7263,7 @@ def hydrotype_new(request, slug="monitoring_station"):
 
         geom = None
         if geometry_kind in ("point", "line", "polygon"):
-            geom, gmsg = _parse_drawn_geom(post, geometry_kind)
+            geom, gmsg = _geom_from_request(request, geometry_kind)
             if gmsg:
                 errors.append(gmsg)
 
@@ -7606,7 +7650,7 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
         geom, gmsg = (None, None)
         is_spatial = geometry_kind in ("point", "line", "polygon")
         if is_spatial:
-            geom, gmsg = _parse_drawn_geom(post, geometry_kind)
+            geom, gmsg = _geom_from_request(request, geometry_kind)
             if gmsg:
                 errors.append(gmsg)
         if not errors:
