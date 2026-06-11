@@ -12253,7 +12253,12 @@ def _dashboard_widget_view(session, fs_cache, w):
             pairs = [(_label_for(fs, r) or "?", float(r.get(field))) for r in recs
                      if isinstance(r.get(field), (int, float)) and not isinstance(r.get(field), bool)]
         pairs.sort(key=lambda x: x[1], reverse=True)
-        out["svg"] = _svg_hbar(pairs[:12]) if pairs else ""
+        pairs = pairs[:12]
+        # Responsive HTML bars (template renders them) — fixed-width SVG scaled down its
+        # text to ~6px and bled to the card edge on narrow cards.
+        vmax = max((v for _, v in pairs), default=0) or 1
+        out["bars"] = [{"label": str(l), "value": _fmt_stat(v),
+                        "pct": max(2, round(100.0 * v / vmax, 1))} for l, v in pairs]
         if not pairs:
             out["error"] = "No numeric data for '%s'" % (w.get("field") or "(field)")
     elif wtype == "table":

@@ -26,6 +26,12 @@
     .hd-kpi-val { font-size:34px; font-weight:700; color:#1a56c4; line-height:1.1; word-break:break-word; }
     .hd-kpi-sub { color:#667085; font-size:12px; margin-top:4px; text-transform:capitalize; }
     .hd-w svg { display:block; max-width:100%; height:auto; }   /* charts scale to the card */
+    .hd-bars { margin-top:2px; }
+    .hd-bar-row { display:flex; align-items:center; gap:10px; margin:7px 0; font-size:12px; }
+    .hd-bar-label { flex:0 0 38%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fr-text-muted,#475467); }
+    .hd-bar-track { flex:1 1 auto; min-width:0; height:14px; background:var(--gray-200,#eef2f7); border-radius:7px; overflow:hidden; }
+    .hd-bar-fill { display:block; height:100%; background:var(--fr-primary,#1a73e8); border-radius:7px; }
+    .hd-bar-val { flex:0 0 auto; color:var(--fr-text-muted,#667085); white-space:nowrap; text-align:right; min-width:44px; }
     .hd-w table { width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed; }
     .hd-w th, .hd-w td { padding:5px 8px; vertical-align:top; word-break:break-word; }
     .hd-w th { text-align:left; color:#667085; font-weight:600; border-bottom:1px solid #eef0f2; }
@@ -46,7 +52,15 @@
         <div class="hd-kpi-val">{{ w.value }}</div>
         <div class="hd-kpi-sub">{{ w.sub }}</div>
       {% elif w.type == 'bar' %}
-        {{ w.svg }}
+        <div class="hd-bars">
+          {% for bar in w.bars %}
+          <div class="hd-bar-row">
+            <span class="hd-bar-label" title="{{ bar.label }}">{{ bar.label }}</span>
+            <span class="hd-bar-track"><span class="hd-bar-fill" style="width:{{ bar.pct }}%;"></span></span>
+            <span class="hd-bar-val">{{ bar.value }}</span>
+          </div>
+          {% endfor %}
+        </div>
       {% elif w.type == 'table' %}
         <table>
           <thead><tr>{% for c in w.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
