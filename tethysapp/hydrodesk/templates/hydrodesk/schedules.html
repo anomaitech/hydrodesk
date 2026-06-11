@@ -22,6 +22,37 @@
     triggers immediately. For production, the <code>hydrodesk_run_schedules</code> command can also be driven by cron.
   </p>
 
+  <style>
+    /* widen the Notify column and let its two chips stack instead of clipping to "…" */
+    .hd-notify-col  { flex:1.7 1 0 !important; overflow:visible !important; white-space:normal !important; }
+    .hd-notify-cell { display:flex; flex-direction:column; gap:3px; align-items:flex-start; }
+    .notify-chip { display:inline-flex; align-items:center; gap:4px; font-size:11px;
+      padding:1px 7px; border-radius:10px; font-weight:600; margin-right:4px; white-space:nowrap; }
+    .notify-chip.green { background:#e6f4ea; color:#137333; }
+    .notify-chip.red   { background:#fce8e6; color:#c5221f; }
+    .notify-chip.gray  { background:var(--fr-control-bg,#f1f3f4); color:var(--fr-text-muted,#5f6368); }
+    html[data-theme="dark"] .notify-chip.green { background:rgba(24,128,56,.22); color:#a8dab5; }
+    html[data-theme="dark"] .notify-chip.red   { background:rgba(217,48,37,.22); color:#f6aea9; }
+    .hd-test-banner { display:flex; gap:10px; align-items:flex-start; padding:11px 14px;
+      border-radius:8px; margin:0 0 14px; border:1px solid var(--fr-border-color); }
+    .hd-test-banner.ok  { background:#e6f4ea; border-color:#a8dab5; color:#137333; }
+    .hd-test-banner.bad { background:#fce8e6; border-color:#f3b9b3; color:#c5221f; }
+    .hd-test-banner i { font-size:16px; margin-top:1px; }
+    .hd-test-banner > div { min-width:0; overflow-wrap:anywhere; word-break:break-word; }
+    html[data-theme="dark"] .hd-test-banner.ok  { background:rgba(24,128,56,.18); color:#a8dab5; border-color:rgba(24,128,56,.45); }
+    html[data-theme="dark"] .hd-test-banner.bad { background:rgba(217,48,37,.18); color:#f6aea9; border-color:rgba(217,48,37,.45); }
+  </style>
+
+  {% if tested_banner %}
+  <div class="hd-test-banner {% if tested_banner.ok %}ok{% else %}bad{% endif %}">
+    <i class="bi bi-{% if tested_banner.ok %}check-circle-fill{% else %}exclamation-triangle-fill{% endif %}"></i>
+    <div>
+      <strong>Test notification{% if tested_banner.name %} — {{ tested_banner.name }}{% endif %}</strong>
+      {% for ln in tested_banner.lines %}<div class="frappe-text-sm">{{ ln }}</div>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if rows %}
   <div class="frappe-list">
     <div class="frappe-list-head">
@@ -31,6 +62,7 @@
       <span class="frappe-list-col head">Every</span>
       <span class="frappe-list-col head">Alerts</span>
       <span class="frappe-list-col head">Last run</span>
+      <span class="frappe-list-col head hd-notify-col">Notify</span>
       <span class="frappe-list-activity">&nbsp;</span>
     </div>
     {% for row in rows %}
@@ -45,10 +77,20 @@
       <span class="frappe-list-col">{{ row.interval }} min</span>
       <span class="frappe-list-col">{{ row.n_alerts }}</span>
       <span class="frappe-list-col frappe-text-sm">{{ row.last_run }}</span>
+      <span class="frappe-list-col hd-notify-col hd-notify-cell">
+        {% if row.email_status %}<span class="notify-chip {{ row.email_status.cls }}" title="{{ row.email_status.title }}"><i class="bi bi-envelope"></i> {{ row.email_status.label }}</span>{% endif %}
+        {% if row.webhook_status %}<span class="notify-chip {{ row.webhook_status.cls }}" title="{{ row.webhook_status.title }}"><i class="bi bi-broadcast"></i> {{ row.webhook_status.label }}</span>{% endif %}
+        {% if not row.has_notify %}<span class="frappe-muted frappe-text-sm">—</span>{% endif %}
+      </span>
       <span class="frappe-list-activity">
         <form method="post" action="{{ row.run_url }}" style="display:inline;">{% csrf_token %}
           <button type="submit" class="btn btn-link btn-sm" style="color:#1a7f37;">Run now</button>
         </form>
+        {% if row.has_notify %}
+        <form method="post" action="{{ row.test_url }}" style="display:inline;">{% csrf_token %}
+          <button type="submit" class="btn btn-link btn-sm" title="Send a test notification to this schedule's email/webhook now">Test</button>
+        </form>
+        {% endif %}
         <a class="btn btn-link btn-sm" href="{{ row.edit_url }}">Edit</a>
         <form method="post" action="{{ row.delete_url }}" style="display:inline;"
               onsubmit="return confirm('Delete schedule &quot;{{ row.name }}&quot;?');">{% csrf_token %}

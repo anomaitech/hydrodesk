@@ -149,6 +149,9 @@ class HydroSchedule(Base):
     alerts = Column(JSONB, default=list)                       # [{field,op,value,message,severity}]
     notify_email = Column(String)                              # comma-list; emailed on a NEW breach
     webhook_url = Column(String)                               # Slack/Teams/generic POST on a NEW breach
+    # Last delivery status per channel: {"email": {ok,at,error,detail,test}, "webhook": {...}}.
+    # Surfaced in the Schedules UI so a user can see whether notifications actually went out.
+    notify_status = Column(JSONB, default=dict)
     last_run_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

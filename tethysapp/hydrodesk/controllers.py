@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid as uuidlib
 
-from sqlalchemy import select, func, delete, cast, Float, Text, or_
+from sqlalchemy import select, func, delete, cast, Float, Text, or_, text
 from sqlalchemy.orm import Session
 from geoalchemy2 import WKTElement
 
@@ -12298,26 +12298,52 @@ def _run_schedule(session, sched):
             new_breaches.append({**b, "record_title": title})
     sched.last_run_at = timezone.now()
     session.commit()
+    # Send notifications for NEW breaches and record per-channel delivery status so the
+    # Schedules UI can show whether email/webhook actually went out (vs silently failing).
+    updates = {}
     if new_breaches and (sched.notify_email or "").strip():
-        _send_alert_email(sched, new_breaches)
+        updates["email"] = _send_alert_email(sched, new_breaches)
     if new_breaches and (getattr(sched, "webhook_url", "") or "").strip():
-        _send_alert_webhook(sched, new_breaches)
+        updates["webhook"] = _send_alert_webhook(sched, new_breaches)
+    _persist_notify_status(session, sched, updates)
     return (n_refreshed, n_alerts)
 
 
-def _send_alert_webhook(sched, breaches):
-    """POST a schedule's NEW breaches to its webhook_url. The payload carries BOTH a
+def _notify_status(channel, ok=False, error=None, detail="", is_test=False):
+    """One channel's delivery-status record (stored in HydroSchedule.notify_status). error/
+    detail are length-capped so a giant SMTP traceback can't bloat the JSONB or the UI."""
+    from django.utils import timezone
+    return {"channel": channel, "at": timezone.now().isoformat(timespec="seconds"),
+            "ok": bool(ok), "error": (str(error)[:300] if error else None),
+            "detail": str(detail or "")[:300], "test": bool(is_test)}
+
+
+def _send_alert_webhook(sched, breaches, is_test=False):
+    """POST a schedule's breaches to its webhook_url. The payload carries BOTH a
     Slack/Teams-compatible ``text`` and a structured ``breaches`` array, so it drives a
-    Slack/Teams incoming webhook or any generic JSON endpoint. Never raises."""
+    Slack/Teams incoming webhook or any generic JSON endpoint. Never raises; returns a
+    delivery-status dict (ok / error / detail) so the caller can show whether it went out."""
+    import urllib.request as _u
+    import urllib.error as _ue
+    url = (getattr(sched, "webhook_url", "") or "").strip()
+    if not url:
+        return _notify_status("webhook", error="no webhook URL configured", is_test=is_test)
+
+    class _NoRedirect(_u.HTTPRedirectHandler):
+        # An incoming-webhook endpoint never legitimately redirects; following a 3xx would
+        # let an external URL bounce this POST into the internal network (SSRF). Refuse it
+        # (the 3xx then surfaces as an HTTPError -> a "failed" status, which is correct).
+        def redirect_request(self, *a, **k):
+            return None
+
     try:
-        import urllib.request as _u
-        url = (getattr(sched, "webhook_url", "") or "").strip()
-        if not url:
-            return
         worst = "critical" if any(b.get("severity") == "critical" for b in breaches) else "warning"
-        lines = ["[HydroDesk %s] %d new alert%s on %s (%s):" % (
-            worst.upper(), len(breaches), "" if len(breaches) == 1 else "s",
-            sched.name, sched.target_slug)]
+        head = ("[HydroDesk TEST] delivery check from schedule '%s' (%s) — not a real alert:"
+                % (sched.name, sched.target_slug)) if is_test else (
+            "[HydroDesk %s] %d new alert%s on %s (%s):" % (
+                worst.upper(), len(breaches), "" if len(breaches) == 1 else "s",
+                sched.name, sched.target_slug))
+        lines = [head]
         for b in breaches:
             lines.append("• %s — %s %s %s (now %s)" % (
                 b.get("record_title", "?"), b.get("field"), b.get("op"),
@@ -12325,7 +12351,7 @@ def _send_alert_webhook(sched, breaches):
         payload = {
             "text": "\n".join(lines),                 # Slack / Teams incoming-webhook field
             "schedule": sched.name, "slug": sched.target_slug,
-            "severity": worst, "count": len(breaches),
+            "severity": worst, "count": len(breaches), "test": bool(is_test),
             "breaches": [{"record": b.get("record_title"), "field": b.get("field"),
                           "op": b.get("op"), "threshold": b.get("threshold"),
                           "actual": b.get("actual"), "severity": b.get("severity"),
@@ -12333,37 +12359,115 @@ def _send_alert_webhook(sched, breaches):
         }
         req = _u.Request(url, data=json.dumps(payload).encode("utf-8"),
                          method="POST", headers={"Content-Type": "application/json"})
-        _u.urlopen(req, timeout=10).read()
-    except Exception:
-        pass
+        resp = _u.build_opener(_NoRedirect).open(req, timeout=10)
+        body = (resp.read() or b"")[:160].decode("utf-8", "replace").strip()
+        code = getattr(resp, "status", None) or resp.getcode()
+        return _notify_status("webhook", ok=True,
+                              detail="HTTP %s%s" % (code, (" · " + body) if body else ""),
+                              is_test=is_test)
+    except _ue.HTTPError as e:
+        body = ""
+        try:
+            body = (e.read() or b"")[:160].decode("utf-8", "replace").strip()
+        except Exception:
+            pass
+        return _notify_status("webhook", error="HTTP %s%s" % (e.code, (": " + body) if body else ""),
+                              is_test=is_test)
+    except Exception as e:
+        return _notify_status("webhook", error="%s: %s" % (type(e).__name__, e), is_test=is_test)
 
 
-def _send_alert_email(sched, breaches):
-    """Email a schedule's NEW threshold breaches to its notify_email recipients. Never
-    raises (fail_silently): a missing/unconfigured mail server must not break the run.
-    Requires the portal's email settings to be configured to actually deliver."""
+def _send_alert_email(sched, breaches, is_test=False):
+    """Email a schedule's threshold breaches to its notify_email recipients. Never raises;
+    returns a delivery-status dict. ``send_mail`` runs with fail_silently=False so a real
+    SMTP error (e.g. no mail server) is captured as the status error instead of vanishing
+    — but the surrounding guard still keeps a scheduled run from breaking. Delivery only
+    actually happens when the portal's email settings (EMAIL_HOST/PORT/...) are configured."""
+    from django.core.mail import send_mail
+    from django.conf import settings
+    recipients = [e.strip() for e in (sched.notify_email or "").split(",") if e.strip()]
+    if not recipients:
+        return _notify_status("email", error="no recipients configured", is_test=is_test)
     try:
-        from django.core.mail import send_mail
-        from django.conf import settings
-        recipients = [e.strip() for e in (sched.notify_email or "").split(",") if e.strip()]
-        if not recipients:
-            return
         worst = "critical" if any(b.get("severity") == "critical" for b in breaches) else "warning"
-        subject = "[HydroDesk %s] %d alert%s on %s" % (
-            worst.upper(), len(breaches), "" if len(breaches) == 1 else "s", sched.name)
-        lines = ["Schedule '%s' (%s) raised %d new alert(s):" % (
-            sched.name, sched.target_slug, len(breaches)), ""]
+        subject = ("[HydroDesk TEST] notification check — %s" % sched.name) if is_test else (
+            "[HydroDesk %s] %d alert%s on %s" % (
+                worst.upper(), len(breaches), "" if len(breaches) == 1 else "s", sched.name))
+        head = ("This is a HydroDesk TEST notification for schedule '%s' (%s) — delivery check, "
+                "not a real alert." % (sched.name, sched.target_slug)) if is_test else (
+            "Schedule '%s' (%s) raised %d new alert(s):" % (
+                sched.name, sched.target_slug, len(breaches)))
+        lines = [head, ""]
         for b in breaches:
             lines.append("  • %s — %s %s %s (now %s) [%s]" % (
                 b.get("record_title", "?"), b.get("field"), b.get("op"),
                 b.get("threshold"), b.get("actual"), b.get("severity", "warning")))
             if b.get("message"):
                 lines.append("      %s" % b["message"])
-        send_mail(subject, "\n".join(lines),
-                  getattr(settings, "DEFAULT_FROM_EMAIL", None) or "hydrodesk@localhost",
-                  recipients, fail_silently=True)
+        sent = send_mail(subject, "\n".join(lines),
+                         getattr(settings, "DEFAULT_FROM_EMAIL", None) or "hydrodesk@localhost",
+                         recipients, fail_silently=False)
+        n = len(recipients)
+        if sent:
+            return _notify_status("email", ok=True,
+                                  detail="accepted by mail server for %d recipient%s"
+                                  % (n, "" if n == 1 else "s"), is_test=is_test)
+        return _notify_status("email", error="mail backend reported 0 messages sent",
+                              is_test=is_test)
+    except Exception as e:
+        return _notify_status("email", error="%s: %s" % (type(e).__name__, e), is_test=is_test)
+
+
+_SCHED_COLS_ENSURED = False
+
+
+def _ensure_schedule_columns(engine):
+    """Idempotently add columns introduced after the store's first create_all (the DB is
+    created once via init_hydro_db; later columns need an ALTER). Self-heals existing
+    installs so an ORM SELECT of HydroSchedule never hits a missing column. Runs at most
+    once per process; never raises."""
+    global _SCHED_COLS_ENSURED
+    if _SCHED_COLS_ENSURED:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE hydro_schedule "
+                              "ADD COLUMN IF NOT EXISTS notify_status jsonb DEFAULT '{}'::jsonb"))
+        _SCHED_COLS_ENSURED = True
     except Exception:
         pass
+
+
+def _persist_notify_status(session, sched, updates):
+    """Merge per-channel delivery-status records into sched.notify_status and commit.
+    Reassigns a NEW dict so SQLAlchemy tracks the JSONB mutation."""
+    if not updates:
+        return
+    ns = dict(sched.notify_status or {})
+    ns.update(updates)
+    sched.notify_status = ns
+    session.commit()
+
+
+def _notify_chip(configured, st):
+    """Display dict for one notify channel in the Schedules list, or None if the channel
+    isn't configured. ``st`` is the stored status record (or None if never sent)."""
+    if not configured:
+        return None
+    if not st:
+        return {"cls": "gray", "label": "untested",
+                "title": "Configured but nothing sent yet — use Test to verify delivery."}
+    when = (st.get("at") or "").replace("T", " ")[:16]
+    kind = "test" if st.get("test") else "send"
+    tag = " · test" if st.get("test") else ""
+    if st.get("ok"):
+        # "sent" (not "ok") for email — send_mail success means the SMTP backend ACCEPTED
+        # the message, not that it reached an inbox; the tooltip detail spells that out.
+        ok_label = "sent" if st.get("channel") == "email" else "ok"
+        return {"cls": "green", "label": ok_label + tag,
+                "title": "Last %s %s — %s" % (kind, when, st.get("detail") or "delivered")}
+    return {"cls": "red", "label": "failed" + tag,
+            "title": "Last %s %s — %s" % (kind, when, st.get("error") or "unknown error")}
 
 
 def _run_due_schedules(force=False):
@@ -12372,6 +12476,7 @@ def _run_due_schedules(force=False):
     from django.utils import timezone
     import datetime as _dt
     engine = App.get_persistent_store_database("hydro_db")
+    _ensure_schedule_columns(engine)
     now = timezone.now()
     due_ids = []
     with Session(engine) as session:
@@ -12782,6 +12887,7 @@ def schedules(request):
         return _denied(request, "manage", "Schedules")
     _ensure_scheduler()
     engine = App.get_persistent_store_database("hydro_db")
+    _ensure_schedule_columns(engine)
     if request.method == "POST":
         name, target, interval, alerts, errors = _schedule_from_post(request.POST)
         if not errors:
@@ -12816,15 +12922,53 @@ def schedules(request):
     with Session(engine) as session:
         for s in session.execute(select(m.HydroSchedule)
                                  .order_by(m.HydroSchedule.name)).scalars().all():
+            ns = s.notify_status or {}
+            email_conf = bool((s.notify_email or "").strip())
+            wh_conf = bool((getattr(s, "webhook_url", "") or "").strip())
+            e_raw, w_raw = ns.get("email"), ns.get("webhook")
             rows.append({"id": str(s.id), "name": s.name, "target_slug": s.target_slug,
                          "interval": s.interval_minutes, "enabled": s.enabled,
                          "refresh": s.refresh, "n_alerts": len(s.alerts or []),
                          "last_run": s.last_run_at.strftime("%Y-%m-%d %H:%M") if s.last_run_at else "never",
+                         "email_status": _notify_chip(email_conf, e_raw),
+                         "webhook_status": _notify_chip(wh_conf, w_raw),
+                         "has_notify": email_conf or wh_conf,
+                         "_email_raw": e_raw or {}, "_wh_raw": w_raw or {},
                          "edit_url": reverse("hydrodesk:schedule_edit", kwargs={"schedule_id": str(s.id)}),
                          "run_url": reverse("hydrodesk:schedule_run", kwargs={"schedule_id": str(s.id)}),
+                         "test_url": reverse("hydrodesk:schedule_test", kwargs={"schedule_id": str(s.id)}),
                          "delete_url": reverse("hydrodesk:schedule_delete", kwargs={"schedule_id": str(s.id)})})
+    # "Test sent" banner: spell out the per-channel outcome (incl. the error) so a user sees
+    # the result immediately, not only on hover.
+    tested = (request.GET.get("tested") or "").strip()
+    tested_banner = None
+    if tested == "none":
+        tested_banner = {"ok": False, "name": "",
+                         "lines": ["No email or webhook is configured on that schedule — "
+                                   "nothing to test. Add a recipient or webhook URL first."]}
+    elif tested:
+        tr = next((r for r in rows if r["id"] == tested), None)
+        if tr is None:
+            # Schedule was deleted between the Test click and this render — still acknowledge.
+            tested_banner = {"ok": True, "name": "",
+                             "lines": ["Test notification sent. (That schedule is no longer listed.)"]}
+        else:
+            lines, all_ok = [], True
+            for label, chip, raw in (("Email", tr["email_status"], tr["_email_raw"]),
+                                     ("Webhook", tr["webhook_status"], tr["_wh_raw"])):
+                if chip is None:
+                    continue
+                if chip["cls"] == "green":
+                    lines.append("%s: ✓ %s" % (label, raw.get("detail") or "delivered"))
+                else:
+                    all_ok = False
+                    lines.append("%s: ✗ %s" % (label, raw.get("error") or "failed"))
+            if not lines:  # notify was cleared between Test and render
+                all_ok = False
+                lines = ["Test sent, but no email or webhook is currently configured on this schedule."]
+            tested_banner = {"ok": all_ok, "name": tr["name"], "lines": lines}
     return render(request, "hydrodesk/schedules.html", {
-        "rows": rows, "record_count": len(rows),
+        "rows": rows, "record_count": len(rows), "tested_banner": tested_banner,
         "new_url": reverse("hydrodesk:schedules") + "?new",
         "alerts_url": reverse("hydrodesk:alerts")})
 
@@ -12834,6 +12978,7 @@ def schedule_edit(request, schedule_id=None):
     if not request.user.is_superuser:
         return _denied(request, "manage", "Schedules")
     engine = App.get_persistent_store_database("hydro_db")
+    _ensure_schedule_columns(engine)
     if request.method == "POST":
         name, target, interval, alerts, errors = _schedule_from_post(request.POST)
         if not errors:
@@ -12884,6 +13029,7 @@ def schedule_delete(request, schedule_id=None):
         return _denied(request, "manage", "Schedules")
     if request.method == "POST":
         engine = App.get_persistent_store_database("hydro_db")
+        _ensure_schedule_columns(engine)
         with Session(engine) as session:
             s = session.execute(select(m.HydroSchedule)
                                 .where(m.HydroSchedule.id == schedule_id)).scalar_one_or_none()
@@ -12900,6 +13046,7 @@ def schedule_run(request, schedule_id=None):
         return _denied(request, "manage", "Schedules")
     if request.method == "POST":
         engine = App.get_persistent_store_database("hydro_db")
+        _ensure_schedule_columns(engine)
         with Session(engine) as session:
             s = session.execute(select(m.HydroSchedule)
                                 .where(m.HydroSchedule.id == schedule_id)).scalar_one_or_none()
@@ -12909,6 +13056,38 @@ def schedule_run(request, schedule_id=None):
                 except Exception:
                     pass
     return redirect(reverse("hydrodesk:schedules"))
+
+
+@controller(name="schedule_test", url="schedules/{schedule_id}/test", title="Test notification")
+def schedule_test(request, schedule_id=None):
+    """Send a synthetic TEST breach to the schedule's configured email and/or webhook so a
+    user can verify delivery (SMTP / Slack-Teams webhook) without waiting for a real alert.
+    Records the per-channel delivery status; does NOT raise an alert or touch records.
+    Superuser-only."""
+    if not request.user.is_superuser:
+        return _denied(request, "manage", "Schedules")
+    back = reverse("hydrodesk:schedules")
+    if request.method != "POST":
+        return redirect(back)
+    engine = App.get_persistent_store_database("hydro_db")
+    _ensure_schedule_columns(engine)
+    with Session(engine) as session:
+        s = session.execute(select(m.HydroSchedule)
+                            .where(m.HydroSchedule.id == schedule_id)).scalar_one_or_none()
+        if s is None:
+            return redirect(back)
+        demo = [{"record_title": "Sample record", "field": "value", "op": ">",
+                 "threshold": "100", "actual": "123", "severity": "warning",
+                 "message": "HydroDesk test notification."}]
+        updates = {}
+        if (s.notify_email or "").strip():
+            updates["email"] = _send_alert_email(s, demo, is_test=True)
+        if (getattr(s, "webhook_url", "") or "").strip():
+            updates["webhook"] = _send_alert_webhook(s, demo, is_test=True)
+        _persist_notify_status(session, s, updates)
+        if not updates:
+            return redirect(back + "?tested=none")
+    return redirect(back + "?tested=" + str(schedule_id))
 
 
 @controller(name="alerts", url="alerts", title="Alerts")
