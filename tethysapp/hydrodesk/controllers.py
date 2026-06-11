@@ -7158,7 +7158,13 @@ def _ensure_workflow_field(field_schema, state_names, existing_field=None):
                  "enum": list(state_names)})
     props[key] = prop
     if key not in order:
-        order.append(key)
+        # Place the status field right after the title field so it's prominent (shows
+        # near the front of the list), not buried at the end.
+        tf = fs.get("x-title-field")
+        if tf and tf in order:
+            order.insert(order.index(tf) + 1, key)
+        else:
+            order.insert(0, key)
     fs["properties"] = props
     fs["x-order"] = order
     return key, fs
