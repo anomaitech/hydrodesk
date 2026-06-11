@@ -73,6 +73,9 @@ It's no-code, spreadsheet-simple ergonomics, purpose-built for **water & environ
 <td colspan="2"><img src="docs/screenshots/history.png" alt="Record history and comments"><br><sub><b>Record history &amp; comments</b> — every change is versioned with a field-level diff and one-click restore, plus a per-record discussion thread.</sub></td>
 </tr>
 <tr>
+<td colspan="2"><img src="docs/screenshots/versions_compare.png" alt="Record versions and side-by-side compare"><br><sub><b>Record versions &amp; compare</b> — branch a record into named, editable versions in a version group, with one current version everywhere a single record is expected, then compare any two side by side as a field-by-field diff.</sub></td>
+</tr>
+<tr>
 <td width="50%"><img src="docs/screenshots/workflow.png" alt="Approval workflow"><br><sub><b>Approval workflows</b> — role-gated state transitions (Draft &rarr; In&nbsp;Review &rarr; Approved) with an audit trail.</sub></td>
 <td width="50%"><img src="docs/screenshots/permissions.png" alt="Role-based permissions"><br><sub><b>Role-based permissions</b> — choose which user groups can read or edit each doctype's records.</sub></td>
 </tr>
@@ -134,6 +137,10 @@ Every type automatically gets:
 Plus full record lifecycle: per-record CRUD, **bulk-delete** with select-all, **link existing** records into a child table, and **CSV / Excel import** (`.csv`, `.xlsx`, `.xlsm`) with type coercion (dates → ISO, whole floats → ints).
 
 **History & collaboration:** every record keeps a **versioned history** — each create/edit/restore is an immutable snapshot, shown on the detail page as a **field-level diff** with **one-click Restore**. Records also carry a **comment thread** for discussion.
+
+**Record versions:** distinct from History (the immutable audit trail of edits *within* one record), a **version** is a full editable sibling record. **Save as new version** clones the current one — field values and geometry copy over — for a re-survey, a model re-run, or a revision, and the clones share a **version group**. Exactly one version is **current**: it is what the List view, Map, Dashboards, the OGC API, and the default Data API response show — everywhere a single record is expected — so a multi-version record counts once while the others stay hidden but reachable. Name or rename versions inline (e.g. *"Baseline 2022 survey"*), **Open** to navigate, and **Set current** to promote one; a new version resets its workflow status to the first state, deleting the current version re-elects the highest survivor, and a legacy record is treated as v1. Reach them from a per-row **⋮** menu in the List (which carries a `vN` badge) or the **Versions** card on the detail page; the Data API returns the current version of each group by default and the full set via `?versions=all`.
+
+**Compare versions:** a **Compare** action on every other row of the Versions card — every version except the one you're viewing — opens a **side-by-side, field-by-field diff** of any two versions, old value in red, new in green, an amber rail on changed rows, and a header that reads *"N of M fields differ"* (or *"Identical"*). Two **A / B** pickers with a **swap** button and an **Only differences** toggle focus the diff; light and dark themes.
 
 **Governance:**
 - **Approval workflows** — give a doctype states (from a Select field) and **role-gated transitions** (e.g. Draft → In Review → Approved); the record page shows the actions available to the current user and keeps a workflow **audit trail**.
