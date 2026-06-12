@@ -1316,16 +1316,33 @@
           var want = inputMap[nm] || '';
           if (!want && choices.some(function (c) { return c.slug === nm; })) want = nm;
           sel.value = want;
-          sel.addEventListener('change', function () {
-            if (sel.value) inputMap[nm] = sel.value; else delete inputMap[nm];
-          });
-          // (3) sample value for the Test run
+          // (3) sample value for the Test run. The hint makes clear that a LIVE connector
+          // (or a model/script output) is NOT fetched here — the Test panel uses this sample,
+          // while a saved record gets the real data automatically (the usual "outputs null in
+          // the test because the connector value is empty" confusion).
           var v = document.createElement('input');
           v.type = 'text'; v.className = 'form-control form-control-sm';
           v.setAttribute('data-iname', nm);
-          v.placeholder = 'e.g. [1,2,3,4] or 5';
+          function choiceFor(slug) { for (var i = 0; i < choices.length; i++) { if (choices[i].slug === slug) return choices[i]; } return null; }
+          function refreshHint() {
+            var c = choiceFor(sel.value || nm), t = c ? c.type : '';
+            if (t === 'api') {
+              v.placeholder = 'live connector — fetched on SAVE; paste a sample to test, e.g. [{"flow": 1.2}, {"flow": 0.8}]';
+              v.title = 'Maps to a LIVE connector field. The Test panel does NOT fetch it — it uses this sample. On a saved record the real series/value is fetched automatically.';
+            } else if (t === 'computed') {
+              v.placeholder = 'model/script output — set on run/save; paste a sample to test';
+              v.title = 'Maps to a model/script OUTPUT. The Test panel uses this sample; the real value is set when the model runs or the record is saved.';
+            } else {
+              v.placeholder = 'e.g. [1,2,3,4] or 5'; v.title = '';
+            }
+          }
+          refreshHint();
           if (samples[nm] != null) v.value = samples[nm];
           v.addEventListener('input', function () { samples[nm] = v.value; });
+          sel.addEventListener('change', function () {
+            if (sel.value) inputMap[nm] = sel.value; else delete inputMap[nm];
+            refreshHint();
+          });
           row.appendChild(l); row.appendChild(sel); row.appendChild(v);
           inBox.appendChild(row);
         });
