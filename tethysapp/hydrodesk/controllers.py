@@ -922,6 +922,55 @@ def _freeform_connector_config(kind, url, spec):
                 x_path="", y_path="", timeout=15)
 
 
+def _ai_test_fetch(config, name):
+    """Run ONE bounded fetch with a just-built connector and no record, summarizing whether
+    it returns data — so the AI builder reports 'works (N points / value X)' or the reason it
+    doesn't, immediately at creation time. Never raises; never includes the resolved URL or
+    any secret (only kind + a short data summary + the connector's own graceful note)."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FTimeout
+    out = {"ok": False, "summary": "", "note": ""}
+
+    def _do():
+        # socket timeout bounds the CONNECT phase; the executor wall-clock below bounds the
+        # READ phase too — needed because GEE (earthengine-api) and THREDDS (siphon) use
+        # request libraries that ignore the default socket timeout on a wedged read.
+        import socket
+        old_to = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(25)
+            return fetch_api(config, {}, connector_name=name) or {}
+        finally:
+            socket.setdefaulttimeout(old_to)
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_do)
+    try:
+        result = fut.result(timeout=30)         # HARD cap: return even if a read wedges
+    except _FTimeout:
+        ex.shutdown(wait=False)                 # leaks the stuck I/O thread, frees the request
+        out["note"] = "test fetch timed out (the source is slow or unreachable)"
+        return out
+    except Exception as exc:
+        ex.shutdown(wait=False)
+        out["note"] = "test fetch failed: %s" % type(exc).__name__
+        return out
+    ex.shutdown(wait=False)
+    kind = result.get("kind")
+    out["note"] = (result.get("note") or "").strip()
+    if kind == "series":
+        n = len(result.get("x") or [])
+        out["ok"] = n > 0
+        out["summary"] = "%d series point%s" % (n, "" if n == 1 else "s")
+    elif kind == "image":
+        out["ok"] = bool(result.get("url"))
+        out["summary"] = "an image" if out["ok"] else "no image"
+    else:
+        v = result.get("value")
+        out["ok"] = v not in (None, "")
+        out["summary"] = ("value %s" % str(v)[:48]) if out["ok"] else "no value"
+    return out
+
+
 @controller(name="ai_build_connector", url="ai-build-connector", title="AI build connector")
 def ai_build_connector(request):
     """POST {description} -> a local model picks a VERIFIED data-source preset (or a
@@ -1039,6 +1088,38 @@ def ai_build_connector(request):
         kind = detected if detected != "rest" else (
             spec_kind if spec_kind in ("rest", "csv", "netcdf", "thredds", "wms", "wcs", "gee")
             else "rest")
+        # Backfill the kind's key sub-field from the description when the model omitted it
+        # (small models often do) — "...variable sst", "coverage dem", "layers topo", "band NDVI".
+        # The regex captures the token AFTER the keyword; reject common English filler so a
+        # phrase like "the air variable dataset" doesn't store variable='dataset' (a wrong value
+        # would be caught by the auto test-fetch anyway, but better not to guess it).
+        _BF_STOP = {"from", "by", "of", "the", "a", "an", "for", "in", "on", "with", "that",
+                    "which", "dataset", "data", "named", "called", "is", "are", "to", "at",
+                    "and", "or", "this", "service", "file", "url", "variable", "variables",
+                    "coverage", "layer", "layers", "band", "bands", "as", "its", "their"}
+
+        def _bf(pat):
+            mo = re.search(pat, description, re.I)
+            if mo and mo.group(1).lower() not in _BF_STOP:
+                return mo.group(1)
+            return ""
+        spec = dict(spec)
+        if kind in ("netcdf", "thredds") and not (spec.get("variable") or "").strip():
+            v = _bf(r"\bvari(?:able)?s?\s+([A-Za-z][\w]{1,40})")
+            if v:
+                spec["variable"] = v
+        elif kind == "wcs" and not (spec.get("coverage") or "").strip():
+            v = _bf(r"\bcoverage\s+([A-Za-z][\w:.\-]{1,60})")
+            if v:
+                spec["coverage"] = v
+        elif kind == "wms" and not (spec.get("layers") or "").strip():
+            v = _bf(r"\blayers?\s+([A-Za-z][\w:.,\-]{1,80})")
+            if v:
+                spec["layers"] = v
+        elif kind == "gee" and not (spec.get("band") or "").strip():
+            v = _bf(r"\bband\s+([A-Za-z][\w]{1,40})")
+            if v:
+                spec["band"] = v
         if kind == "gee":
             # GEE uses an asset id (not an http URL) — the model's freeform_url or asset, or
             # an asset-id-looking token in the description.
@@ -1088,10 +1169,13 @@ def ai_build_connector(request):
         preview = _render_template(src_url, rendered) if src_url else ""
     except Exception:
         preview = src_url
+    # Auto test-fetch the new connector so the user sees right away whether it works (or why
+    # not) — skipped when a required field is still missing (setup_hint), where it's a known dud.
+    test = _ai_test_fetch(config, name) if not setup_hint else None
     return JsonResponse({"ok": True, "id": cid, "name": name, "preset": source,
                          "kind": config.get("kind", "rest"),
                          "result_kind": config.get("result_kind", "value"),
-                         "inputs": applied, "url": preview, "note": setup_hint,
+                         "inputs": applied, "url": preview, "note": setup_hint, "test": test,
                          "list_url": reverse("hydrodesk:connectors"),
                          "edit_url": reverse("hydrodesk:connector_edit", kwargs={"conn_id": cid})})
 

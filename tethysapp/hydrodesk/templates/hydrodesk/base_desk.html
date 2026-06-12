@@ -1053,10 +1053,15 @@
         .then(function(r){return r.json();}).then(function(j){
           if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
           var ins=Object.keys(j.inputs||{}).map(function(k){return "  • "+k+" = "+j.inputs[k];}).join("\n");
-          ans.textContent="✓ Created connector \""+j.name+"\""
+          var msg="✓ Created connector \""+j.name+"\""
             +(j.preset&&j.preset!=="none"?" · "+j.preset:" · "+(j.kind||j.result_kind))
-            +(ins?"\n"+ins:"")+(j.url?"\nFetches: "+j.url:"")
-            +(j.note?"\n⚠ "+j.note:"");
+            +(ins?"\n"+ins:"")+(j.url?"\nFetches: "+j.url:"");
+          if(j.note){ msg+="\n⚠ "+j.note; }            // a required field still to set
+          else if(j.test){                              // auto test-fetch result
+            if(j.test.ok){ msg+="\n✓ Test fetch: "+j.test.summary; }
+            else{ msg+="\n⚠ Test fetch: "+(j.test.note||j.test.summary||"no data"); }
+          }
+          ans.textContent=msg;
           var go=document.createElement("button"); goLink(go, j.list_url, "Open Connectors →");
           ans.appendChild(document.createElement("br")); ans.appendChild(go);
           if(tts.checked) speak("Created the "+j.name+" connector.");
