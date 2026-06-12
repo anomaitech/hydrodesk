@@ -7224,8 +7224,9 @@ def _render_model_command(template, attrs, workspace):
 
 
 def _write_model_outputs(slug, record_id, updates):
-    """Merge a model run's outputs into the record's attributes — a FRESH session (this
-    runs in a worker thread)."""
+    """Merge a model run's outputs into the record's attributes, then CASCADE: recompute the
+    doctype's formula + Python-script fields so they can use a model OUTPUT as an input (e.g.
+    a script that classifies the model's peak_flow). A FRESH session (worker thread)."""
     if not updates:
         return
     import uuid as _uuid
@@ -7238,6 +7239,15 @@ def _write_model_outputs(slug, record_id, updates):
             return
         a = dict(rec.attributes or {})
         a.update(updates)
+        # Cascade derived fields off the fresh model outputs. Guarded so a script hiccup
+        # can't lose the model's outputs (already merged into `a` above).
+        meta = _load_hydrotype(session, slug)
+        if meta is not None:
+            try:
+                _compute_formulas(meta[1], a)
+                _compute_scripts(meta[1], a, session, record_id=rid)
+            except Exception:
+                logger.exception("HydroDesk model-output cascade failed (%s/%s)", slug, record_id)
         rec.attributes = a                 # reassign so JSONB change is tracked
         session.add(rec)
         session.commit()
