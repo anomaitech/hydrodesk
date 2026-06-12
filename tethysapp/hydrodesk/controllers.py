@@ -428,14 +428,23 @@ def _extract_json(text):
             return json.loads(m.group(1).strip())
         except (ValueError, TypeError):
             pass
-    # first balanced {...} or [...] span
+    # first BALANCED {...} or [...] span (a model may emit prose around — or several —
+    # objects; first-open to last-close would span them all and fail to parse).
     for op, cl in (("{", "}"), ("[", "]")):
-        i, j = s.find(op), s.rfind(cl)
-        if 0 <= i < j:
-            try:
-                return json.loads(s[i:j + 1])
-            except (ValueError, TypeError):
-                pass
+        i = s.find(op)
+        if i < 0:
+            continue
+        depth = 0
+        for j in range(i, len(s)):
+            if s[j] == op:
+                depth += 1
+            elif s[j] == cl:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(s[i:j + 1])
+                    except (ValueError, TypeError):
+                        break      # malformed first object — try the other bracket type
     return None
 
 
@@ -1052,6 +1061,18 @@ def ai_build_connector(request):
         applied = {}
         source = "none"
 
+    # A kind whose primary sub-field couldn't be inferred from the URL (the manual builder
+    # form REQUIRES these) is still created — the value is usually discovered in the Test
+    # panel — but we tell the user the one field left to set, so it isn't a silent dud.
+    setup_hint = ""
+    _k = config.get("kind")
+    if _k in ("netcdf", "thredds") and not (config.get("variable") or "").strip():
+        setup_hint = "Open it and set a Variable (use Test to list the dataset's variables)."
+    elif _k == "wms" and not (config.get("layers") or "").strip():
+        setup_hint = "Open it and set the WMS Layer(s) (use Test to list the service's layers)."
+    elif _k == "wcs" and not (config.get("coverage") or "").strip():
+        setup_hint = "Open it and set the Coverage ID (use Test to list the service's coverages)."
+
     engine = App.get_persistent_store_database("hydro_db")
     with Session(engine) as session:
         name = _unique_connector_name(session, name)
@@ -1070,7 +1091,7 @@ def ai_build_connector(request):
     return JsonResponse({"ok": True, "id": cid, "name": name, "preset": source,
                          "kind": config.get("kind", "rest"),
                          "result_kind": config.get("result_kind", "value"),
-                         "inputs": applied, "url": preview,
+                         "inputs": applied, "url": preview, "note": setup_hint,
                          "list_url": reverse("hydrodesk:connectors"),
                          "edit_url": reverse("hydrodesk:connector_edit", kwargs={"conn_id": cid})})
 
@@ -6982,7 +7003,13 @@ def _materialize_model_inputs(slug, record_id, attrs, field_schema):
     if not conn_fields:
         return attrs, []
     out, warnings, cache = dict(attrs), [], {}
+    # Bound the connect/read of every input fetch at the socket level, so a hanging source
+    # (e.g. a THREDDS catalog or GEE getInfo with no library-level timeout) can't leave this
+    # worker thread — and the model job — stuck forever.
+    import socket
+    _old_to = socket.getdefaulttimeout()
     try:
+        socket.setdefaulttimeout(45)
         with Session(App.get_persistent_store_database("hydro_db")) as session:
             for k, p in conn_fields:
                 try:
@@ -6996,6 +7023,8 @@ def _materialize_model_inputs(slug, record_id, attrs, field_schema):
                     warnings.append("input '%s' returned no data" % k)
     except Exception as exc:
         warnings.append("connector inputs unavailable: %s" % type(exc).__name__)
+    finally:
+        socket.setdefaulttimeout(_old_to)
     return out, warnings
 
 

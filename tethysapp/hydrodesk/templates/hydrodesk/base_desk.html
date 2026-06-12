@@ -1054,8 +1054,9 @@
           if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
           var ins=Object.keys(j.inputs||{}).map(function(k){return "  • "+k+" = "+j.inputs[k];}).join("\n");
           ans.textContent="✓ Created connector \""+j.name+"\""
-            +(j.preset&&j.preset!=="none"?" · "+j.preset:"")+" · "+j.result_kind
-            +(ins?"\n"+ins:"")+(j.url?"\nFetches: "+j.url:"");
+            +(j.preset&&j.preset!=="none"?" · "+j.preset:" · "+(j.kind||j.result_kind))
+            +(ins?"\n"+ins:"")+(j.url?"\nFetches: "+j.url:"")
+            +(j.note?"\n⚠ "+j.note:"");
           var go=document.createElement("button"); goLink(go, j.list_url, "Open Connectors →");
           ans.appendChild(document.createElement("br")); ans.appendChild(go);
           if(tts.checked) speak("Created the "+j.name+" connector.");
