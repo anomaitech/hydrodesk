@@ -532,12 +532,21 @@
       box.querySelectorAll('.frappe-row-wrap').forEach(function (wrap) {
         var idx = wrap.getAttribute('data-row-idx');
         if (idx === String(exceptIdx)) return;
+        // Computed rows (a MODEL output, or another script/formula's output) render read-only
+        // with no field_label_/field_type_ inputs — surface them by data-field-key so a script
+        // CAN use a model/script output as one of its inputs.
+        if (wrap.classList.contains('hd-computed-wrap')) {
+          var ckey = wrap.getAttribute('data-field-key');
+          if (ckey) out.push({ slug: ckey, label: ckey, type: 'computed' });
+          return;
+        }
         var lbl = wrap.querySelector('[name^="field_label_"]');
         var typ = wrap.querySelector('[name^="field_type_"]');
         if (!lbl || !lbl.value.trim()) return;
-        if (typ && typ.value === 'api') return;
-        out.push({ slug: slugify(lbl.value), label: lbl.value.trim(),
-                   type: typ ? typ.value : 'text' });
+        var tv = typ ? typ.value : 'text';
+        if (tv === 'section' || tv === 'column' || tv === 'tab') return;   // layout markers, not data
+        // NOTE: API/connector fields are INCLUDED — a script reads them as live data.
+        out.push({ slug: slugify(lbl.value), label: lbl.value.trim(), type: tv });
       });
       return out;
     }
