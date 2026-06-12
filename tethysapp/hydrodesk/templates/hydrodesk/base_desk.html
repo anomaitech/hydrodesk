@@ -901,6 +901,48 @@
   {# apply the saved theme as early as possible to avoid a flash #}
   <script>(function(){try{if(localStorage.getItem('hd-theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}})();</script>
   {% block desk_content %}{% endblock %}
+
+  {# Global NAVIGATION LOADER — a thin top bar shown while the next page loads. Live
+     connector/GEE fetches happen server-side, so a record/refresh page can block for
+     several seconds; this tells the user it's working. The app's CSS transform breaks
+     position:fixed, so the bar is appended to <body>. #}
+  <style>
+    #hd-nav-loader { position:fixed; top:0; left:0; right:0; height:3px; z-index:2147483647;
+      pointer-events:none; opacity:0; transition:opacity .12s ease; overflow:hidden;
+      background:rgba(26,115,232,.14); }
+    #hd-nav-loader.on { opacity:1; }
+    #hd-nav-loader .bar { position:absolute; top:0; height:100%; width:35%; border-radius:0 3px 3px 0;
+      background:var(--fr-primary, #1a73e8); animation:hd-nav-slide 1s ease-in-out infinite; }
+    @keyframes hd-nav-slide { 0%{left:-35%;} 50%{left:45%;} 100%{left:100%;} }
+  </style>
+  <script>
+  (function(){
+    var el=document.createElement('div'); el.id='hd-nav-loader';
+    el.innerHTML='<div class="bar"></div>';
+    (document.body||document.documentElement).appendChild(el);
+    var timer=null;
+    function show(){ el.classList.add('on'); clearTimeout(timer); timer=setTimeout(hide, 30000); }
+    function hide(){ el.classList.remove('on'); clearTimeout(timer); }
+    // A real same-tab navigation from a link -> show during the (often slow, server-side
+    // live-data) wait. Bubble phase + defaultPrevented check skips AJAX links; skip anchors,
+    // new-tab/modifier clicks, downloads (incl. /export/), and opt-outs (data-noload).
+    document.addEventListener('click', function(e){
+      if(e.defaultPrevented || e.button!==0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      var a = e.target.closest ? e.target.closest('a[href]') : null;
+      if(!a) return;
+      var href = a.getAttribute('href') || '';
+      if(!href || href.charAt(0)==='#' || a.target==='_blank' || a.hasAttribute('download')
+         || a.hasAttribute('data-noload') || /\/export\//.test(href)
+         || /^(javascript:|mailto:|tel:)/i.test(href)) return;
+      show();
+    });
+    // A real form submit (a POST that redirects, e.g. saving a record) — unless JS handled it.
+    document.addEventListener('submit', function(e){
+      if(!e.defaultPrevented && !(e.target && e.target.hasAttribute('data-noload'))) show();
+    });
+    window.addEventListener('pageshow', hide);   // reset on bfcache back/forward restore
+  })();
+  </script>
   <script>
   (function(){
     var root=document.documentElement;
