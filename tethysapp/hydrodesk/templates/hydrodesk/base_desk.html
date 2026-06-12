@@ -1018,7 +1018,10 @@
     tts.addEventListener("change", function(){
       if(tts.checked && window.speechSynthesis){ loadVoices(); speak("Voice on."); } });
     // "create/build a doctype/table…" -> have the AI design + CREATE it, not just point.
-    var CREATE_RE=/\b(create|make|build|add|set ?up|new)\b[\s\S]{0,40}\b(doc\s?type|data\s?type|datatype|table|dataset|record type)\b/i;
+    var CREATE_RE=/\b(create|make|build|add|set ?up|new)\b[\s\S]{0,40}\b(doc\s?type|data\s?type|datatype|table|record type)\b/i;
+    // "dataset" is a weaker doctype hint — it also appears in connector requests ("the
+    // NetCDF/OPeNDAP dataset"), so it only routes to a doctype AFTER the explicit-connector check.
+    var CREATE_DATASET_RE=/\b(create|make|build|add|set ?up|new)\b[\s\S]{0,40}\bdataset\b/i;
     function goLink(go, url, label){ go.className="hd-guide-go"; go.type="button"; go.textContent=label;
       go.addEventListener("click", function(){ location.href=url; }); }
     function buildDoctype(text){
@@ -1065,8 +1068,9 @@
     var EXPLICIT_CONNECTOR=/\b(connector|data ?source|connection|live ?feed|web ?service)\b/i;
     function run(text){
       if(!text.trim()) return; q.value="";
-      if(CREATE_RE.test(text)){ buildDoctype(text); return; }
-      if(EXPLICIT_CONNECTOR.test(text)){ buildConnector(text); return; }
+      if(CREATE_RE.test(text)){ buildDoctype(text); return; }            // explicit doctype/table word
+      if(EXPLICIT_CONNECTOR.test(text)){ buildConnector(text); return; } // explicit connector word (e.g. "a connector for the NetCDF dataset")
+      if(CREATE_DATASET_RE.test(text)){ buildDoctype(text); return; }    // "create a dataset" with no connector word
       if(CONNECT_RE.test(text)){ buildConnector(text); return; }
       ans.textContent="…thinking"; ask.disabled=true;
       if(tts.checked && window.speechSynthesis){ try{ window.speechSynthesis.resume(); }catch(e){} }

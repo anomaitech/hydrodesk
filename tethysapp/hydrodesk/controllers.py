@@ -836,6 +836,83 @@ def _unique_connector_name(session, base):
     return f"{base} {n}"
 
 
+def _detect_connector_kind(url, description=""):
+    """Best-effort connector KIND from a freeform URL / description, so the AI builder can
+    create ANY of the 7 kinds — not only REST. Returns rest/csv/netcdf/thredds/wms/wcs/gee."""
+    u = (url or "").lower()
+    d = (description or "").lower()
+
+    def has(s, *subs):
+        return any(x in s for x in subs)
+
+    # URL signals (most reliable)
+    if has(u, "service=wms", "request=getmap") or has(u, "/wms?", "/wms/", "geoserver/wms"):
+        return "wms"
+    if has(u, "service=wcs", "request=getcoverage") or has(u, "/wcs?", "/wcs/", "geoserver/wcs"):
+        return "wcs"
+    if has(u, "catalog.xml", "thredds/catalog"):
+        return "thredds"
+    if has(u, "dodsc", "opendap", ".ncml") or u.endswith(".nc") or ".nc?" in u:
+        return "netcdf"
+    if u.endswith(".csv") or has(u, ".csv?", "format=csv", "outputformat=csv"):
+        return "csv"
+    # description signals (and asset-id cases where there's no http URL)
+    if has(d, "earth engine", "earthengine", "gee asset", "ee.image", "ee.imagecollection"):
+        return "gee"
+    if has(d, "wms", "map service", "getmap"):
+        return "wms"
+    if has(d, "wcs", "web coverage", "getcoverage"):
+        return "wcs"
+    if has(d, "thredds"):
+        return "thredds"
+    if has(d, "opendap", "netcdf"):
+        return "netcdf"
+    if has(d, "csv"):
+        return "csv"
+    # an asset-id-looking string (no scheme, path-like, no spaces) -> Earth Engine
+    if url and not u.startswith(("http://", "https://")) and "/" in url and " " not in url.strip():
+        return "gee"
+    return "rest"
+
+
+def _freeform_connector_config(kind, url, spec):
+    """A minimal but WORKING connector config for a detected (non-preset) kind. Outputs are
+    synthesized by _connector_outputs from the kind + source fields, so we only set the
+    source keys; the user refines variable/layers/coverage/band in the form + Test panel."""
+    spec = spec or {}
+    base = {"inputs": [], "ttl_seconds": 900}
+    if kind == "wms":
+        return dict(base, kind="wms", wms_url=url,
+                    layers=(spec.get("layers") or "").strip(),
+                    wms_version="1.3.0", image_format="image/png", crs="EPSG:4326",
+                    width=512, height=384, bbox_buffer=0.5, timeout=20)
+    if kind == "wcs":
+        return dict(base, kind="wcs", wcs_url=url,
+                    coverage=(spec.get("coverage") or "").strip(),
+                    variable=(spec.get("variable") or "").strip(),
+                    wcs_version="2.0.1", timeout=30)
+    if kind in ("netcdf", "thredds"):
+        var = (spec.get("variable") or "").strip()
+        cfg = dict(base, kind=kind, spatial="mean",
+                   variables=([var] if var else []), variable=var, x_dim="time", timeout=30)
+        cfg["catalog_url" if kind == "thredds" else "dataset_url"] = url
+        return cfg
+    if kind == "gee":
+        return dict(base, kind="gee", gee_asset=url,
+                    gee_band=(spec.get("band") or "").strip(),
+                    gee_scale=30, timeout=60)
+    if kind == "csv":
+        return dict(base, kind="csv", csv_url=url, has_header=True, timeout=15)
+    # rest (default)
+    rk = (spec.get("result_kind") or "value").strip().lower()
+    if rk not in ("value", "series", "json"):
+        rk = "value"
+    return dict(base, kind="rest", url_template=url, method="GET", headers={}, query={},
+                auth={"scheme": "none", "credential": "", "placement": "header", "param": ""},
+                result_kind=rk, output_path=(spec.get("value_path") or "").strip(),
+                x_path="", y_path="", timeout=15)
+
+
 @controller(name="ai_build_connector", url="ai-build-connector", title="AI build connector")
 def ai_build_connector(request):
     """POST {description} -> a local model picks a VERIFIED data-source preset (or a
@@ -866,14 +943,24 @@ def ai_build_connector(request):
         "request. Return ONLY a JSON object:\n"
         '{"name":"<short connector name>","preset":"<menu key or none>",'
         '"inputs":{"<input>":"<value>"},'
-        '"freeform_url":"","result_kind":"value","value_path":""}\n'
+        '"freeform_url":"","kind":"rest","result_kind":"value","value_path":"",'
+        '"layers":"","coverage":"","variable":"","band":""}\n'
         "Rules:\n"
         "- Choose a preset KEY from the menu when one fits; put any values you know in "
         "\"inputs\" (use the EXACT input names from the menu). Omit inputs you don't know — "
         "they keep sensible defaults.\n"
-        "- Only if NOTHING on the menu fits, set preset=\"none\" and give a full https "
-        "\"freeform_url\", a \"result_kind\" (value=single number, series=time series, "
-        "json=raw), and a \"value_path\" (dot path to the value, blank if unsure).\n"
+        "- If NOTHING on the menu fits, set preset=\"none\", give the full source URL in "
+        "\"freeform_url\", and set \"kind\" to the data-source TYPE:\n"
+        "    rest    = a JSON/XML REST API (also set result_kind value|series|json + value_path)\n"
+        "    csv     = a .csv table URL\n"
+        "    netcdf  = a NetCDF / OPeNDAP dataset (a .nc or dodsC URL); set \"variable\"\n"
+        "    thredds = a THREDDS catalog.xml URL; set \"variable\"\n"
+        "    wms     = an OGC WMS map service (a /wms or GetCapabilities URL); set \"layers\"\n"
+        "    wcs     = an OGC WCS coverage service (a /wcs URL); set \"coverage\"\n"
+        "    gee     = a Google Earth Engine asset id (e.g. MODIS/006/MOD13Q1) in freeform_url; "
+        "set \"band\"\n"
+        "  Infer the kind from the URL: /wms or GetMap->wms, /wcs or GetCoverage->wcs, "
+        "catalog.xml->thredds, .nc/dodsC/OPeNDAP->netcdf, .csv->csv, an ee asset id->gee, else rest.\n"
         "- Never invent a USGS site number you aren't sure of — leave \"sites\" out and it "
         "defaults. Map words to parameter codes (discharge/flow->00060, stage/gage "
         "height->00065, temperature->00010).\n"
@@ -932,27 +1019,36 @@ def ai_build_connector(request):
                 applied[iname] = guess
         source = preset_key
     else:
-        # Freeform escape hatch: a generic GET against the user's pasted URL (preferred)
-        # or, failing that, a model-supplied one.
+        # Freeform escape hatch — build the RIGHT kind of connector (not just REST). The URL
+        # the user pasted wins; else the model's freeform_url (or, for GEE, an asset id).
         url = desc_url or (spec.get("freeform_url") or "").strip()
-        if not url.lower().startswith(("http://", "https://")):
-            return JsonResponse(
-                {"ok": False, "error": "No preset matched and the model gave no usable URL. "
-                 "Try naming a known source (USGS NWIS, NWPS, Water Quality Portal, NextGen)."},
-                status=422)
-        rk = (spec.get("result_kind") or "value").strip().lower()
-        if rk not in ("value", "series", "json"):
-            rk = "value"
-        config = {
-            "kind": "rest", "url_template": url, "method": "GET",
-            "headers": {}, "query": {},
-            "auth": {"scheme": "none", "credential": "", "placement": "header", "param": ""},
-            "inputs": [],
-            "result_kind": rk,
-            "output_path": (spec.get("value_path") or "").strip(),
-            "x_path": "", "y_path": "",
-            "ttl_seconds": 900, "timeout": 15,
-        }
+        spec_kind = (spec.get("kind") or "").strip().lower()
+        detected = _detect_connector_kind(url, description)
+        # A strong URL/description signal wins (a small model often mislabels a WMS/WCS/NetCDF
+        # URL as "rest"); fall back to the model's explicit kind only when detection is
+        # inconclusive (looks like a plain REST endpoint).
+        kind = detected if detected != "rest" else (
+            spec_kind if spec_kind in ("rest", "csv", "netcdf", "thredds", "wms", "wcs", "gee")
+            else "rest")
+        if kind == "gee":
+            # GEE uses an asset id (not an http URL) — the model's freeform_url or asset, or
+            # an asset-id-looking token in the description.
+            asset = url or (spec.get("asset") or "").strip()
+            if not asset:
+                mo = re.search(r"\b([A-Z][A-Za-z0-9]+(?:/[A-Za-z0-9_]+){1,4})\b", description)
+                asset = mo.group(1) if mo else ""
+            if not asset:
+                return JsonResponse(
+                    {"ok": False, "error": "Name the Google Earth Engine asset id "
+                     "(e.g. MODIS/006/MOD13Q1)."}, status=422)
+            config = _freeform_connector_config("gee", asset, spec)
+        else:
+            if not url.lower().startswith(("http://", "https://")):
+                return JsonResponse(
+                    {"ok": False, "error": "No preset matched and the model gave no usable URL. "
+                     "Paste the source URL, or name a known source (USGS NWIS, NWPS, Water "
+                     "Quality Portal, NextGen)."}, status=422)
+            config = _freeform_connector_config(kind, url, spec)
         applied = {}
         source = "none"
 
@@ -964,12 +1060,15 @@ def ai_build_connector(request):
         session.commit()
         cid = str(conn.id)
     rendered, _missing = _resolve_inputs(config, {})
-    url_template = config.get("url_template") or config.get("csv_url") or ""
+    src_url = (config.get("url_template") or config.get("csv_url") or config.get("wms_url")
+               or config.get("wcs_url") or config.get("dataset_url") or config.get("catalog_url")
+               or config.get("gee_asset") or "")
     try:
-        preview = _render_template(url_template, rendered) if url_template else ""
+        preview = _render_template(src_url, rendered) if src_url else ""
     except Exception:
-        preview = url_template
+        preview = src_url
     return JsonResponse({"ok": True, "id": cid, "name": name, "preset": source,
+                         "kind": config.get("kind", "rest"),
                          "result_kind": config.get("result_kind", "value"),
                          "inputs": applied, "url": preview,
                          "list_url": reverse("hydrodesk:connectors"),
