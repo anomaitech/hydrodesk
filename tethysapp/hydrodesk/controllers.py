@@ -2618,6 +2618,15 @@ def _netcdf_polygon_ys(ds, v, xd, lat_dim, lon_dim, rings):
     latc, lonc = ds.variables.get(lat_dim), ds.variables.get(lon_dim)
     if latc is None or lonc is None:
         return None
+    # When the grid uses 0..360 longitudes (e.g. COADS) but the rings arrive in -180..180
+    # (Leaflet/GeoJSON), shift the rings into 0..360 so the bbox slice + point-in-polygon
+    # mask line up — otherwise nothing matches and it silently means the WHOLE grid.
+    try:
+        _glon = np.asarray(lonc[:], dtype="float64")
+        if _glon.size and float(np.nanmax(_glon)) > 180.0:
+            rings = [[(((p[0] % 360.0) + 360.0) % 360.0, p[1]) for p in r] for r in rings]
+    except Exception:
+        pass
     allx = [p[0] for r in rings for p in r]
     ally = [p[1] for r in rings for p in r]
     lat_sl = _range_slice(latc, min(ally), max(ally), circular=False)
@@ -2870,8 +2879,11 @@ def _netcdf_reduce_ys(ds, v, x_dim, cfg=None, attrs=None):
     tlat = _wms_num(cfg.get("lat"), attrs.get("_lat"), attrs.get("latitude"), attrs.get("lat"))
     tlon = _wms_num(cfg.get("lon"), attrs.get("_lon"), attrs.get("longitude"), attrs.get("lon"))
 
-    if mode == "polygon" and lat_dim in dims and lon_dim in dims:
-        rings = _polygon_rings(cfg)
+    if mode in ("polygon", "shapefile", "zones") and lat_dim in dims and lon_dim in dims:
+        # Prefer THIS record's drawn geometry / uploaded shapefile (_geojson/_shapefile),
+        # else a polygon pasted on the connector — so a multi-variable TABLE is region-
+        # specific just like a single-variable series (was cfg-only -> always global).
+        rings = _shapefile_union_rings(cfg, attrs) or _polygon_rings(cfg)
         if rings:
             ys = _netcdf_polygon_ys(ds, v, xd, lat_dim, lon_dim, rings)
             if ys is not None:
@@ -3070,8 +3082,14 @@ def _netcdf_extract(ds, out_entry, cfg=None, attrs=None):
     if x_dim not in dims:
         x_dim = dims[0] if dims else ""
     # RASTER (per-pixel map): a colored 2-D slice of the variable, masked to the polygon.
+    # A raster_band naming a DERIVED column (e.g. WSPD=sqrt(U**2+V**2)) is computed on the
+    # component grids; a real variable is rendered directly.
     if (out_entry.get("kind") or "value").lower() == "image":
         rb = ((cfg or {}).get("raster_band") or "").strip()
+        derived = [d for d in ((cfg or {}).get("derived") or [])
+                   if (d.get("name") or "") == rb and (d.get("formula") or "").strip()]
+        if rb and rb not in ds.variables and derived:
+            return _grid_raster_derived(ds, derived[0], x_dim, rb, cfg, attrs)
         if rb and rb in ds.variables:
             v, var_name = ds.variables[rb], rb
         return _grid_raster_result(ds, v, x_dim, var_name, cfg, attrs)
@@ -3322,7 +3340,13 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
             cfg.get("lon_min"), cfg.get("lon_max"), cfg.get("lat_min"), cfg.get("lat_max"),
             _rlon, _rlat)
     elif _sp == "polygon":
-        _sig += "|pg:%s|%s" % ((cfg.get("polygon") or "")[:120], cfg.get("shapefile") or "")
+        import hashlib
+        # The region can be THIS record's drawn geometry / uploaded shapefile, so fold a
+        # digest of the resolved source in — else two records of one doctype collide on
+        # the same url+output and silently share one cached (whoever-fetched-first) series.
+        _pgsrc = str(attrs.get("_geojson") or attrs.get("_shapefile")
+                     or cfg.get("polygon") or cfg.get("shapefile") or "")
+        _sig += "|pg:%s" % hashlib.md5(_pgsrc.encode("utf-8", "replace")).hexdigest()[:12]
     elif _sp == "cells":
         _sig += "|cells:%s,%s,%s,%s|loc:%s,%s|%s" % (
             cfg.get("lon_min"), cfg.get("lon_max"), cfg.get("lat_min"), cfg.get("lat_max"),
@@ -4327,6 +4351,96 @@ def _grid_raster_result(ds, v, x_dim, var_name, cfg, attrs):
     pal_stops = _palette_hex_list(palette)
     return {"kind": "image", "url": uri, "bounds": bounds, "vmin": vmn, "vmax": vmx,
             "palette": (",".join(pal_stops) if pal_stops else palette), "band": var_name}
+
+
+def _eval_grid_formula(formula, grids):
+    """Evaluate an arithmetic formula (same allow-list as _safe_eval) over numpy GRID
+    arrays element-wise — for a DERIVED raster, e.g. ``sqrt(UWND**2 + VWND**2)``.
+    ``grids`` = {varname: ndarray}. Returns the result array, or None on any error."""
+    import ast
+    import operator as op
+    import numpy as np
+    expr = (formula or "").strip()
+    if not expr:
+        return None
+    bin_ops = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
+               ast.Div: op.truediv, ast.Pow: op.pow, ast.Mod: op.mod,
+               ast.FloorDiv: op.floordiv}
+    un_ops = {ast.UAdd: op.pos, ast.USub: op.neg}
+    funcs = {"sqrt": np.sqrt, "abs": np.abs, "exp": np.exp, "log": np.log,
+             "log10": np.log10, "sin": np.sin, "cos": np.cos, "tan": np.tan,
+             "floor": np.floor, "ceil": np.ceil, "min": np.minimum, "max": np.maximum}
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise ValueError("non-numeric constant")
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in bin_ops:
+            return bin_ops[type(node.op)](ev(node.left), ev(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in un_ops:
+            return un_ops[type(node.op)](ev(node.operand))
+        if isinstance(node, ast.Name):
+            if node.id not in grids:
+                raise ValueError("unknown grid var %s" % node.id)
+            return grids[node.id]
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in funcs and not node.keywords):
+            return funcs[node.func.id](*[ev(a) for a in node.args])
+        raise ValueError("unsupported expression")
+
+    try:
+        return ev(ast.parse(expr, mode="eval"))
+    except Exception:
+        return None
+
+
+def _grid_raster_derived(ds, derived, x_dim, fallback_name, cfg, attrs):
+    """Render a DERIVED column (e.g. WSPD=sqrt(U**2+V**2)) as a raster: pull each
+    component variable's 2-D grid, evaluate the formula element-wise, and color the
+    result — the grid analog of the row-wise derived TABLE column. Image dict; url ''
+    + note on failure."""
+    import re as _re
+    import numpy as np
+    formula = (derived.get("formula") or "").strip()
+    name = (derived.get("name") or fallback_name or "derived").strip()
+    comps = [vn for vn in ds.variables
+             if _re.search(r"(?<![\w])" + _re.escape(vn) + r"(?![\w])", formula)]
+    if not comps:
+        return {"kind": "image", "url": "", "bounds": None,
+                "note": "derived raster: no dataset variables referenced in the formula"}
+    rings = (_shapefile_union_rings(cfg, attrs)
+             if (cfg or {}).get("spatial") in ("shapefile", "polygon", "zones") else None)
+    bbox = None
+    if rings:
+        xs = [p[0] for r in rings for p in r]
+        ys = [p[1] for r in rings for p in r]
+        if xs and ys:
+            bbox = (min(xs), min(ys), max(xs), max(ys))
+    grids, lons, lats = {}, None, None
+    for vn in comps:
+        g, lo, la = _netcdf_grid_2d(ds, ds.variables[vn], x_dim, cfg, bbox)
+        if g is None:
+            return {"kind": "image", "url": "", "bounds": None,
+                    "note": "derived raster: no 2-D grid for component '%s'" % vn}
+        grids[vn] = np.ma.filled(np.ma.asarray(g, dtype="float64"), np.nan)
+        lons, lats = lo, la
+    grid = _eval_grid_formula(formula, grids)
+    if grid is None:
+        return {"kind": "image", "url": "", "bounds": None,
+                "note": "derived raster: could not evaluate '%s'" % formula}
+    vmin = _wms_num((cfg or {}).get("raster_min"))
+    vmax = _wms_num((cfg or {}).get("raster_max"))
+    palette = ((cfg or {}).get("raster_palette") or "viridis").strip()
+    uri, bounds, vmn, vmx = _render_raster_png(grid, lons, lats, vmin, vmax, palette, rings)
+    if uri is None:
+        return {"kind": "image", "url": "", "bounds": None,
+                "note": "derived raster produced no pixels (empty subset?)"}
+    pal = _palette_hex_list(palette)
+    return {"kind": "image", "url": uri, "bounds": bounds, "vmin": vmn, "vmax": vmx,
+            "palette": (",".join(pal) if pal else palette), "band": name}
 
 
 def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
@@ -9640,11 +9754,14 @@ def _api_source_note(result, connector):
     message) so the user always knows when data isn't a live fetch."""
     url = result.get("url") or ""
     note = (result or {}).get("note") or ""
+    # A locally-rendered RASTER carries its PNG as a base64 data-URI (tens of KB) — never
+    # dump that into the footnote; only show a real, reasonably short source URL.
+    show_url = url if (url and not url.startswith("data:") and len(url) <= 300) else ""
     base = format_html(
         "<div class='frappe-help' style='margin-top:3px;'>via connector "
         "<code>{}</code>{}</div>",
         connector.name,
-        format_html(" &middot; <span style='word-break:break-all;'>{}</span>", url) if url else "")
+        format_html(" &middot; <span style='word-break:break-all;'>{}</span>", show_url) if show_url else "")
     if note:
         base = format_html("{}<div class='frappe-help' style='margin-top:2px;color:#b35900;'>"
                            "<i class='bi bi-info-circle'></i> {}</div>", base, note)
