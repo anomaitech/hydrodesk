@@ -902,10 +902,7 @@
   <script>(function(){try{if(localStorage.getItem('hd-theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}})();</script>
   {% block desk_content %}{% endblock %}
 
-  {# Global NAVIGATION LOADER — a thin top bar shown while the next page loads. Live
-     connector/GEE fetches happen server-side, so a record/refresh page can block for
-     several seconds; this tells the user it's working. The app's CSS transform breaks
-     position:fixed, so the bar is appended to <body>. #}
+  {# Global navigation loader — a thin top bar shown while the next (often slow, server-side live-data) page loads. Appended to <body> via JS since the app's CSS transform breaks position:fixed. #}
   <style>
     #hd-nav-loader { position:fixed; top:0; left:0; right:0; height:3px; z-index:2147483647;
       pointer-events:none; opacity:0; transition:opacity .12s ease; overflow:hidden;
