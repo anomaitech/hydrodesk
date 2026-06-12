@@ -1644,8 +1644,19 @@ def _connector_outputs(cfg):
         ]
     if knd == "gee":
         # Earth Engine: sample an Image at the record's point (value), or reduce an
-        # ImageCollection over a date range at the point (series).
+        # ImageCollection over a date range at the point/region (series). With SEVERAL
+        # bands or any DERIVED (computed) column, synthesize a combined TABLE series — one
+        # column per band plus the derived columns — exactly like the NetCDF multi-variable
+        # table (e.g. bands B8,B4 + derived ndvi=(B8-B4)/(B8+B4)).
         unit = (cfg.get("unit") or "").strip()
+        bands = _gee_bands(cfg)
+        derived = _gee_derived(cfg)
+        if len(bands) > 1 or derived:
+            return [
+                {"name": "table", "kind": "series", "type": "series", "primary": True,
+                 "bands": bands, "derived": derived, "unit": unit},
+                {"name": "value", "kind": "value", "type": "number", "unit": unit},
+            ]
         return [
             {"name": "value", "kind": "value", "type": "number", "primary": True,
              "unit": unit},
@@ -3971,6 +3982,45 @@ def _gee_synthetic(cfg, attrs, out_entry):
             "note": _GEE_DEMO_NOTE}
 
 
+def _gee_bands(cfg):
+    """The connector's bands as a list — ``gee_band`` may name SEVERAL (comma/space
+    separated), e.g. 'B8,B4' to then compute NDVI. Empty list = the asset's default band."""
+    return [b for b in re.split(r"[,\s]+", (cfg.get("gee_band") or "").strip()) if b]
+
+
+def _gee_derived(cfg, out_entry=None):
+    """The connector's DERIVED column specs ``[{name, formula}]`` — a row-wise calculation
+    over the bands (e.g. ndvi = (B8 - B4)/(B8 + B4)), exactly like NetCDF derived variables.
+    Taken from the output entry (synthesized table) first, else the connector config."""
+    src = (out_entry or {}).get("derived") if isinstance(out_entry, dict) else None
+    if src is None:
+        src = cfg.get("gee_derived") or []
+    return [d for d in src if isinstance(d, dict)
+            and (d.get("name") or "").strip() and (d.get("formula") or "").strip()]
+
+
+def _gee_derived_columns(band_cols, derived):
+    """Derived columns from per-band columns (each ``{name, values}``): row-wise
+    ``_safe_eval`` of each formula over the band values — the same safe evaluator + shape
+    as ``_netcdf_multivar_columns``. Returns ONLY the new derived columns."""
+    out = []
+    n = min((len(c["values"]) for c in band_cols), default=0)
+    for d in derived:
+        dname, formula = (d.get("name") or "").strip(), (d.get("formula") or "").strip()
+        if not dname or not formula:
+            continue
+        vals = []
+        for i in range(n):
+            rowvars = {}
+            for c in band_cols:
+                v = c["values"][i] if i < len(c["values"]) else None
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    rowvars[c["name"]] = v
+            vals.append(_safe_eval(formula, rowvars))
+        out.append({"name": dname, "values": vals})
+    return out
+
+
 def _gee_geometry(ee, cfg, attrs):
     """An ``ee.Geometry`` for the record: a region (MultiPolygon) when the record has an
     AREA — an uploaded Shapefile field (_shapefile), its own DRAWN polygon geometry
@@ -4030,15 +4080,19 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
 
     ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
     scale = int(cfg.get("gee_scale") or 30)
-    band = (cfg.get("gee_band") or "").strip()
+    bands = _gee_bands(cfg)                       # one or MANY bands (e.g. B8,B4 -> NDVI)
+    derived = _gee_derived(cfg, out_entry)        # [{name, formula}] computed columns
+    band = bands[0] if bands else ""              # the single-band value path / legacy
     # The date window + region are per-record, so key the cache on them.
     _gstart = _resolve_date(cfg.get("time_start"), attrs) or (cfg.get("gee_start") or "").strip()
     _gend = _resolve_date(cfg.get("time_end"), attrs) or (cfg.get("gee_end") or "").strip()
     import hashlib as _hl
     _rgn = _hl.md5(str(attrs.get("_shapefile") or attrs.get("_geojson")
                        or "%s,%s" % (lon, lat)).encode("utf-8", "replace")).hexdigest()[:12]
+    _bsig = ",".join(bands) + "|" + ";".join("%s=%s" % (d.get("name"), d.get("formula"))
+                                             for d in derived)
     cache_key = (connector_name, "gee::%s::%s::%s,%s::%s::%s"
-                 % (asset, _rgn, _gstart, _gend, out_entry.get("name") or "", band))
+                 % (asset, _rgn, _gstart, _gend, out_entry.get("name") or "", _bsig))
     now = time.time()
     hit = _API_CACHE.get(cache_key)
     if hit and (now - hit[0]) < ttl:
@@ -4063,59 +4117,84 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
             return _empty(False)
         start, end = str(_gstart or ""), str(_gend or "")
         if (out_entry.get("kind") or "value").lower() == "series":
+            import datetime as _dt
             col = ee.ImageCollection(asset).filterBounds(geom)
             if start and end:
                 col = col.filterDate(start, end)
-            if band:
-                col = col.select(band)
+            if bands:
+                col = col.select(bands)
+
+            def _iso(t):
+                return (_dt.datetime.utcfromtimestamp(t / 1000.0).isoformat()
+                        if isinstance(t, (int, float)) else str(t))
+
+            def _series_from(xs, band_cols):
+                # time + one column per band + the DERIVED (computed) columns; the chart
+                # line (y) is the first derived (the calculation) when present, else band 1.
+                der = _gee_derived_columns(band_cols, derived)
+                cols = [{"name": "time", "values": xs}] + band_cols + der
+                ys = der[0]["values"] if der else (band_cols[0]["values"] if band_cols else [])
+                return {"kind": "series", "columns": cols, "n": len(xs), "x": xs, "y": ys}
+
             if is_region:
-                # A region series = the per-image MEAN over the polygon.
+                # Per-image reduction over the polygon -> one value per band per timestep.
                 reducer = (cfg.get("gee_reducer") or "mean").strip().lower()
                 red = {"mean": ee.Reducer.mean, "median": ee.Reducer.median,
                        "max": ee.Reducer.max, "min": ee.Reducer.min}.get(reducer, ee.Reducer.mean)()
 
-                def _img_mean(img):
+                def _img_reduce(img):
                     d = img.reduceRegion(red, geom, scale)
-                    return ee.Feature(None, {"time": img.date().millis(),
-                                             "value": d.values().get(0)})
-                feats = (col.map(_img_mean).getInfo() or {}).get("features", [])
-                import datetime as _dt
-                xs, ys = [], []
-                for ft in feats:
-                    pr = (ft or {}).get("properties") or {}
-                    t = pr.get("time")
-                    xs.append(_dt.datetime.utcfromtimestamp(t / 1000.0).isoformat()
-                              if isinstance(t, (int, float)) else str(t))
-                    ys.append(pr.get("value"))
-                extracted = {"kind": "series",
-                             "columns": [{"name": "time", "values": xs},
-                                         {"name": band or "value", "values": ys}],
-                             "n": len(ys), "x": xs, "y": ys}
-                _API_CACHE[cache_key] = (now, extracted)
-                res = dict(extracted); res["cached"] = False
-                return res
-            rows = col.getRegion(geom, scale).getInfo() or []
-            if len(rows) < 2:
-                extracted = {"kind": "series", "columns": [], "n": 0, "x": [], "y": []}
+                    return ee.Feature(None, d.set("time", img.date().millis()))
+                feats = (col.map(_img_reduce).getInfo() or {}).get("features", [])
+                props = [(ft or {}).get("properties") or {} for ft in feats]
+                xs = [_iso(pr.get("time")) for pr in props]
+                names = bands
+                if not names:                       # discover band names from the result
+                    keys = set()
+                    for pr in props:
+                        keys.update(k for k in pr.keys() if k != "time")
+                    names = sorted(keys)
+                band_cols = [{"name": b, "values": [pr.get(b) for pr in props]} for b in names]
+                extracted = _series_from(xs, band_cols)
             else:
-                header = rows[0]
-                ti = header.index("time") if "time" in header else 3
-                vi = (header.index(band) if band in header else len(header) - 1)
-                import datetime as _dt
-                xs, ys = [], []
-                for r in rows[1:]:
-                    t = r[ti]
-                    xs.append(_dt.datetime.utcfromtimestamp(t / 1000.0).isoformat()
-                              if isinstance(t, (int, float)) else str(t))
-                    ys.append(r[vi])
-                extracted = {"kind": "series",
-                             "columns": [{"name": "time", "values": xs},
-                                         {"name": band or "value", "values": ys}],
-                             "n": len(ys), "x": xs, "y": ys}
+                rows = col.getRegion(geom, scale).getInfo() or []
+                if len(rows) < 2:
+                    extracted = {"kind": "series", "columns": [], "n": 0, "x": [], "y": []}
+                else:
+                    header = rows[0]
+                    ti = header.index("time") if "time" in header else 3
+                    names = bands or [h for h in header
+                                      if h not in ("id", "longitude", "latitude", "time")]
+                    idxs = [(b, header.index(b)) for b in names if b in header]
+                    xs = [_iso(r[ti]) for r in rows[1:]]
+                    band_cols = [{"name": b, "values": [r[bi] for r in rows[1:]]}
+                                 for b, bi in idxs]
+                    extracted = _series_from(xs, band_cols)
+            _API_CACHE[cache_key] = (now, extracted)
+            res = dict(extracted); res["cached"] = False
+            return res
         else:
-            img = ee.Image(asset)
-            if band:
-                img = img.select(band)
+            # The asset may be a single Image OR an ImageCollection (e.g. GLDAS, MODIS).
+            # For a collection, reduce it over the date window to ONE Image first (a TEMPORAL
+            # reducer, gee_temporal, default mean), then reduce in space below.
+            try:
+                asset_type = (ee.data.getAsset(asset) or {}).get("type", "")
+            except Exception:
+                asset_type = ""
+            if "COLLECTION" in (asset_type or "").upper():
+                ic = ee.ImageCollection(asset).filterBounds(geom)
+                if start and end:
+                    ic = ic.filterDate(start, end)
+                if bands:
+                    ic = ic.select(bands)
+                temporal = (cfg.get("gee_temporal") or "mean").strip().lower()
+                img = {"mean": ic.mean, "median": ic.median, "max": ic.max, "min": ic.min,
+                       "first": ic.first, "sum": ic.sum, "mosaic": ic.mosaic}.get(
+                           temporal, ic.mean)()
+            else:
+                img = ee.Image(asset)
+                if bands:
+                    img = img.select(bands)
             # Over a polygon the default is a MEAN; a point keeps 'first' (the pixel).
             reducer = (cfg.get("gee_reducer") or ("mean" if is_region else "first")).strip().lower()
             red = {"mean": ee.Reducer.mean, "median": ee.Reducer.median,
