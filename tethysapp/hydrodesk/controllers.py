@@ -1127,7 +1127,8 @@ def ai_build_connector(request):
             # an asset-id-looking token in the description.
             asset = url or (spec.get("asset") or "").strip()
             if not asset:
-                mo = re.search(r"\b([A-Z][A-Za-z0-9]+(?:/[A-Za-z0-9_]+){1,4})\b", description)
+                # EE asset ids can be deep (e.g. NASA/GLDAS/V022/CLSM/G025/DA1D = 6 parts).
+                mo = re.search(r"\b([A-Z][A-Za-z0-9]+(?:/[A-Za-z0-9_]+){1,8})\b", description)
                 asset = mo.group(1) if mo else ""
             if not asset:
                 return JsonResponse(
@@ -6872,9 +6873,66 @@ def _connector_input_problem(prop, attrs):
     return None
 
 
-def _compute_scripts(field_schema, attrs, session=None):
+def _geom_attrs_from_geojson(s):
+    """Reserved connector-geometry keys from a GeoJSON geometry/Feature string: ``_geojson``
+    (the full shape, for region reduction) + ``_lon``/``_lat`` (a representative point). {}
+    when ``s`` isn't usable GeoJSON. Lets a record's DRAWN geometry drive a connector in a
+    SCRIPT/MODEL the same way it does on the detail view."""
+    s = (s or "").strip()
+    if not s.startswith("{"):
+        return {}
+    try:
+        g = json.loads(s)
+    except (ValueError, TypeError):
+        return {}
+    geom = g.get("geometry") if g.get("type") == "Feature" else g
+    xs, ys = [], []
+
+    def _walk(c):
+        if isinstance(c, (list, tuple)):
+            if len(c) >= 2 and isinstance(c[0], (int, float)) and isinstance(c[1], (int, float)):
+                xs.append(c[0]); ys.append(c[1])
+            else:
+                for e in c:
+                    _walk(e)
+    _walk((geom or {}).get("coordinates"))
+    out = {"_geojson": s}
+    if xs and ys:
+        out["_lon"] = (min(xs) + max(xs)) / 2.0
+        out["_lat"] = (min(ys) + max(ys)) / 2.0
+    return out
+
+
+def _geom_attrs_from_db(session, record_id):
+    """Reserved connector-geometry keys for a SAVED record, straight from PostGIS — _geojson
+    (full shape) + _lon/_lat (a point ON the geometry, valid for any geom type). {} when the
+    record has no geometry."""
+    import uuid as _uuid
+    try:
+        rid = record_id if isinstance(record_id, _uuid.UUID) else _uuid.UUID(str(record_id))
+    except (ValueError, TypeError):
+        return {}
+    row = session.execute(
+        select(func.ST_X(func.ST_PointOnSurface(m.HydroRecord.geom)),
+               func.ST_Y(func.ST_PointOnSurface(m.HydroRecord.geom)),
+               func.ST_AsGeoJSON(m.HydroRecord.geom))
+        .where(m.HydroRecord.id == rid)).first()
+    if not row or row[2] is None:
+        return {}
+    out = {"_geojson": row[2]}
+    if row[0] is not None and row[1] is not None:
+        out["_lon"], out["_lat"] = row[0], row[1]
+    return out
+
+
+def _compute_scripts(field_schema, attrs, session=None, record_id=None, geom_geojson=None):
     """Run every Python-script field (x-field == 'script') and store its declared outputs
     in ``attrs``. Runs after _compute_formulas.
+
+    The record's own GEOMETRY is exposed to connector inputs (so a script can reduce a
+    GLDAS/NDVI ImageCollection over the record's DRAWN basin): pass ``geom_geojson`` (the
+    form's drawn shape, pre-save) or ``record_id`` (+ session, post-save) and _geojson/
+    _lon/_lat are injected before the connector fetch.
 
     Inputs bind by NAME from the record's other fields. A free var that names a LIVE
     connector-output field (x-api-connector) is MATERIALIZED via the connector layer (the
@@ -6891,6 +6949,11 @@ def _compute_scripts(field_schema, attrs, session=None):
                if (p or {}).get("x-field") == "script"]
     if not scripts:
         return attrs
+    if "_geojson" not in attrs:                       # make the record's geometry available
+        ginj = _geom_attrs_from_geojson(geom_geojson) if geom_geojson else (
+            _geom_attrs_from_db(session, record_id) if (session is not None and record_id) else {})
+        for k, v in ginj.items():
+            attrs.setdefault(k, v)
     conn_fields = _connector_output_fields(field_schema) if session is not None else {}
     conn_cache = {}
     for key, prop in scripts:
@@ -7200,6 +7263,10 @@ def _materialize_model_inputs(slug, record_id, attrs, field_schema):
     try:
         socket.setdefaulttimeout(45)
         with Session(App.get_persistent_store_database("hydro_db")) as session:
+            # Expose the record's GEOMETRY to the connectors (so a model can reduce a
+            # GLDAS/NDVI ImageCollection over the record's drawn basin), like the detail view.
+            for gk, gv in _geom_attrs_from_db(session, record_id).items():
+                out.setdefault(gk, gv)
             for k, p in conn_fields:
                 try:
                     live = _materialize_connector_for_script(session, p, out, cache)
@@ -7808,7 +7875,8 @@ def hydrotype_new(request, slug="monitoring_station"):
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
-            _compute_scripts(field_schema, attributes, session)  # sandboxed scripts (+ live connector inputs)
+            _compute_scripts(field_schema, attributes, session,
+                             geom_geojson=post.get("_geom_geojson"))  # scripts (+ live connector inputs over the drawn geom)
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
@@ -8195,7 +8263,8 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
-            _compute_scripts(field_schema, attributes, session)  # sandboxed scripts (+ live connector inputs)
+            _compute_scripts(field_schema, attributes, session,
+                             geom_geojson=post.get("_geom_geojson"))  # scripts (+ live connector inputs over the drawn geom)
             validated, vmsg = _validate_attributes(field_schema, attributes)
             if vmsg:
                 errors.append(vmsg)
@@ -12811,7 +12880,7 @@ def _run_schedule(session, sched):
         attrs = dict(rec.attributes or {})
         if sched.refresh:
             _compute_formulas(field_schema, attrs)
-            _compute_scripts(field_schema, attrs, session)   # re-materializes connectors
+            _compute_scripts(field_schema, attrs, session, record_id=rec.id)   # re-materializes connectors (over the record's geom)
             rec.attributes = attrs
             n_refreshed += 1
         for b in _evaluate_alerts(rules, attrs):
