@@ -6846,9 +6846,39 @@ def _write_model_outputs(slug, record_id, updates):
         session.commit()
 
 
-def _run_model_async(job_id, model_config, attrs, slug, record_id):
-    """Worker thread: pre -> command -> post -> write outputs -> job status. Never raises
-    out — records ERR on the job and a status_message."""
+def _materialize_model_inputs(slug, record_id, attrs, field_schema):
+    """Fetch each x-api-connector field for THIS record and merge the live value into a copy
+    of ``attrs``, so a model's ``{field}`` command tokens and ``record[field]`` in pre/post
+    see LIVE connector data of ANY of the 7 kinds (REST/CSV/NetCDF/THREDDS/WMS/WCS/GEE), not
+    only what an explicit data.series() call fetches. One bad/slow connector can't block the
+    run — each fetch is guarded. Returns (attrs, warnings)."""
+    props = (field_schema or {}).get("properties") or {}
+    conn_fields = [(k, p) for k, p in props.items()
+                   if isinstance(p, dict) and p.get("x-api-connector")]
+    if not conn_fields:
+        return attrs, []
+    out, warnings, cache = dict(attrs), [], {}
+    try:
+        with Session(App.get_persistent_store_database("hydro_db")) as session:
+            for k, p in conn_fields:
+                try:
+                    live = _materialize_connector_for_script(session, p, out, cache)
+                except Exception as exc:
+                    warnings.append("input '%s': %s" % (k, type(exc).__name__))
+                    continue
+                if live is not None:
+                    out[k] = live
+                else:
+                    warnings.append("input '%s' returned no data" % k)
+    except Exception as exc:
+        warnings.append("connector inputs unavailable: %s" % type(exc).__name__)
+    return out, warnings
+
+
+def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=None):
+    """Worker thread: materialize live connector inputs -> pre -> command -> post -> write
+    outputs -> job status. Never raises out — records ERR on the job and a status_message.
+    Outputs already computed are preserved even if the post-script later fails."""
     import subprocess, tempfile, shutil
     from django.utils import timezone
     from django.db import connections as _dj_conns
@@ -6862,6 +6892,8 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id):
     job.start_time = timezone.now()
     job.save()
     try:
+        # 0) make LIVE connector data available as record fields (all 7 kinds)
+        attrs, conn_warn = _materialize_model_inputs(slug, record_id, attrs, field_schema)
         pre = (model_config.get("pre_script") or "").strip()
         if pre:                                  # 1) stage inputs
             exec(compile(pre, "<hydrodesk-model-pre>", "exec"),
@@ -6877,28 +6909,59 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id):
                         "stderr": (proc.stderr if proc else ""),
                         "returncode": (proc.returncode if proc else None)})
         post = (model_config.get("post_script") or "").strip()
+        post_error = None
         if post:
-            exec(compile(post, "<hydrodesk-model-post>", "exec"), post_ns)
-        updates = {}
+            try:
+                exec(compile(post, "<hydrodesk-model-post>", "exec"), post_ns)
+            except Exception as pexc:
+                logger.exception("HydroDesk model post-script failed (job %s)", job_id)
+                post_error = "%s: %s" % (type(pexc).__name__, str(pexc)[:300])
+        # Extract declared outputs. A bad coercion keeps the raw value instead of dropping
+        # the whole run; a declared output the post-script never assigned is reported.
+        updates, unassigned = {}, []
         for o in (model_config.get("outputs") or []):
             if not isinstance(o, dict):
                 continue
             name = (o.get("name") or "").strip()
-            if name and name in post_ns:
-                updates[name] = _coerce_script_output(post_ns[name], o.get("field_type"))
-        if proc is not None and proc.returncode != 0 and not updates:
-            raise RuntimeError("command exited %d: %s"
-                               % (proc.returncode, (proc.stderr or "")[:300]))
-        _write_model_outputs(slug, record_id, updates)
-        job._status = "COM"
-        job.completion_time = timezone.now()
+            if not name:
+                continue
+            if name in post_ns:
+                try:
+                    updates[name] = _coerce_script_output(post_ns[name], o.get("field_type"))
+                except Exception:
+                    updates[name] = _script_jsonify(post_ns[name])
+            else:
+                unassigned.append(name)
+        _write_model_outputs(slug, record_id, updates)   # persist whatever we computed
+        # Hard failure only when nothing usable came out of a failed command / post-script.
+        cmd_failed = proc is not None and proc.returncode != 0
+        if not updates and (cmd_failed or post_error):
+            raise RuntimeError(post_error or ("command exited %d: %s"
+                               % (proc.returncode, (proc.stderr or "")[:300])))
         rc = proc.returncode if proc else "n/a"
-        job.status_message = ("exit %s; %d output(s) written" % (rc, len(updates)))[:2000]
+        bits = ["exit %s" % rc, "%d output(s) written" % len(updates)]
+        if unassigned:
+            bits.append("not assigned: " + ", ".join(unassigned))
+        if conn_warn:
+            bits.append("live inputs: " + "; ".join(conn_warn[:3]))
+        if post_error:
+            bits.append("post-script error (kept %d output(s)): %s" % (len(updates), post_error))
+        job._status = "ERR" if post_error else "COM"
+        job.completion_time = timezone.now()
+        job.status_message = ("; ".join(bits))[:2000]
         job.save()
     except Exception as exc:
+        logger.exception("HydroDesk model run failed (job %s)", job_id)
         job._status = "ERR"
         job.completion_time = timezone.now()
-        job.status_message = ("%s: %s" % (type(exc).__name__, exc))[:2000]
+        if isinstance(exc, ImportError):
+            msg = ("missing Python module '%s' — install it in the tethys env"
+                   % (getattr(exc, "name", "") or str(exc)))
+        elif isinstance(exc, subprocess.TimeoutExpired):
+            msg = "the model command timed out"
+        else:
+            msg = "%s: %s" % (type(exc).__name__, exc)
+        job.status_message = msg[:2000]
         job.save()
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -6908,7 +6971,7 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id):
             pass
 
 
-def _start_model_run(slug, record_id, model_name, model_config, attrs, user):
+def _start_model_run(slug, record_id, model_name, model_config, attrs, user, field_schema=None):
     """Create a Tethys BasicJob + spawn the run worker thread; return the saved job."""
     import threading
     from tethys_compute.models import BasicJob
@@ -6922,7 +6985,7 @@ def _start_model_run(slug, record_id, model_name, model_config, attrs, user):
     job.save()
     threading.Thread(target=_run_model_async,
                      args=(job.id, dict(model_config or {}), dict(attrs or {}),
-                           slug, str(record_id)),
+                           slug, str(record_id), dict(field_schema or {})),
                      daemon=True).start()
     return job
 
@@ -6958,7 +7021,8 @@ def run_model(request, slug=None, record_id=None):
             return JsonResponse({"ok": False, "error": "record not found"}, status=404)
         attrs = dict(rec.attributes or {})
         model_config = dict(model.config or {})
-    job = _start_model_run(slug, record_id, model_name, model_config, attrs, request.user)
+    job = _start_model_run(slug, record_id, model_name, model_config, attrs,
+                           request.user, field_schema)
     return JsonResponse({"ok": True, "job_id": job.id, "status": job.status})
 
 
