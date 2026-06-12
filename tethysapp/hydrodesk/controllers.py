@@ -3972,10 +3972,14 @@ def _gee_synthetic(cfg, attrs, out_entry):
 
 
 def _gee_geometry(ee, cfg, attrs):
-    """An ``ee.Geometry`` for the record: its mapped SHAPEFILE as a MultiPolygon when
-    one is present (region reduction), otherwise its point. Returns (geom, is_region);
+    """An ``ee.Geometry`` for the record: a region (MultiPolygon) when the record has an
+    AREA — an uploaded Shapefile field (_shapefile), its own DRAWN polygon geometry
+    (_geojson), or a pasted polygon/zones — else its point. Returns (geom, is_region);
     (None, False) when neither resolves."""
-    if (cfg.get("spatial") or "").lower() == "shapefile" or (attrs or {}).get("_shapefile"):
+    attrs = attrs or {}
+    spatial = (cfg.get("spatial") or "").lower()
+    if (spatial in ("shapefile", "polygon", "zones")
+            or attrs.get("_shapefile") or attrs.get("_geojson")):
         zones = _shapefile_zones(cfg, attrs)
         if zones:
             mp = [[[[float(p[0]), float(p[1])] for p in ring] for ring in zrings]
@@ -4019,7 +4023,8 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
     lon, lat = _wms_point(cfg, attrs)
     asset = (cfg.get("gee_asset") or "").strip()
     # A per-record shapefile gives a REGION even when there's no point.
-    _have_region = ((cfg.get("spatial") or "").lower() == "shapefile" or attrs.get("_shapefile"))
+    _have_region = ((cfg.get("spatial") or "").lower() in ("shapefile", "polygon", "zones")
+                    or attrs.get("_shapefile") or attrs.get("_geojson"))
     if missing_required or out_entry is None or not asset or (lon is None and not _have_region):
         return _empty(False)
 
@@ -4030,7 +4035,8 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
     _gstart = _resolve_date(cfg.get("time_start"), attrs) or (cfg.get("gee_start") or "").strip()
     _gend = _resolve_date(cfg.get("time_end"), attrs) or (cfg.get("gee_end") or "").strip()
     import hashlib as _hl
-    _rgn = _hl.md5(str(attrs.get("_shapefile") or "%s,%s" % (lon, lat)).encode("utf-8", "replace")).hexdigest()[:12]
+    _rgn = _hl.md5(str(attrs.get("_shapefile") or attrs.get("_geojson")
+                       or "%s,%s" % (lon, lat)).encode("utf-8", "replace")).hexdigest()[:12]
     cache_key = (connector_name, "gee::%s::%s::%s,%s::%s::%s"
                  % (asset, _rgn, _gstart, _gend, out_entry.get("name") or "", band))
     now = time.time()
