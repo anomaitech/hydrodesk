@@ -3007,12 +3007,17 @@ def _netcdf_describe(cfg, attrs):
         socket.setdefaulttimeout(old_to)
 
 
-def _netcdf_soft_empty(out_kind, url, cached):
-    """A no-data result of the requested kind (no dataset access needed)."""
+def _netcdf_soft_empty(out_kind, url, cached, note=None):
+    """A no-data result of the requested kind (no dataset access needed). ``note`` carries
+    a graceful-degradation reason (missing dep/input, fetch error) for the UI/test panel."""
     if (out_kind or "value") == "series":
-        return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+        base = {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
                 "url": url, "cached": cached}
-    return {"kind": "value", "value": None, "url": url, "cached": cached}
+    else:
+        base = {"kind": "value", "value": None, "url": url, "cached": cached}
+    if note:
+        base["note"] = note
+    return base
 
 
 def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
@@ -3039,14 +3044,24 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
     out_kind = (out_entry.get("kind") if out_entry else "value")
 
     if missing_required:
-        return _netcdf_soft_empty(out_kind, "", False)
+        return _netcdf_soft_empty(out_kind, "", False,
+                                  note="missing required input(s): " + ", ".join(missing_required))
 
     if kind == "thredds":
-        url = _resolve_thredds_url(cfg, attrs)
+        try:
+            url = _resolve_thredds_url(cfg, attrs)
+        except Exception as exc:
+            return _netcdf_soft_empty(out_kind, "", False,
+                                      note="THREDDS catalog error: %s: %s"
+                                      % (type(exc).__name__, str(exc)[:160]))
     else:
         url = _render_template(cfg.get("dataset_url") or "", attrs)
-    if not url or out_entry is None:
-        return _netcdf_soft_empty(out_kind, url, False)
+    if not url:
+        return _netcdf_soft_empty(out_kind, url, False,
+                                  note=("no dataset URL resolved (check the %s and its {field} tokens)"
+                                        % ("THREDDS catalog" if kind == "thredds" else "dataset_url")))
+    if out_entry is None:
+        return _netcdf_soft_empty(out_kind, url, False, note="no output is defined on this connector")
 
     ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
     timeout = int(cfg.get("timeout") or 30)
@@ -3108,7 +3123,12 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
         res = dict(hit[1]); res["url"] = url; res["cached"] = True
         return res
 
-    import netCDF4
+    try:
+        import netCDF4
+    except Exception:
+        return _netcdf_soft_empty(out_kind, url, False,
+                                  note="netCDF4 is not installed; run "
+                                       "`conda install -c conda-forge netCDF4` to read NetCDF/OPeNDAP.")
     old_to = socket.getdefaulttimeout()
     try:
         socket.setdefaulttimeout(timeout)
@@ -3118,13 +3138,17 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
             extracted = _apply_time_range(extracted, cfg, attrs)   # per-record date window
         finally:
             ds.close()
-    except Exception:
-        return _netcdf_soft_empty(out_kind, url, False)
+    except Exception as exc:
+        return _netcdf_soft_empty(out_kind, url, False,
+                                  note="NetCDF open/read failed: %s: %s"
+                                  % (type(exc).__name__, str(exc)[:160]))
     finally:
         socket.setdefaulttimeout(old_to)
 
     if extracted is None:
-        return _netcdf_soft_empty(out_kind, url, False)
+        return _netcdf_soft_empty(out_kind, url, False,
+                                  note="variable not found or no data for this record "
+                                       "(check the Variable name and the spatial/time selection)")
     _API_CACHE[cache_key] = (now, extracted)
     res = dict(extracted); res["url"] = url; res["cached"] = False
     return res
@@ -3207,17 +3231,23 @@ def _fetch_csv(cfg, record_attrs, output=None, field_map=None,
                        else _primary_output(catalog)))
     out_kind = (out_entry.get("kind") if out_entry else "series")
 
-    def _empty(url, cached):
-        if out_kind == "value":
-            return {"kind": "value", "value": None, "url": url, "cached": cached}
-        return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
-                "url": url, "cached": cached}
+    def _empty(url, cached, note=None):
+        base = ({"kind": "value", "value": None, "url": url, "cached": cached}
+                if out_kind == "value"
+                else {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+                      "url": url, "cached": cached})
+        if note:
+            base["note"] = note
+        return base
 
     if missing_required:
-        return _empty("", False)
+        return _empty("", False, note="missing required input(s): " + ", ".join(missing_required))
     url = _render_template(cfg.get("csv_url") or "", attrs)
-    if not url or out_entry is None:
-        return _empty(url, False)
+    if not url:
+        return _empty(url, False, note="no CSV URL resolved (check the csv_url template "
+                      "and that its {field} tokens are filled)")
+    if out_entry is None:
+        return _empty(url, False, note="no output is defined on this connector")
 
     ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
     timeout = int(cfg.get("timeout") or 15)
@@ -3231,8 +3261,9 @@ def _fetch_csv(cfg, record_attrs, output=None, field_map=None,
             cols, _n, truncated = _read_csv_columns(
                 url, delimiter=cfg.get("delimiter") or ",",
                 has_header=cfg.get("has_header", True), timeout=timeout)
-        except Exception:
-            return _empty(url, False)
+        except Exception as exc:
+            return _empty(url, False, note="CSV fetch/parse failed: %s: %s"
+                          % (type(exc).__name__, str(exc)[:160]))
         _API_CACHE[cache_key] = (now, (cols, truncated))
         cached = False
 
@@ -3556,15 +3587,21 @@ def _fetch_wcs(cfg, record_attrs, output=None, field_map=None,
                        else _primary_output(catalog)))
     out_kind = (out_entry.get("kind") if out_entry else "value")
 
-    def _empty(url, cached):
-        if out_kind == "series":
-            return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
-                    "url": url, "cached": cached}
-        return {"kind": "value", "value": None, "url": url, "cached": cached}
+    def _empty(url, cached, note=None):
+        base = ({"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+                 "url": url, "cached": cached} if out_kind == "series"
+                else {"kind": "value", "value": None, "url": url, "cached": cached})
+        if note:
+            base["note"] = note
+        return base
 
     url, _pt = _wcs_getcoverage_url(cfg, attrs)
-    if missing_required or not url or out_entry is None:
-        return _empty(url, False)
+    if missing_required:
+        return _empty(url, False, note="missing required input(s): " + ", ".join(missing_required))
+    if not url:
+        return _empty(url, False, note="no WCS URL resolved (check the wcs_url and coverage settings)")
+    if out_entry is None:
+        return _empty(url, False, note="no output is defined on this connector")
 
     ttl = int(cfg.get("ttl_seconds") or _API_DEFAULT_TTL)
     timeout = int(cfg.get("timeout") or 30)
@@ -3578,19 +3615,26 @@ def _fetch_wcs(cfg, record_attrs, output=None, field_map=None,
         req = urllib.request.Request(url, headers={"User-Agent": "HydroDesk/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
-    except Exception:
-        return _empty(url, False)
+    except Exception as exc:
+        return _empty(url, False, note="WCS GetCoverage request failed: %s: %s"
+                      % (type(exc).__name__, str(exc)[:160]))
     try:
         import netCDF4
+    except Exception:
+        return _empty(url, False, note="netCDF4 is not installed; run "
+                      "`conda install -c conda-forge netCDF4` to read WCS coverages.")
+    try:
         ds = netCDF4.Dataset("inmem.nc", mode="r", memory=data)
         try:
             extracted = _wcs_extract(ds, out_entry)
         finally:
             ds.close()
-    except Exception:
-        return _empty(url, False)
+    except Exception as exc:
+        return _empty(url, False, note="WCS coverage read failed: %s: %s"
+                      % (type(exc).__name__, str(exc)[:160]))
     if extracted is None:
-        return _empty(url, False)
+        return _empty(url, False, note="coverage returned no usable data "
+                      "(check the Coverage ID and the point/bbox selection)")
     _API_CACHE[cache_key] = (now, extracted)
     res = dict(extracted); res["url"] = url; res["cached"] = False
     return res
@@ -13293,6 +13337,9 @@ def connector_test(request):
         "value": result.get("value") if result.get("kind") == "value" else None,
         "x": result.get("x") if result.get("kind") == "series" else None,
         "y": result.get("y") if result.get("kind") == "series" else None,
+        # A graceful-degradation message (missing dep/credential/input, fetch error, etc.)
+        # so the Test panel explains an empty result instead of showing a blank graph.
+        "note": result.get("note") or "",
         "raw": raw,                         # full JSON for the clickable tree
     })
 

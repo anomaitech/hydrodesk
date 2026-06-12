@@ -1709,7 +1709,16 @@
         var prev = '';
         if (d.kind === 'value') prev = 'Value: ' + escapeHtml(JSON.stringify(d.value));
         else if (d.kind === 'series') prev = 'Series: ' + ((d.x || []).length) + ' points';
-        resultBox.innerHTML = prev ? '<span class="indicator-pill blue">' + prev + '</span>' : '';
+        var html = prev ? '<span class="indicator-pill blue">' + prev + '</span>' : '';
+        // A graceful-degradation note (missing dependency/credential/input, fetch error)
+        // explains an empty/blank result instead of leaving the user guessing.
+        if (d.note) {
+          html += '<div style="margin-top:8px;padding:8px 11px;border-radius:8px;'
+            + 'background:#fef7e0;border:1px solid #f6cf65;color:#7a5b00;font-size:12.5px;'
+            + 'display:flex;gap:7px;align-items:flex-start;"><span>&#9888;</span><span>'
+            + escapeHtml(d.note) + '</span></div>';
+        }
+        resultBox.innerHTML = html;
         // Clickable tree of the raw JSON. A fresh fetch clears any stale banner.
         setBanner('');
         tree.innerHTML = '';
