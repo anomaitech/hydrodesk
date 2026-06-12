@@ -10517,8 +10517,7 @@ def _builder_context(form_errors, type_name, geometry, rows, row_count,
                 * max(0, row_count - len(rows)),
         # The mapping endpoint base for the per-row x-api-map JS (a placeholder
         # connector name the JS swaps with the typed name).
-        "connector_inputs_url": reverse(
-            "hydrodesk:connector_inputs", kwargs={"conn_name": "__NAME__"}),
+        "connector_inputs_url": reverse("hydrodesk:connector_inputs") + "?name=__NAME__",
         # JSON list endpoints powering the Configure modal's Link/API pickers.
         "types_json_url": reverse("hydrodesk:types_json"),
         "connectors_json_url": reverse("hydrodesk:connectors_json"),
@@ -13750,11 +13749,12 @@ def connector_test(request):
     })
 
 
-@controller(name="connector_inputs", url="connectors/{conn_name}/inputs",
-            title="Connector Inputs")
+@controller(name="connector_inputs", url="connector-inputs", title="Connector Inputs")
 def connector_inputs(request, conn_name=None):
     """Lightweight JSON: a connector's source=='field' inputs, for the DocType
-    builder's per-doctype mapping UI (x-api-map).
+    builder's per-doctype mapping UI (x-api-map). The connector name comes via the
+    ``?name=`` query parameter so names with spaces/dots (e.g. an AI-built 'GLDAS 2.2
+    GWS' or 'GeoServer WMS') work — a URL path segment's converter rejects those.
 
     Returns ``{ok, name, inputs:[{name,label,source,field,required,type}]}`` where
     ``inputs`` is the subset of the connector's declared inputs[] whose source is
@@ -13763,7 +13763,7 @@ def connector_inputs(request, conn_name=None):
     are surfaced as synthetic field inputs so the mapping UI still works. NEVER
     echoes any secret (only input metadata). Degrades to ok:False/empty on a
     missing connector — the new_hydrotype server guard is authoritative."""
-    name = (conn_name or "").strip()
+    name = (request.GET.get("name") or conn_name or "").strip()
     if not name:
         return JsonResponse({"ok": False, "name": "", "inputs": []})
     engine = App.get_persistent_store_database("hydro_db")
@@ -13818,7 +13818,10 @@ def connector_inputs(request, conn_name=None):
     # renders the OUTPUT CHECKLIST from this same fetch — one checkbox per output
     # (a series output is ONE checkbox). The modal already calls this endpoint on
     # connector-select, so no second round-trip is needed.
-    outputs = _outputs_for_checklist(_connector_outputs(cfg))
+    try:
+        outputs = _outputs_for_checklist(_connector_outputs(cfg))
+    except Exception:
+        outputs = []          # never 500 the builder over an output-synthesis hiccup
     return JsonResponse({"ok": True, "name": name, "inputs": field_inputs,
                          "outputs": outputs})
 
