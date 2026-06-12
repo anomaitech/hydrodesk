@@ -6305,9 +6305,13 @@ def _build_script_globals():
 
 
 def _run_python_script(src, inputs=None, timeout=5):
-    """Compile + run ``src`` in the sandbox with ``inputs`` bound, returning the dict
-    of script-assigned variables. Raises on a blocked op / syntax / runtime error /
-    timeout. Best-effort CPU timeout via SIGALRM (main thread only)."""
+    """Compile + run ``src`` in the sandbox with ``inputs`` bound, returning the dict of
+    script-assigned variables. Raises on a blocked op / syntax / runtime error / timeout.
+
+    Timeout works EVERYWHERE: SIGALRM on the Unix main thread, else a watchdog daemon
+    thread so a runaway script in a worker thread (a scheduled refresh, the model worker)
+    can't hang the caller. (Off the main thread Python can't force-kill the runner, so the
+    runaway thread leaks until it finishes — but control returns to the caller on time.)"""
     import threading, signal
     from RestrictedPython import compile_restricted
     code = compile_restricted(src, "<hydrodesk-script>", "exec")
@@ -6315,20 +6319,38 @@ def _run_python_script(src, inputs=None, timeout=5):
     injected = set(g.keys())
     g.update(inputs or {})
     injected |= set((inputs or {}).keys())
-    use_alarm = (hasattr(signal, "SIGALRM")
-                 and threading.current_thread() is threading.main_thread())
-    if use_alarm:
+
+    def _collect():
+        return {k: v for k, v in g.items() if k not in injected and not k.startswith("_")}
+
+    if hasattr(signal, "SIGALRM") and threading.current_thread() is threading.main_thread():
         def _on_timeout(signum, frame):
             raise TimeoutError("script exceeded %ss" % timeout)
         old = signal.signal(signal.SIGALRM, _on_timeout)
         signal.setitimer(signal.ITIMER_REAL, timeout)
-    try:
-        exec(code, g)
-    finally:
-        if use_alarm:
+        try:
+            exec(code, g)
+        finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, old)
-    return {k: v for k, v in g.items() if k not in injected and not k.startswith("_")}
+        return _collect()
+
+    # Off the main thread: run in a watched daemon thread with a join timeout.
+    box = {}
+
+    def _runner():
+        try:
+            exec(code, g)
+        except BaseException as exc:        # propagate the real error to the caller
+            box["error"] = exc
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError("script exceeded %ss" % timeout)
+    if "error" in box:
+        raise box["error"]
+    return _collect()
 
 
 def _script_free_vars(src):
@@ -6505,8 +6527,11 @@ def _materialize_connector_for_script(session, prop, attrs, cache):
                                field_map=prop.get("x-api-map"), output=oname)
         except Exception:
             continue
-        if (result or {}).get("kind") == "value":
+        rk = (result or {}).get("kind")
+        if rk == "value":
             return _script_jsonify(result.get("value"))
+        if rk == "image":      # WMS/WCS/REST image output -> the script gets the URL
+            return result.get("url") or result.get("value")
     return None
 
 
