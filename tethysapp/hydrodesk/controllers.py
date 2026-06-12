@@ -909,7 +909,9 @@ def _freeform_connector_config(kind, url, spec):
     if kind == "gee":
         return dict(base, kind="gee", gee_asset=url,
                     gee_band=(spec.get("band") or "").strip(),
-                    gee_scale=30, timeout=60)
+                    gee_scale=30, timeout=60,
+                    # bake in the install default project so the connector is self-contained
+                    gee_project=(os.environ.get("HYDRODESK_GEE_PROJECT") or "").strip())
     if kind == "csv":
         return dict(base, kind="csv", csv_url=url, has_header=True, timeout=15)
     # rest (default)
@@ -3875,34 +3877,52 @@ def _wcs_describe(cfg, attrs):
 
 # --- Google Earth Engine connector (sample an asset at the record's point) ---
 def _gee_init(cfg):
-    """Initialise Earth Engine from the connector's service-account credential
-    (stored in the secure HydroCredential store as the key JSON). Returns the ``ee``
-    module on success, or (None, reason) — NEVER raises. The 'ee' package and a
-    credential must both be present; otherwise the connector degrades to no-data."""
+    """Initialise Earth Engine and return the ``ee`` module, or (None, reason) — NEVER
+    raises. Two auth paths:
+      (A) SERVICE ACCOUNT (headless/production) — a ``gee_credential`` names the secure
+          service-account key JSON in the HydroCredential store.
+      (B) USER ACCOUNT — no credential set: use the machine's persisted
+          ``earthengine authenticate`` credentials (~/.config/earthengine/credentials).
+          Earth Engine requires a Cloud project either way, so ``gee_project`` must be set."""
     try:
         import ee
     except Exception:
-        return None, "the earthengine-api package is not installed"
+        return None, "the earthengine-api package is not installed (pip install earthengine-api)"
+    # The connector's own project wins; else an install-wide default (HYDRODESK_GEE_PROJECT)
+    # so every GEE connector — including AI-built ones — works without per-connector config.
+    project = (cfg.get("gee_project") or os.environ.get("HYDRODESK_GEE_PROJECT") or "").strip()
     cred_name = (cfg.get("gee_credential") or "").strip()
-    if not cred_name:
-        return None, "no service-account credential is set"
-    key = None
-    try:
-        with Session(App.get_persistent_store_database("hydro_db")) as session:
-            key = _resolve_secret(session, cred_name)
-    except Exception:
+
+    # (A) Service-account path.
+    if cred_name:
         key = None
-    if not key:
-        return None, "the service-account credential could not be resolved"
+        try:
+            with Session(App.get_persistent_store_database("hydro_db")) as session:
+                key = _resolve_secret(session, cred_name)
+        except Exception:
+            key = None
+        if not key:
+            return None, "the service-account credential could not be resolved"
+        try:
+            info = json.loads(key)
+            email = info.get("client_email") or (cfg.get("gee_service_account") or "")
+            proj = project or info.get("project_id") or ""
+            creds = ee.ServiceAccountCredentials(email, key_data=key)
+            ee.Initialize(creds, project=proj or None)
+            return ee, ""
+        except Exception as exc:
+            return None, "Earth Engine init failed: %s" % (str(exc)[:140])
+
+    # (B) User-account path — persisted `earthengine authenticate` credentials + a project.
+    if not project:
+        return None, ("set a Google Cloud project (gee_project) — Earth Engine requires one. "
+                      "Run `earthengine authenticate` once, then put your EE project id here.")
     try:
-        info = json.loads(key)
-        email = info.get("client_email") or (cfg.get("gee_service_account") or "")
-        project = (cfg.get("gee_project") or info.get("project_id") or "").strip()
-        creds = ee.ServiceAccountCredentials(email, key_data=key)
-        ee.Initialize(creds, project=project or None)
+        ee.Initialize(project=project)
         return ee, ""
     except Exception as exc:
-        return None, "Earth Engine init failed: %s" % (str(exc)[:140])
+        return None, ("Earth Engine init failed (%s). Run `earthengine authenticate` and check "
+                      "the project id (http://goo.gle/ee-auth)." % str(exc)[:120])
 
 
 _GEE_DEMO_NOTE = ("synthetic preview — Earth Engine isn't configured; install "
