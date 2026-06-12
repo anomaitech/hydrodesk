@@ -505,7 +505,15 @@
     .hd-series-table tbody td:first-child { color:var(--fr-text-muted); }
     .hd-series-table tbody tr:last-child td { border-bottom:0; }
     .hd-series-table tbody tr:hover td { background:var(--fr-bg-color); }
-    .hd-api-field .hd-series-spark { margin:2px 0 0 2px; }
+    .hd-api-field .hd-series-spark { margin:2px 0 6px 0; }
+    .hd-api-field .hd-series-scroll { max-height:420px; }
+    /* Multi-column chart legend (server multiline + click readout). */
+    .hd-chart-legend {
+      display:flex; flex-wrap:wrap; gap:4px 14px; margin:4px 0 2px 2px;
+      font-size:var(--fr-text-xs,11px); color:var(--fr-text-muted,#6b7785);
+    }
+    .hd-chart-legend .hd-leg-item { display:inline-flex; align-items:center; gap:5px; }
+    .hd-chart-legend .hd-leg-item i { width:11px; height:3px; border-radius:2px; display:inline-block; }
     .hd-api-field .hd-series-foot {
       font-size:var(--fr-text-xs);
       color:var(--fr-text-muted);
@@ -513,6 +521,32 @@
       border-top:1px solid var(--fr-border-color);
       background:var(--fr-bg-color);
     }
+
+    /* =====================================================================
+       RASTER MAP — detail-page raster overlay, controls, click readout
+       ===================================================================== */
+    /* The .hd-series-* table styling is scoped under .hd-api-field; the click
+       readout lives OUTSIDE it, so re-apply the scrollable sticky-header box here. */
+    #hd-raster-readout .hd-series-wrap {
+      border:1px solid var(--fr-border-color); border-radius:var(--fr-radius);
+      overflow:hidden; background:var(--fr-fg-color); margin-top:8px; max-width:520px;
+    }
+    #hd-raster-readout .hd-series-scroll { overflow:auto; max-height:240px; }
+    #hd-raster-readout .hd-series-foot {
+      font-size:var(--fr-text-xs); color:var(--fr-text-muted);
+      padding:6px 12px; border-top:1px solid var(--fr-border-color); background:var(--fr-bg-color);
+    }
+    #hd-raster-readout .hd-series-table thead th { position:sticky; top:0; z-index:1; background:var(--fr-bg-color); }
+    /* Shared floating map control card (opacity + legend). */
+    .hd-map-card {
+      background:#fff; border:1px solid var(--fr-border-color,#e2e6ea); border-radius:8px;
+      box-shadow:0 1px 3px rgba(15,23,42,.10); padding:8px 10px; font-size:11px; color:#3a4654;
+    }
+    .hd-sample-dot { filter:drop-shadow(0 0 3px rgba(36,144,239,.55)); }
+    /* Honest per-pixel values: don't smooth the sampled raster. */
+    .hd-raster-img { image-rendering:pixelated; image-rendering:crisp-edges; }
+    #hd-geom-map.leaflet-container, .leaflet-container { font:12px/1.4 var(--fr-font,system-ui); background:#fbfcfd; }
+    #hd-geom-map { box-shadow:0 1px 3px rgba(15,23,42,.06); }
 
     /* Editable child-grid (Table field on the record form) */
     .hd-tablefield { max-width:680px; }

@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid as uuidlib
+import math
 
 from sqlalchemy import select, func, delete, cast, Float, Text, or_, text
 from sqlalchemy.orm import Session
@@ -21,7 +22,7 @@ from django.http import JsonResponse
 from django.shortcuts import render, redirect
 from django.urls import reverse
 from django.utils.text import slugify
-from django.utils.html import format_html
+from django.utils.html import format_html, escape
 from django.utils.safestring import mark_safe
 
 from tethys_sdk.routing import controller
@@ -9196,15 +9197,15 @@ def _render_series_block(xs, ys):
     return spark + "<div>" + str(table) + "</div>"
 
 
-def _render_columns_table(result, cap=12):
+def _render_columns_table(result, cap=None):
     """Render a multi-variable series as ONE table whose column headers ARE the
     variable names (the user's "click a node -> all its variables as columns").
 
     ``result`` is a series result from _extract_output: ``columns:[{name, values}]``
-    aligned by row index. Shows the latest ``cap`` rows (newest last) with a muted
-    "showing latest N of M" note when truncated; USGS no-data sentinels render as an
-    em dash. A leading sparkline of the 'value'-ish column gives an at-a-glance
-    shape. Every header and cell is escaped (untrusted external content)."""
+    aligned by row index. Shows ALL rows (oldest -> newest) in a scrollable,
+    sticky-header table under a polished line chart of the 'value'-ish column; USGS
+    no-data sentinels render as an em dash. ``cap`` (default None = all) keeps only the
+    latest N rows when set. Every header and cell is escaped (untrusted external content)."""
     columns = (result or {}).get("columns") or []
     # Legacy fallback: a result with only x/y -> synthesize two columns.
     if not columns and (result or {}).get("x") is not None:
@@ -9214,32 +9215,43 @@ def _render_columns_table(result, cap=12):
     if not columns or n == 0:
         return mark_safe("<span class='frappe-muted frappe-text-sm'>no series data</span>")
 
-    # Sparkline over the 'value'-named column (or the 2nd, or the 1st numeric).
-    spark_idx = next((i for i, c in enumerate(columns)
-                      if (c.get("name") or "").lower() == "value"),
-                     1 if len(columns) > 1 else 0)
-    spark = ("<div class='hd-series-spark'>"
-             + _sparkline_svg(columns[spark_idx].get("values") or []) + "</div>")
+    # X-labels = the time/date/step column; chart every OTHER numeric column. One numeric
+    # column -> the single-line area chart; several -> a multi-line chart + legend (each
+    # column its own color, shared y-axis). Non-numeric columns stay in the table only.
+    lab_idx = next((i for i, c in enumerate(columns)
+                    if any(k in (c.get("name") or "").lower()
+                           for k in ("time", "date", "step", "x"))), None)
+    labels = columns[lab_idx].get("values") if lab_idx is not None else None
+    data_cols = [(c.get("name") or "", c.get("values") or [])
+                 for i, c in enumerate(columns) if i != lab_idx]
+    numeric_cols = [(nm, vals) for nm, vals in data_cols
+                    if any(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           for v in vals)]
+    if len(numeric_cols) > 1:
+        chart_inner = _multiline_chart_svg(numeric_cols, labels=labels)
+    else:
+        one = numeric_cols[0] if numeric_cols else (data_cols[0] if data_cols else ("", []))
+        chart_inner = _line_chart_svg(one[1], labels=labels,
+                                      unit=(result or {}).get("unit") or "")
+    chart = "<div class='hd-series-spark'>" + chart_inner + "</div>"
 
     th = "".join(str(format_html("<th>{}</th>", c.get("name") or ""))
                  for c in columns)
-    start = max(0, n - cap)
+    start = 0 if cap is None else max(0, n - cap)
     body = ""
     for i in range(start, n):
         cells = ""
         for c in columns:
             vals = c.get("values") or []
             v = vals[i] if i < len(vals) else None
-            disp = "—" if (v in _NO_DATA or v == -999999) else v
+            disp = "—" if (v in _NO_DATA or v == -999999) else _fmt_cell(v)
             cells += str(format_html("<td>{}</td>", str(disp)))
         body += "<tr>" + cells + "</tr>"
-    foot = ""
-    if start > 0:
-        foot = str(format_html(
-            "<div class='hd-series-foot'>showing latest {} of {} rows</div>",
-            n - start, n))
-    # The source was capped on read (e.g. a CSV past max_rows): say so explicitly so
-    # the "of N" count is never mistaken for the whole file.
+    shown = n - start
+    foot = str(format_html(
+        "<div class='hd-series-foot'>{}</div>",
+        ("latest %d of %d rows" % (shown, n)) if start > 0 else ("%d rows" % n)))
+    # The source was capped on read (e.g. a CSV past max_rows): say so explicitly.
     if (result or {}).get("truncated"):
         foot += str(format_html(
             "<div class='hd-series-foot'>source truncated to the first {} rows</div>",
@@ -9247,7 +9259,7 @@ def _render_columns_table(result, cap=12):
     table = ("<table class='hd-series-table'><thead><tr>" + th
              + "</tr></thead><tbody>" + body + "</tbody></table>")
     return mark_safe(
-        spark + "<div class='hd-series-wrap'><div class='hd-series-scroll'>"
+        chart + "<div class='hd-series-wrap'><div class='hd-series-scroll'>"
         + table + "</div>" + foot + "</div>")
 
 
@@ -9668,6 +9680,275 @@ def _sparkline_svg(values):
         "<polyline fill='none' stroke='#2490ef' stroke-width='1.5' points='%s'/>"
         "</svg>" % (w, h, w, h, " ".join(pts))
     )
+
+
+def _short_label(v):
+    """A compact axis label: ISO datetimes -> their date part, else the first 12 chars."""
+    s = str(v)
+    if "T" in s:
+        s = s.split("T", 1)[0]
+    return s[:12]
+
+
+def _nice_step(span, target_ticks=4):
+    """A 'nice' axis step (1/2/2.5/5 x 10^k) so ~target_ticks gridlines span the range."""
+    if span <= 0:
+        return 1.0
+    raw = span / float(max(1, target_ticks))
+    try:
+        mag = 10.0 ** math.floor(math.log10(raw))
+    except (ValueError, OverflowError):
+        return 1.0
+    for mult in (1.0, 2.0, 2.5, 5.0, 10.0):
+        if raw <= mult * mag:
+            return mult * mag
+    return 10.0 * mag
+
+
+def _fmt_tick(v):
+    """Compact numeric label: integers plain; else 2-3 decimals, trailing zeros trimmed."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if f == int(f) and abs(f) < 1e7:
+        return "%d" % int(f)
+    a = abs(f)
+    s = ("%.0f" % f) if a >= 1000 else (("%.2f" % f) if a >= 1 else ("%.3f" % f))
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def _fmt_cell(v):
+    """Clean a series-table cell: trim float repr-noise (464.65672322331684 -> 464.657)
+    to 6 significant figures while leaving ints, strings, and None untouched."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, float):
+        if v != v:                       # NaN
+            return "—"
+        if v == int(v) and abs(v) < 1e15:
+            return int(v)
+        return "%.6g" % v
+    return v
+
+
+def _line_chart_svg(values, labels=None, width=520, height=180, unit=""):
+    """A clean Frappe-style inline-SVG line+area chart from a numeric series.
+
+    Gap-aware (USGS -999999 / non-finite values BREAK the line instead of spiking),
+    nice 1/2/5x10^k y-gridlines, a few x labels, restrained min/max rings, and a
+    last-value chip. Every coordinate is %-formatted; every label/unit char passes
+    through escape() -> XSS-safe by construction. <2 finite points -> a muted dash."""
+    raw = list(values or [])
+    pts = []                                  # floats, with None for gaps
+    for v in raw:
+        ok = not (v in _NO_DATA or v == -999999)
+        f = None
+        if ok:
+            try:
+                f = float(v)
+                if f != f or f in (float("inf"), float("-inf")):
+                    f = None
+            except (TypeError, ValueError):
+                f = None
+        pts.append(f)
+    finite = [p for p in pts if p is not None]
+    if len(finite) < 2:
+        return "<span class='frappe-muted frappe-text-sm'>&mdash;</span>"
+    lo, hi = min(finite), max(finite)
+    if hi == lo:
+        lo -= 0.5
+        hi += 0.5
+    n = len(pts)
+    padL, padR, padT, padB = 46, 14, 10, 22
+    plotW = float(width - padL - padR)
+    plotH = float(height - padT - padB)
+    base_y = padT + plotH
+    gid = len(finite) % 997
+
+    def X(i):
+        return padL + (plotW * (i / (n - 1.0)) if n > 1 else plotW / 2.0)
+
+    def Y(val):
+        return padT + plotH * (1.0 - (val - lo) / (hi - lo))
+
+    # Horizontal gridlines + right-aligned y labels at nice steps.
+    step = _nice_step(hi - lo, 4)
+    grid, ylabels = [], []
+    t = math.floor(lo / step) * step
+    guard = 0
+    while t <= hi + 1e-9 and guard < 64:
+        if t >= lo - 1e-9:
+            gy = Y(t)
+            grid.append("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='#edf0f3' stroke-width='1'/>"
+                        % (padL, gy, width - padR, gy))
+            ylabels.append("<text x='%.1f' y='%.1f' text-anchor='end' dominant-baseline='middle' "
+                           "font-size='10' fill='#8d99a6'>%s</text>" % (padL - 6, gy, escape(_fmt_tick(t))))
+        t += step
+        guard += 1
+    baseline = ("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='#dfe3e8' stroke-width='1'/>"
+                % (padL, base_y, width - padR, base_y))
+
+    # A few x labels (first / mid / last).
+    xlabels = []
+    if labels:
+        for i in sorted(set([0, n // 2, n - 1])):
+            if 0 <= i < len(labels):
+                anchor = "start" if i == 0 else ("end" if i == n - 1 else "middle")
+                xlabels.append("<text x='%.1f' y='%.1f' text-anchor='%s' font-size='10' fill='#8d99a6'>%s</text>"
+                               % (X(i), height - 6, anchor, escape(_short_label(labels[i]))))
+
+    # Polyline + area as sub-paths that BREAK at gaps.
+    runs, cur = [], []
+    for i, p in enumerate(pts):
+        if p is None:
+            if cur:
+                runs.append(cur)
+                cur = []
+        else:
+            cur.append((i, p))
+    if cur:
+        runs.append(cur)
+    polys, areas = [], []
+    for run in runs:
+        if len(run) >= 2:
+            lp = " ".join("%.1f,%.1f" % (X(i), Y(v)) for i, v in run)
+            polys.append("<polyline fill='none' stroke='#2490ef' stroke-width='1.6' "
+                         "stroke-linejoin='round' stroke-linecap='round' points='%s'/>" % lp)
+            ap = ("M%.1f,%.1f " % (X(run[0][0]), base_y)
+                  + " ".join("L%.1f,%.1f" % (X(i), Y(v)) for i, v in run)
+                  + " L%.1f,%.1f Z" % (X(run[-1][0]), base_y))
+            areas.append("<path d='%s' fill='url(#hd-area-%d)'/>" % (ap, gid))
+
+    # Restrained min/max rings (no text — would crowd a long series).
+    fin_idx = [i for i, p in enumerate(pts) if p is not None]
+    imax = max(fin_idx, key=lambda i: pts[i])
+    imin = min(fin_idx, key=lambda i: pts[i])
+    rings = "".join(
+        "<circle cx='%.1f' cy='%.1f' r='3' fill='#fff' stroke='#2490ef' stroke-width='1.4'/>"
+        % (X(i), Y(pts[i])) for i in (imax, imin))
+
+    # Last-value chip, clamped to the right edge.
+    last_i = fin_idx[-1]
+    lx, ly = X(last_i), Y(pts[last_i])
+    chip_txt = _fmt_tick(pts[last_i]) + ((" " + unit) if unit else "")
+    chip_w = 9.0 + 6.2 * len(chip_txt)
+    chip_x = min(lx + 8, width - padR - chip_w)
+    chip = ("<circle cx='%.1f' cy='%.1f' r='3' fill='#2490ef'/>"
+            "<rect x='%.1f' y='%.1f' rx='3' ry='3' width='%.1f' height='16' fill='#2490ef'/>"
+            "<text x='%.1f' y='%.1f' font-size='10' font-weight='600' fill='#fff' "
+            "dominant-baseline='middle'>%s</text>"
+            % (lx, ly, chip_x, ly - 8, chip_w, chip_x + 5, ly, escape(chip_txt)))
+
+    defs = ("<defs><linearGradient id='hd-area-%d' x1='0' y1='0' x2='0' y2='1'>"
+            "<stop offset='0' stop-color='#2490ef' stop-opacity='0.18'/>"
+            "<stop offset='1' stop-color='#2490ef' stop-opacity='0'/></linearGradient></defs>" % gid)
+    svg_open = ("<svg width='100%' height='" + str(height) + "' viewBox='0 0 " + str(width)
+                + " " + str(height) + "' preserveAspectRatio='xMidYMid meet' "
+                "xmlns='http://www.w3.org/2000/svg' style='display:block;max-width:"
+                + str(width) + "px;'>")
+    return (svg_open + defs + "".join(grid) + baseline + "".join(areas) + "".join(polys)
+            + rings + chip + "".join(ylabels) + "".join(xlabels) + "</svg>")
+
+
+# Distinct line colors for a multi-column chart (matches the zone-polygon palette).
+_CHART_COLORS = ["#2490ef", "#28a745", "#e8590c", "#9c36b5",
+                 "#1098ad", "#f08c00", "#e03131", "#37b24d"]
+
+
+def _multiline_chart_svg(series, labels=None, width=520, height=190):
+    """A multi-line chart (one colored line per numeric column) on a SHARED y-axis, with
+    an HTML legend. ``series`` = [(name, values), ...]. Gap-aware, nice y-ticks, a few x
+    labels; no area fill (clarity over decoration with many lines). Numbers are
+    %-formatted; every name/label is escape()d -> XSS-safe. <2 finite points -> a dash."""
+    cols, allf = [], []
+    for sname, vals in series:
+        pts = []
+        for v in (vals or []):
+            ok = not (v in _NO_DATA or v == -999999)
+            f = None
+            if ok:
+                try:
+                    f = float(v)
+                    if f != f or f in (float("inf"), float("-inf")):
+                        f = None
+                except (TypeError, ValueError):
+                    f = None
+            pts.append(f)
+        fin = [p for p in pts if p is not None]
+        if fin:
+            cols.append((sname, pts))
+            allf.extend(fin)
+    drawable = [c for c in cols if sum(1 for p in c[1] if p is not None) >= 2]
+    if not allf or not drawable:
+        return "<span class='frappe-muted frappe-text-sm'>&mdash;</span>"
+    lo, hi = min(allf), max(allf)
+    if hi == lo:
+        lo -= 0.5
+        hi += 0.5
+    n = max(len(pts) for _, pts in cols)
+    padL, padR, padT, padB = 46, 14, 10, 22
+    plotW = float(width - padL - padR)
+    plotH = float(height - padT - padB)
+    base_y = padT + plotH
+
+    def X(i):
+        return padL + (plotW * (i / (n - 1.0)) if n > 1 else plotW / 2.0)
+
+    def Y(val):
+        return padT + plotH * (1.0 - (val - lo) / (hi - lo))
+
+    step = _nice_step(hi - lo, 4)
+    grid, ylabels = [], []
+    t = math.floor(lo / step) * step
+    guard = 0
+    while t <= hi + 1e-9 and guard < 64:
+        if t >= lo - 1e-9:
+            gy = Y(t)
+            grid.append("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='#edf0f3' stroke-width='1'/>"
+                        % (padL, gy, width - padR, gy))
+            ylabels.append("<text x='%.1f' y='%.1f' text-anchor='end' dominant-baseline='middle' "
+                           "font-size='10' fill='#8d99a6'>%s</text>" % (padL - 6, gy, escape(_fmt_tick(t))))
+        t += step
+        guard += 1
+    baseline = ("<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='#dfe3e8' stroke-width='1'/>"
+                % (padL, base_y, width - padR, base_y))
+    xlabels = []
+    if labels:
+        for i in sorted(set([0, n // 2, n - 1])):
+            if 0 <= i < len(labels):
+                anc = "start" if i == 0 else ("end" if i == n - 1 else "middle")
+                xlabels.append("<text x='%.1f' y='%.1f' text-anchor='%s' font-size='10' fill='#8d99a6'>%s</text>"
+                               % (X(i), height - 6, anc, escape(_short_label(labels[i]))))
+    lines, legend = [], []
+    for ci, (sname, pts) in enumerate(cols):
+        color = _CHART_COLORS[ci % len(_CHART_COLORS)]
+        runs, cur = [], []
+        for i, p in enumerate(pts):
+            if p is None:
+                if cur:
+                    runs.append(cur)
+                    cur = []
+            else:
+                cur.append((i, p))
+        if cur:
+            runs.append(cur)
+        for run in runs:
+            if len(run) >= 2:
+                lp = " ".join("%.1f,%.1f" % (X(i), Y(v)) for i, v in run)
+                lines.append("<polyline fill='none' stroke='%s' stroke-width='1.6' "
+                             "stroke-linejoin='round' stroke-linecap='round' points='%s'/>" % (color, lp))
+        legend.append("<span class='hd-leg-item'><i style='background:%s'></i>%s</span>"
+                      % (color, escape(sname)))
+    svg_open = ("<svg width='100%' height='" + str(height) + "' viewBox='0 0 " + str(width)
+                + " " + str(height) + "' preserveAspectRatio='xMidYMid meet' "
+                "xmlns='http://www.w3.org/2000/svg' style='display:block;max-width:"
+                + str(width) + "px;'>")
+    svg = (svg_open + "".join(grid) + baseline + "".join(lines)
+           + "".join(ylabels) + "".join(xlabels) + "</svg>")
+    return svg + "<div class='hd-chart-legend'>" + "".join(legend) + "</div>"
 
 
 def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,

@@ -366,14 +366,14 @@
   }
   function addOpacity(map, overlays) {
     var Ctl = L.Control.extend({ options: { position: 'topright' }, onAdd: function () {
-      var d = L.DomUtil.create('div', '');
-      d.style.cssText = 'background:#fff;padding:4px 7px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3);font-size:11px;color:#333;';
-      d.innerHTML = 'Raster <input type="range" min="0" max="1" step="0.05" value="0.85" ' +
-        'style="width:84px;vertical-align:middle;">';
-      var inp = d.querySelector('input');
+      var d = L.DomUtil.create('div', 'hd-map-card');
+      d.innerHTML = 'Raster <input type="range" min="0" max="1" step="0.05" value="0.8" ' +
+        'style="width:80px;vertical-align:middle;accent-color:#2490ef;"> <span class="hd-op-val">80%</span>';
+      var inp = d.querySelector('input'), lab = d.querySelector('.hd-op-val');
       L.DomEvent.disableClickPropagation(d);
       inp.addEventListener('input', function () {
         var v = parseFloat(inp.value); overlays.forEach(function (o) { o.setOpacity(v); });
+        lab.textContent = Math.round(v * 100) + '%';
       });
       return d;
     } });
@@ -382,43 +382,172 @@
   function addLegend(map, r) {
     if (!r) return;
     var grad = 'linear-gradient(to right,' + paletteStops(r.palette).join(',') + ')';
+    var mid = (Number(r.vmin) + Number(r.vmax)) / 2;
+    var title = esc(r.label || 'value') + (r.unit ? ' <span style="color:#8d99a6;">(' + esc(r.unit) + ')</span>' : '');
     var Ctl = L.Control.extend({ options: { position: 'bottomright' }, onAdd: function () {
-      var d = L.DomUtil.create('div', '');
-      d.style.cssText = 'background:#fff;padding:4px 7px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3);font-size:10px;color:#333;';
-      d.innerHTML = '<div style="margin-bottom:2px;">' + esc(r.label || 'value') + '</div>' +
-        '<div style="height:8px;width:120px;background:' + grad + ';border:1px solid #ccc;border-radius:2px;"></div>' +
-        '<div style="display:flex;justify-content:space-between;"><span>' + esc(fmt(r.vmin)) +
-        '</span><span>' + esc(fmt(r.vmax)) + '</span></div>';
+      var d = L.DomUtil.create('div', 'hd-map-card');
+      d.innerHTML = '<div style="margin-bottom:3px;font-weight:600;">' + title + '</div>' +
+        '<div style="height:9px;width:132px;background:' + grad + ';border:1px solid #d6dbe1;border-radius:2px;"></div>' +
+        '<div style="display:flex;justify-content:space-between;margin-top:1px;color:#8d99a6;font-variant-numeric:tabular-nums;"><span>' +
+        esc(fmt(r.vmin)) + '</span><span>' + esc(fmt(mid)) + '</span><span>' + esc(fmt(r.vmax)) + '</span></div>';
       return d;
     } });
     map.addControl(new Ctl());
   }
+  function shortLabel(v) {
+    var s = String(v == null ? '' : v); if (s.indexOf('T') >= 0) s = s.split('T')[0]; return s.slice(0, 12);
+  }
+  function niceStep(span) {
+    if (span <= 0) return 1;
+    var raw = span / 4, mag = Math.pow(10, Math.floor(Math.log10(raw))), mults = [1, 2, 2.5, 5, 10];
+    for (var i = 0; i < mults.length; i++) if (raw <= mults[i] * mag) return mults[i] * mag;
+    return 10 * mag;
+  }
+  var HD_CHART_COLORS = ['#2490ef', '#28a745', '#e8590c', '#9c36b5', '#1098ad', '#f08c00', '#e03131', '#37b24d'];
+  // Inline-SVG chart of the sampled series — SAME visual language as the server chart.
+  // ONE numeric column -> a single accent line + area gradient + last dot; SEVERAL ->
+  // one colored line per column on a shared axis + a legend. Gap-aware, hover crosshair.
+  // All SVG attrs are DOUBLE-quoted (esc() does not escape single quotes).
+  var readoutState = null;
+  function readoutChart(cols) {
+    var li = -1, i;
+    for (i = 0; i < cols.length; i++) if (li < 0 && /time|date|step|^x$/.test((cols[i].name || '').toLowerCase())) li = i;
+    var dataCols = [];
+    for (i = 0; i < cols.length; i++) {
+      if (i === li) continue;
+      if ((cols[i].values || []).some(function (v) { return typeof v === 'number' && isFinite(v); })) dataCols.push(cols[i]);
+    }
+    if (!dataCols.length) return '';
+    var labs = li >= 0 ? ((cols[li] || {}).values || []) : null;
+    var series = dataCols.map(function (c, k) {
+      return {
+        name: c.name || ('series ' + (k + 1)), color: HD_CHART_COLORS[k % HD_CHART_COLORS.length],
+        pts: (c.values || []).map(function (v) {
+          if (v === null || v === undefined || v === '' || v === -999999 || v === '-999999') return null;
+          var f = Number(v); return isFinite(f) ? f : null;
+        })
+      };
+    });
+    var allf = [];
+    series.forEach(function (s) { s.pts.forEach(function (p) { if (p !== null) allf.push(p); }); });
+    if (allf.length < 2) return '';
+    var multi = series.length > 1;
+    var lo = Math.min.apply(null, allf), hi = Math.max.apply(null, allf);
+    if (hi === lo) { lo -= 0.5; hi += 0.5; }
+    var W = 360, H = 150, padL = 44, padR = 12, padT = 10, padB = 20;
+    var n = 0; series.forEach(function (s) { n = Math.max(n, s.pts.length); });
+    var plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;
+    function X(i) { return padL + (n > 1 ? plotW * i / (n - 1) : plotW / 2); }
+    function Y(v) { return padT + plotH * (1 - (v - lo) / (hi - lo)); }
+    var grid = '', step = niceStep(hi - lo), t = Math.floor(lo / step) * step, g = 0;
+    while (t <= hi + 1e-9 && g < 64) {
+      if (t >= lo - 1e-9) {
+        var gy = Y(t).toFixed(1);
+        grid += '<line x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '" stroke="#edf0f3" stroke-width="1"/>';
+        grid += '<text x="' + (padL - 5) + '" y="' + gy + '" text-anchor="end" dominant-baseline="middle" font-size="9" fill="#8d99a6">' + esc(fmt(t)) + '</text>';
+      }
+      t += step; g++;
+    }
+    grid += '<line x1="' + padL + '" y1="' + baseY + '" x2="' + (W - padR) + '" y2="' + baseY + '" stroke="#dfe3e8" stroke-width="1"/>';
+    var xl = '';
+    if (labs) {
+      [0, n >> 1, n - 1].filter(function (v, i, a) { return a.indexOf(v) === i; }).forEach(function (i) {
+        if (i < 0 || i >= labs.length) return;
+        var anc = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle');
+        xl += '<text x="' + X(i).toFixed(1) + '" y="' + (H - 5) + '" text-anchor="' + anc + '" font-size="9" fill="#8d99a6">' + esc(shortLabel(labs[i])) + '</text>';
+      });
+    }
+    var body = '', legend = '', dot = '';
+    series.forEach(function (s) {
+      var runs = [], cur = [];
+      s.pts.forEach(function (p, i) { if (p === null) { if (cur.length) { runs.push(cur); cur = []; } } else cur.push([i, p]); });
+      if (cur.length) runs.push(cur);
+      runs.forEach(function (run) {
+        if (run.length < 2) return;
+        if (!multi) {
+          body += '<path d="M' + X(run[0][0]).toFixed(1) + ',' + baseY + ' ' +
+            run.map(function (q) { return 'L' + X(q[0]).toFixed(1) + ',' + Y(q[1]).toFixed(1); }).join(' ') +
+            ' L' + X(run[run.length - 1][0]).toFixed(1) + ',' + baseY + ' Z" fill="url(#hd-rd-area)"/>';
+        }
+        body += '<polyline fill="none" stroke="' + s.color + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" points="' +
+          run.map(function (q) { return X(q[0]).toFixed(1) + ',' + Y(q[1]).toFixed(1); }).join(' ') + '"/>';
+      });
+      if (multi) legend += '<span class="hd-leg-item"><i style="background:' + s.color + '"></i>' + esc(s.name) + '</span>';
+    });
+    if (!multi) {
+      var p0 = series[0].pts, k2 = -1; for (var k = n - 1; k >= 0; k--) if (p0[k] !== null) { k2 = k; break; }
+      if (k2 >= 0) dot = '<circle cx="' + X(k2).toFixed(1) + '" cy="' + Y(p0[k2]).toFixed(1) + '" r="3" fill="#2490ef"/>';
+    }
+    var defs = '<defs><linearGradient id="hd-rd-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2490ef" stop-opacity="0.18"/><stop offset="1" stop-color="#2490ef" stop-opacity="0"/></linearGradient></defs>';
+    var hover = '<g class="hd-rd-hover" style="display:none"><line class="hd-rd-vline" y1="' + padT + '" y2="' + baseY + '" stroke="#8d99a6" stroke-width="1" stroke-dasharray="3 3"/></g>';
+    var rect = '<rect class="hd-rd-capture" x="' + padL + '" y="' + padT + '" width="' + plotW + '" height="' + plotH + '" fill="transparent" style="cursor:crosshair"/>';
+    readoutState = { series: series, labs: labs, X: X, Y: Y, W: W, H: H, padL: padL, plotW: plotW, n: n, multi: multi };
+    return '<div class="hd-rd-chartwrap" style="position:relative;margin-top:6px;">' +
+      '<svg class="hd-rd-svg" width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="display:block;max-width:' + W + 'px;">' +
+      defs + grid + body + xl + dot + hover + rect + '</svg>' +
+      (multi ? '<div class="hd-chart-legend">' + legend + '</div>' : '') +
+      '<div class="hd-rd-tip" style="position:absolute;display:none;pointer-events:none;background:#1f2a37;color:#fff;font-size:10px;line-height:1.4;padding:3px 7px;border-radius:4px;white-space:nowrap;transform:translate(-50%,-130%);"></div>' +
+      '</div>';
+  }
+  function wireReadoutHover(container) {
+    var wrap = container.querySelector('.hd-rd-chartwrap'); if (!wrap || !readoutState) return;
+    var svg = wrap.querySelector('.hd-rd-svg'), cap = wrap.querySelector('.hd-rd-capture');
+    var hg = wrap.querySelector('.hd-rd-hover'), vline = wrap.querySelector('.hd-rd-vline');
+    var tip = wrap.querySelector('.hd-rd-tip'), st = readoutState;
+    if (!cap) return;
+    var dots = st.series.map(function (s) {
+      var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('r', '3.2'); c.setAttribute('fill', '#fff'); c.setAttribute('stroke', s.color); c.setAttribute('stroke-width', '1.6');
+      c.style.display = 'none'; hg.appendChild(c); return c;
+    });
+    cap.addEventListener('mousemove', function (ev) {
+      var rect = svg.getBoundingClientRect();
+      var i = Math.round(((ev.clientX - rect.left) / rect.width * st.W - st.padL) / st.plotW * (st.n - 1));
+      i = Math.max(0, Math.min(st.n - 1, i));
+      var px = st.X(i), rows = [], topY = st.H;
+      st.series.forEach(function (s, k) {
+        var v = s.pts[i];
+        if (v === null || v === undefined) { dots[k].style.display = 'none'; return; }
+        var py = st.Y(v); topY = Math.min(topY, py);
+        dots[k].style.display = ''; dots[k].setAttribute('cx', px); dots[k].setAttribute('cy', py);
+        rows.push((st.multi ? '<span style="color:' + s.color + '">●</span> ' + esc(s.name) + ': ' : '') + esc(fmt(v)));
+      });
+      if (!rows.length) { hg.style.display = 'none'; tip.style.display = 'none'; return; }
+      hg.style.display = ''; vline.setAttribute('x1', px); vline.setAttribute('x2', px);
+      var lab = (st.labs && st.labs[i] != null) ? esc(shortLabel(st.labs[i])) : '';
+      tip.style.display = ''; tip.style.left = (rect.width * px / st.W) + 'px'; tip.style.top = (rect.height * topY / st.H) + 'px';
+      tip.innerHTML = (lab ? lab + '<br>' : '') + rows.join(st.multi ? '<br>' : ' · ');
+    });
+    cap.addEventListener('mouseleave', function () { hg.style.display = 'none'; tip.style.display = 'none'; });
+  }
   function seriesTable(cols) {
     var n = 0; cols.forEach(function (c) { n = Math.max(n, (c.values || []).length); });
-    var start = Math.max(0, n - 6);
-    var h = '<table style="border-collapse:collapse;margin-top:6px;font-size:11px;"><tr>';
-    h += cols.map(function (c) {
-      return '<th style="text-align:left;padding:1px 10px 1px 0;color:#777;">' + esc(c.name) + '</th>';
-    }).join('') + '</tr>';
-    for (var i = start; i < n; i++) {
-      h += '<tr>' + cols.map(function (c) {
+    var th = cols.map(function (c) { return '<th>' + esc(c.name) + '</th>'; }).join('');
+    var rows = '';
+    for (var i = 0; i < n; i++) {
+      rows += '<tr>' + cols.map(function (c) {
         var v = (c.values || [])[i];
-        return '<td style="padding:1px 10px 1px 0;">' +
-          esc(typeof v === 'number' ? fmt(v) : (v == null ? '' : v)) + '</td>';
+        var disp = (v === null || v === undefined || v === '' || v === -999999 || v === '-999999') ? '—' : (typeof v === 'number' ? fmt(v) : v);
+        return '<td>' + esc(disp) + '</td>';
       }).join('') + '</tr>';
     }
-    return h + '</table>';
+    return '<div class="hd-series-wrap"><div class="hd-series-scroll">' +
+      '<table class="hd-series-table"><thead><tr>' + th + '</tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div><div class="hd-series-foot">' + n + ' rows</div></div>';
   }
   function renderReadout(d) {
-    var h = '<div style="font-weight:600;color:var(--fr-text,#333);">Sampled pixel ' +
+    var h = '<div style="font-size:11px;color:var(--fr-text-muted,#8d99a6);letter-spacing:.02em;">Sampled pixel ' +
       d.lat.toFixed(4) + ', ' + d.lon.toFixed(4) + '</div>';
     if (d.value !== undefined && d.value !== null && d.value !== '') {
-      h += '<div style="font-size:18px;margin:2px 0;">' + esc(fmt(d.value)) +
-        (d.unit ? ' <span style="font-size:12px;color:#777;">' + esc(d.unit) + '</span>' : '') + '</div>';
+      h += '<div style="font-size:22px;font-weight:600;color:#2490ef;line-height:1.2;margin:1px 0 3px;">' + esc(fmt(d.value)) +
+        (d.unit ? ' <span style="font-size:12px;font-weight:500;color:var(--fr-text-muted,#8d99a6);">' + esc(d.unit) + '</span>' : '') + '</div>';
     } else {
-      h += '<div style="color:#999;">no value at this pixel' + (d.note ? (' — ' + esc(d.note)) : '') + '</div>';
+      h += '<div style="color:#999;margin:2px 0;">no value at this pixel' + (d.note ? (' — ' + esc(d.note)) : '') + '</div>';
     }
-    if (d.series && d.series.columns && d.series.columns.length) h += seriesTable(d.series.columns);
+    if (d.series && d.series.columns && d.series.columns.length) {
+      h += readoutChart(d.series.columns);
+      h += seriesTable(d.series.columns);
+    }
     return h;
   }
   function wireSample(map, rs, overlays) {
@@ -429,7 +558,7 @@
       out = document.createElement('div');
       out.id = 'hd-raster-readout';
       out.className = 'frappe-help';
-      out.style.cssText = 'margin:8px 0 0;padding:8px 10px;border:1px solid var(--fr-border,#e2e6ea);border-radius:6px;background:var(--fr-bg-subtle,#f8f9fa);';
+      out.style.cssText = 'margin:10px 0 0;padding:12px 14px;border:1px solid var(--fr-border-color,#e2e6ea);border-radius:8px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.05);';
       out.innerHTML = '<span class="frappe-muted">Click the raster to sample that pixel’s value &amp; series.</span>';
       holder.parentNode.insertBefore(out, holder.nextSibling);
     }
@@ -443,7 +572,7 @@
       if (key === lastKey) return;
       lastKey = key;
       if (marker) marker.setLatLng(e.latlng);
-      else marker = L.circleMarker(e.latlng, { radius: 6, color: '#111', weight: 2, fillColor: '#fff', fillOpacity: 1 }).addTo(map);
+      else marker = L.circleMarker(e.latlng, { radius: 6, color: '#2490ef', weight: 2, fillColor: '#fff', fillOpacity: 1, className: 'hd-sample-dot' }).addTo(map);
       out.innerHTML = '<span class="frappe-muted">Sampling at ' + lat.toFixed(4) + ', ' + lon.toFixed(4) + '…</span>';
       var body = 'lon=' + encodeURIComponent(lon) + '&lat=' + encodeURIComponent(lat);
       fetch(url, { method: 'POST', credentials: 'same-origin', body: body,
@@ -453,6 +582,7 @@
         .then(function (d) {
           if (!d || !d.ok) { out.innerHTML = '<span style="color:#c0392b;">' + esc((d && d.error) || 'sample failed') + '</span>'; return; }
           out.innerHTML = renderReadout(d);
+          wireReadoutHover(out);
         })
         .catch(function () { out.innerHTML = '<span style="color:#c0392b;">sample request failed</span>'; });
     }
@@ -463,11 +593,13 @@
   }
   function draw() {
     var map = L.map(holder, { scrollWheelZoom: false });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      { attribution: '&copy; OpenStreetMap', maxZoom: 18 }).addTo(map);
+    // CartoDB Positron — a desaturated base so the raster carries the color (HTTPS, no key).
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+      { subdomains: 'abcd', maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>' }).addTo(map);
     var rs = rasters();
     // With a raster underneath, drop the polygon FILL so the pixels show through; keep
-    // a crisp outline. Without one, the original distinct-zone fill is preserved.
+    // a crisp accent outline. Without one, the original distinct-zone fill is preserved.
     var fill = rs.length ? 0.0 : 0.28;
     var palette = ['#2490ef', '#28a745', '#e8590c', '#9c36b5', '#1098ad', '#f08c00', '#e03131', '#37b24d'];
     var idx = 0;
@@ -475,20 +607,20 @@
       // With a raster underneath, the outline is non-interactive so map clicks fall
       // through to the sampler (an invisible-fill path would otherwise swallow them).
       interactive: !rs.length,
-      style: function () { return { color: rs.length ? '#111' : palette[(idx++) % palette.length], weight: 2, fillOpacity: fill }; },
+      style: function () { return { color: rs.length ? '#2490ef' : palette[(idx++) % palette.length], weight: 2, fillOpacity: fill }; },
       pointToLayer: function (f, latlng) { return L.circleMarker(latlng, { radius: 7, color: '#2490ef', fillOpacity: 0.7 }); }
     }).addTo(map);
     var group = [layer];
     var overlays = [];
     rs.forEach(function (r) {
       try {
-        var ov = L.imageOverlay(r.url, r.bounds, { opacity: 0.85, interactive: true });
+        var ov = L.imageOverlay(r.url, r.bounds, { opacity: 0.8, interactive: true, className: 'hd-raster-img' });
         ov.addTo(map); overlays.push(ov); group.push(ov);
       } catch (e) {}
     });
     try {
       var b = L.featureGroup(group).getBounds();
-      if (b && b.isValid()) map.fitBounds(b.pad(0.15)); else map.setView([0, 0], 2);
+      if (b && b.isValid()) map.fitBounds(b.pad(0.08)); else map.setView([0, 0], 2);
     } catch (e) { map.setView([0, 0], 2); }
     if (overlays.length) {
       addOpacity(map, overlays);
