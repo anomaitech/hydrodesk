@@ -333,21 +333,168 @@
     }
     return g;
   }
+  // ---- Connector RASTERS: each `<script class="hd-raster-data">` blob is a per-pixel
+  // image (URL + lat/lon bounds + legend + the field to re-sample on click). ----
+  function rasters() {
+    var out = [];
+    var nodes = document.querySelectorAll('script.hd-raster-data');
+    for (var i = 0; i < nodes.length; i++) {
+      try { var o = JSON.parse(nodes[i].textContent || '{}'); if (o && o.url && o.bounds) out.push(o); }
+      catch (e) {}
+    }
+    return out;
+  }
+  function getCookie(n) {
+    var m = document.cookie.match('(^|;)\\s*' + n + '\\s*=\\s*([^;]+)'); return m ? m.pop() : '';
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+  }
+  function fmt(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    var n = Number(v);
+    if (!isFinite(n)) return String(v);
+    var s = (Math.abs(n) >= 100 ? n.toFixed(1) : n.toFixed(3));
+    return s.indexOf('.') >= 0 ? s.replace(/\.?0+$/, '') : s;
+  }
+  function paletteStops(p) {
+    if (p && p.indexOf(',') >= 0) {
+      return p.split(',').map(function (c) { c = c.trim(); return c.charAt(0) === '#' ? c : ('#' + c); });
+    }
+    return ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'];   // viridis fallback
+  }
+  function addOpacity(map, overlays) {
+    var Ctl = L.Control.extend({ options: { position: 'topright' }, onAdd: function () {
+      var d = L.DomUtil.create('div', '');
+      d.style.cssText = 'background:#fff;padding:4px 7px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3);font-size:11px;color:#333;';
+      d.innerHTML = 'Raster <input type="range" min="0" max="1" step="0.05" value="0.85" ' +
+        'style="width:84px;vertical-align:middle;">';
+      var inp = d.querySelector('input');
+      L.DomEvent.disableClickPropagation(d);
+      inp.addEventListener('input', function () {
+        var v = parseFloat(inp.value); overlays.forEach(function (o) { o.setOpacity(v); });
+      });
+      return d;
+    } });
+    map.addControl(new Ctl());
+  }
+  function addLegend(map, r) {
+    if (!r) return;
+    var grad = 'linear-gradient(to right,' + paletteStops(r.palette).join(',') + ')';
+    var Ctl = L.Control.extend({ options: { position: 'bottomright' }, onAdd: function () {
+      var d = L.DomUtil.create('div', '');
+      d.style.cssText = 'background:#fff;padding:4px 7px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.3);font-size:10px;color:#333;';
+      d.innerHTML = '<div style="margin-bottom:2px;">' + esc(r.label || 'value') + '</div>' +
+        '<div style="height:8px;width:120px;background:' + grad + ';border:1px solid #ccc;border-radius:2px;"></div>' +
+        '<div style="display:flex;justify-content:space-between;"><span>' + esc(fmt(r.vmin)) +
+        '</span><span>' + esc(fmt(r.vmax)) + '</span></div>';
+      return d;
+    } });
+    map.addControl(new Ctl());
+  }
+  function seriesTable(cols) {
+    var n = 0; cols.forEach(function (c) { n = Math.max(n, (c.values || []).length); });
+    var start = Math.max(0, n - 6);
+    var h = '<table style="border-collapse:collapse;margin-top:6px;font-size:11px;"><tr>';
+    h += cols.map(function (c) {
+      return '<th style="text-align:left;padding:1px 10px 1px 0;color:#777;">' + esc(c.name) + '</th>';
+    }).join('') + '</tr>';
+    for (var i = start; i < n; i++) {
+      h += '<tr>' + cols.map(function (c) {
+        var v = (c.values || [])[i];
+        return '<td style="padding:1px 10px 1px 0;">' +
+          esc(typeof v === 'number' ? fmt(v) : (v == null ? '' : v)) + '</td>';
+      }).join('') + '</tr>';
+    }
+    return h + '</table>';
+  }
+  function renderReadout(d) {
+    var h = '<div style="font-weight:600;color:var(--fr-text,#333);">Sampled pixel ' +
+      d.lat.toFixed(4) + ', ' + d.lon.toFixed(4) + '</div>';
+    if (d.value !== undefined && d.value !== null && d.value !== '') {
+      h += '<div style="font-size:18px;margin:2px 0;">' + esc(fmt(d.value)) +
+        (d.unit ? ' <span style="font-size:12px;color:#777;">' + esc(d.unit) + '</span>' : '') + '</div>';
+    } else {
+      h += '<div style="color:#999;">no value at this pixel' + (d.note ? (' — ' + esc(d.note)) : '') + '</div>';
+    }
+    if (d.series && d.series.columns && d.series.columns.length) h += seriesTable(d.series.columns);
+    return h;
+  }
+  function wireSample(map, rs, overlays) {
+    var fe = rs.filter(function (r) { return r.field; })[0];
+    if (!fe) return;
+    var out = document.getElementById('hd-raster-readout');
+    if (!out) {
+      out = document.createElement('div');
+      out.id = 'hd-raster-readout';
+      out.className = 'frappe-help';
+      out.style.cssText = 'margin:8px 0 0;padding:8px 10px;border:1px solid var(--fr-border,#e2e6ea);border-radius:6px;background:var(--fr-bg-subtle,#f8f9fa);';
+      out.innerHTML = '<span class="frappe-muted">Click the raster to sample that pixel’s value &amp; series.</span>';
+      holder.parentNode.insertBefore(out, holder.nextSibling);
+    }
+    var marker = null;
+    var lastKey = '';   // dedupe: an overlay click can also bubble to the map click
+    var url = window.location.pathname.replace(/\/$/, '') + '/raster-sample/' + encodeURIComponent(fe.field) + '/';
+    function sample(e) {
+      if (!e || !e.latlng) return;
+      var lat = e.latlng.lat, lon = e.latlng.lng;
+      var key = lat.toFixed(6) + ',' + lon.toFixed(6);
+      if (key === lastKey) return;
+      lastKey = key;
+      if (marker) marker.setLatLng(e.latlng);
+      else marker = L.circleMarker(e.latlng, { radius: 6, color: '#111', weight: 2, fillColor: '#fff', fillOpacity: 1 }).addTo(map);
+      out.innerHTML = '<span class="frappe-muted">Sampling at ' + lat.toFixed(4) + ', ' + lon.toFixed(4) + '…</span>';
+      var body = 'lon=' + encodeURIComponent(lon) + '&lat=' + encodeURIComponent(lat);
+      fetch(url, { method: 'POST', credentials: 'same-origin', body: body,
+        headers: { 'X-CSRFToken': getCookie('csrftoken'),
+                   'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d || !d.ok) { out.innerHTML = '<span style="color:#c0392b;">' + esc((d && d.error) || 'sample failed') + '</span>'; return; }
+          out.innerHTML = renderReadout(d);
+        })
+        .catch(function () { out.innerHTML = '<span style="color:#c0392b;">sample request failed</span>'; });
+    }
+    // Clicking the raster (an interactive overlay covers the whole image) samples that
+    // pixel; a map click is the fallback for anywhere else inside the view.
+    (overlays || []).forEach(function (o) { try { o.on('click', sample); } catch (e) {} });
+    map.on('click', sample);
+  }
   function draw() {
     var map = L.map(holder, { scrollWheelZoom: false });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
       { attribution: '&copy; OpenStreetMap', maxZoom: 18 }).addTo(map);
-    // Colour each polygon part distinctly so the zones read as separate cells.
+    var rs = rasters();
+    // With a raster underneath, drop the polygon FILL so the pixels show through; keep
+    // a crisp outline. Without one, the original distinct-zone fill is preserved.
+    var fill = rs.length ? 0.0 : 0.28;
     var palette = ['#2490ef', '#28a745', '#e8590c', '#9c36b5', '#1098ad', '#f08c00', '#e03131', '#37b24d'];
     var idx = 0;
     var layer = L.geoJSON(asFeatures(geom), {
-      style: function () { return { color: palette[(idx++) % palette.length], weight: 2, fillOpacity: 0.28 }; },
+      // With a raster underneath, the outline is non-interactive so map clicks fall
+      // through to the sampler (an invisible-fill path would otherwise swallow them).
+      interactive: !rs.length,
+      style: function () { return { color: rs.length ? '#111' : palette[(idx++) % palette.length], weight: 2, fillOpacity: fill }; },
       pointToLayer: function (f, latlng) { return L.circleMarker(latlng, { radius: 7, color: '#2490ef', fillOpacity: 0.7 }); }
     }).addTo(map);
+    var group = [layer];
+    var overlays = [];
+    rs.forEach(function (r) {
+      try {
+        var ov = L.imageOverlay(r.url, r.bounds, { opacity: 0.85, interactive: true });
+        ov.addTo(map); overlays.push(ov); group.push(ov);
+      } catch (e) {}
+    });
     try {
-      var b = layer.getBounds();
-      if (b.isValid()) map.fitBounds(b.pad(0.25)); else map.setView([0, 0], 2);
+      var b = L.featureGroup(group).getBounds();
+      if (b && b.isValid()) map.fitBounds(b.pad(0.15)); else map.setView([0, 0], 2);
     } catch (e) { map.setView([0, 0], 2); }
+    if (overlays.length) {
+      addOpacity(map, overlays);
+      addLegend(map, rs[0]);
+      wireSample(map, rs, overlays);
+    }
   }
   if (window.L) { draw(); return; }
   // Pinned version + Subresource Integrity so a compromised CDN can't inject script.

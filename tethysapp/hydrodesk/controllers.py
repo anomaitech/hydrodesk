@@ -1615,6 +1615,10 @@ def _connector_outputs(cfg):
             outs.insert(0, {"name": "table", "kind": "series", "type": "series",
                             "primary": True, "vars": var_list, "derived": derived,
                             "x_dim": x_dim, "unit": unit})
+        # A per-pixel RASTER of the (first) variable — a colored 2-D slice clipped to the
+        # record's polygon, drawn on the detail map. Tick it on a field to use it.
+        outs.append({"name": "raster", "kind": "image", "type": "image",
+                     "var": var_list[0], "x_dim": x_dim, "unit": unit})
         return outs
     if knd == "csv":
         # CSV: the whole table is ONE series (every column becomes a variable, so it
@@ -1642,6 +1646,8 @@ def _connector_outputs(cfg):
              "var": var, "unit": unit},
             {"name": "series", "kind": "series", "type": "series",
              "var": var, "unit": unit},
+            {"name": "raster", "kind": "image", "type": "image",
+             "var": var, "unit": unit},
         ]
     if knd == "gee":
         # Earth Engine: sample an Image at the record's point (value), or reduce an
@@ -1652,16 +1658,23 @@ def _connector_outputs(cfg):
         unit = (cfg.get("unit") or "").strip()
         bands = _gee_bands(cfg)
         derived = _gee_derived(cfg)
+        # A per-pixel RASTER (a colored thumbnail clipped to the record's polygon) — the
+        # spatial complement to the reduced value/series. Offered whenever the connector
+        # can resolve an area; it renders on the detail map (Leaflet imageOverlay).
+        raster = {"name": "raster", "kind": "image", "type": "image",
+                  "bands": bands, "derived": derived, "unit": unit}
         if len(bands) > 1 or derived:
             return [
                 {"name": "table", "kind": "series", "type": "series", "primary": True,
                  "bands": bands, "derived": derived, "unit": unit},
                 {"name": "value", "kind": "value", "type": "number", "unit": unit},
+                raster,
             ]
         return [
             {"name": "value", "kind": "value", "type": "number", "primary": True,
              "unit": unit},
             {"name": "series", "kind": "series", "type": "series", "unit": unit},
+            raster,
         ]
     result_kind = (cfg.get("result_kind") or "value").lower()
     if result_kind == "series":
@@ -3055,6 +3068,12 @@ def _netcdf_extract(ds, out_entry, cfg=None, attrs=None):
     x_dim = (out_entry.get("x_dim") or "").strip() or (dims[0] if dims else "")
     if x_dim not in dims:
         x_dim = dims[0] if dims else ""
+    # RASTER (per-pixel map): a colored 2-D slice of the variable, masked to the polygon.
+    if (out_entry.get("kind") or "value").lower() == "image":
+        rb = ((cfg or {}).get("raster_band") or "").strip()
+        if rb and rb in ds.variables:
+            v, var_name = ds.variables[rb], rb
+        return _grid_raster_result(ds, v, x_dim, var_name, cfg, attrs)
     is_series = (out_entry.get("kind") or "value").lower() == "series"
     # SHAPEFILE filter (the two record-driven modes): 'mean' = the masked mean inside
     # the resolved shapefile (a series, or its last point for a value output); 'cells'
@@ -3338,7 +3357,10 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
     now = time.time()
     hit = _API_CACHE.get(cache_key)
     if hit and (now - hit[0]) < ttl:
-        res = dict(hit[1]); res["url"] = url; res["cached"] = True
+        res = dict(hit[1])
+        if res.get("kind") != "image":   # a raster's url is its PNG data-URI; keep it
+            res["url"] = url
+        res["cached"] = True
         return res
 
     try:
@@ -3368,7 +3390,10 @@ def _fetch_netcdf(cfg, record_attrs, output=None, field_map=None,
                                   note="variable not found or no data for this record "
                                        "(check the Variable name and the spatial/time selection)")
     _API_CACHE[cache_key] = (now, extracted)
-    res = dict(extracted); res["url"] = url; res["cached"] = False
+    res = dict(extracted)
+    if res.get("kind") != "image":       # a raster's url is its PNG data-URI; keep it
+        res["url"] = url
+    res["cached"] = False
     return res
 
 
@@ -3757,10 +3782,11 @@ def _wcs_getcoverage_url(cfg, attrs):
     return base + sep + urllib.parse.urlencode(params), (lon, lat)
 
 
-def _wcs_extract(ds, out_entry):
+def _wcs_extract(ds, out_entry, cfg=None, attrs=None):
     """Extract one output from an open (in-memory) netCDF Dataset of a WCS coverage:
     'value' -> the masked spatial MEAN of the data variable over the whole subset;
-    'series' -> that variable along a time-like dim (other dims averaged)."""
+    'series' -> that variable along a time-like dim (other dims averaged);
+    'image' -> a per-pixel raster (colored 2-D slice) of the coverage subset."""
     import numpy as np
     var_name = (out_entry.get("var") or "").strip()
     v = ds.variables.get(var_name) if var_name else None
@@ -3775,6 +3801,8 @@ def _wcs_extract(ds, out_entry):
     kind = (out_entry.get("kind") or "value").lower()
     time_dim = next((d for d in dims
                      if d.lower() in ("time", "ansi", "t", "date", "unix")), None)
+    if kind == "image":
+        return _grid_raster_result(ds, v, time_dim or "", var_name, cfg, attrs)
     if kind == "series" and time_dim:
         xs, ys = _netcdf_series_xy(ds, v, time_dim)
         return {"kind": "series",
@@ -3806,9 +3834,13 @@ def _fetch_wcs(cfg, record_attrs, output=None, field_map=None,
     out_kind = (out_entry.get("kind") if out_entry else "value")
 
     def _empty(url, cached, note=None):
-        base = ({"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
-                 "url": url, "cached": cached} if out_kind == "series"
-                else {"kind": "value", "value": None, "url": url, "cached": cached})
+        if out_kind == "series":
+            base = {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
+                    "url": url, "cached": cached}
+        elif out_kind == "image":
+            base = {"kind": "image", "url": "", "bounds": None, "cached": cached}
+        else:
+            base = {"kind": "value", "value": None, "url": url, "cached": cached}
         if note:
             base["note"] = note
         return base
@@ -3827,7 +3859,10 @@ def _fetch_wcs(cfg, record_attrs, output=None, field_map=None,
     now = time.time()
     hit = _API_CACHE.get(cache_key)
     if hit and (now - hit[0]) < ttl:
-        res = dict(hit[1]); res["url"] = url; res["cached"] = True
+        res = dict(hit[1])
+        if res.get("kind") != "image":   # a raster's url is its PNG data-URI; keep it
+            res["url"] = url
+        res["cached"] = True
         return res
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "HydroDesk/1.0"})
@@ -3844,7 +3879,7 @@ def _fetch_wcs(cfg, record_attrs, output=None, field_map=None,
     try:
         ds = netCDF4.Dataset("inmem.nc", mode="r", memory=data)
         try:
-            extracted = _wcs_extract(ds, out_entry)
+            extracted = _wcs_extract(ds, out_entry, cfg, attrs)
         finally:
             ds.close()
     except Exception as exc:
@@ -3854,7 +3889,10 @@ def _fetch_wcs(cfg, record_attrs, output=None, field_map=None,
         return _empty(url, False, note="coverage returned no usable data "
                       "(check the Coverage ID and the point/bbox selection)")
     _API_CACHE[cache_key] = (now, extracted)
-    res = dict(extracted); res["url"] = url; res["cached"] = False
+    res = dict(extracted)
+    if res.get("kind") != "image":       # a raster's url is its PNG data-URI; keep it
+        res["url"] = url
+    res["cached"] = False
     return res
 
 
@@ -4045,6 +4083,251 @@ def _gee_geometry(ee, cfg, attrs):
     return None, False
 
 
+# ---------------------------------------------------------------------------
+# RASTER rendering — shared by every grid connector (GEE thumbnails are rendered
+# server-side by Earth Engine; WCS/NetCDF/THREDDS 2-D grids are colored here with
+# matplotlib). The output is a base64 PNG data-URI + the geographic bounds so the
+# detail map can drop it as a Leaflet imageOverlay clipped to the record's polygon.
+# ---------------------------------------------------------------------------
+
+# Friendly palette aliases -> matplotlib colormap names. A user can also pass any
+# matplotlib name directly (viridis, magma, ...) or a comma list of hex colors.
+_RASTER_PALETTES = {
+    "ndvi": "RdYlGn", "vegetation": "RdYlGn", "greenness": "RdYlGn",
+    "elevation": "terrain", "dem": "terrain", "terrain": "terrain",
+    "rainfall": "Blues", "precip": "Blues", "precipitation": "Blues", "water": "Blues",
+    "temperature": "RdBu_r", "temp": "RdBu_r", "heat": "inferno",
+    "viridis": "viridis", "magma": "magma", "plasma": "plasma", "inferno": "inferno",
+    "spectral": "Spectral_r", "blues": "Blues", "greens": "Greens", "reds": "Reds",
+    "jet": "jet", "turbo": "turbo", "grey": "gray", "gray": "gray",
+}
+
+
+def _raster_cmap(name):
+    """A matplotlib Colormap for a palette name (friendly alias OR a matplotlib name).
+    Falls back to viridis. Never raises."""
+    import matplotlib
+    key = (name or "viridis").strip()
+    cm_name = _RASTER_PALETTES.get(key.lower(), key)
+    try:
+        return matplotlib.colormaps[cm_name]
+    except Exception:
+        try:
+            return matplotlib.colormaps["viridis"]
+        except Exception:
+            return matplotlib.cm.get_cmap("viridis")
+
+
+def _palette_hex_list(palette):
+    """If `palette` is a comma list of hex/CSS colors -> that list (for GEE's
+    `palette` vis param). A single named palette -> a 7-stop sampling of its
+    matplotlib colormap (so GEE renders the same ramp we use locally). '' -> None."""
+    s = (palette or "").strip()
+    if not s:
+        return None
+    parts = [p.strip().lstrip("#") for p in s.split(",") if p.strip()]
+    if len(parts) > 1 and all(all(c in "0123456789abcdefABCDEF" for c in p) and len(p) in (3, 6)
+                              for p in parts):
+        return parts
+    try:
+        cmap = _raster_cmap(s)
+        out = []
+        for i in range(7):
+            r, g, b, _a = cmap(i / 6.0)
+            out.append("%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255)))
+        return out
+    except Exception:
+        return None
+
+
+def _grid_in_rings(lons, lats, rings):
+    """Boolean H×W mask: True where the grid cell centre falls inside any polygon ring
+    (outer rings only — good enough to clip a raster to a basin). matplotlib.path is
+    vectorized so this stays fast for typical grids."""
+    import numpy as np
+    from matplotlib.path import Path
+    LON, LAT = np.meshgrid(np.asarray(lons, "float64"), np.asarray(lats, "float64"))
+    pts = np.column_stack([LON.ravel(), LAT.ravel()])
+    inside = np.zeros(pts.shape[0], dtype=bool)
+    for ring in (rings or []):
+        if ring and len(ring) >= 3:
+            try:
+                inside |= Path([(float(p[0]), float(p[1])) for p in ring]).contains_points(pts)
+            except Exception:
+                pass
+    return inside.reshape(LON.shape)
+
+
+def _render_raster_png(grid, lons, lats, vmin=None, vmax=None, palette="viridis",
+                       rings=None, max_px=640):
+    """Color a 2-D array into a base64 PNG data-URI (transparent where masked/NaN and,
+    when `rings` is given, outside the polygon). Returns
+    (data_uri, bounds=[[south,west],[north,east]], vmin, vmax) — bounds in lat/lon for a
+    Leaflet imageOverlay. Returns (None, None, None, None) when the grid is empty."""
+    import numpy as np
+    import io as _io, base64 as _b64
+    from PIL import Image as _PILImage
+    arr = np.ma.asarray(grid, dtype="float64")
+    if arr.ndim != 2 or arr.size == 0:
+        return None, None, None, None
+    lats = np.asarray(lats, dtype="float64")
+    lons = np.asarray(lons, dtype="float64")
+    if lats.size < 2 or lons.size < 2:
+        return None, None, None, None
+    # Orient so row 0 is NORTH (top of the image) regardless of the source axis order.
+    if lats[0] < lats[-1]:
+        arr = arr[::-1, :]
+        lats = lats[::-1]
+    if lons[0] > lons[-1]:
+        arr = arr[:, ::-1]
+        lons = lons[::-1]
+    south, north = float(np.nanmin(lats)), float(np.nanmax(lats))
+    west, east = float(np.nanmin(lons)), float(np.nanmax(lons))
+    filled = np.ma.filled(arr.astype("float64"), np.nan)
+    finite = np.isfinite(filled)
+    valid = filled[finite]
+    if vmin is None:
+        vmin = float(np.percentile(valid, 2)) if valid.size else 0.0
+    if vmax is None:
+        vmax = float(np.percentile(valid, 98)) if valid.size else 1.0
+    if not (vmax > vmin):
+        vmax = vmin + 1e-9
+    norm = np.clip((filled - vmin) / (vmax - vmin), 0.0, 1.0)
+    rgba = _raster_cmap(palette)(np.nan_to_num(norm))      # H×W×4 floats 0..1
+    alpha = finite.astype("float64")
+    if rings:
+        try:
+            alpha = alpha * _grid_in_rings(lons, lats, rings).astype("float64")
+        except Exception:
+            pass
+    rgba[..., 3] = alpha
+    img = _PILImage.fromarray((rgba * 255.0).astype("uint8"), "RGBA")
+    if img.width > max_px or img.height > max_px:
+        img.thumbnail((max_px, max_px))
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    uri = "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode("ascii")
+    return uri, [[south, west], [north, east]], float(vmin), float(vmax)
+
+
+def _latlon_dims(v, cfg):
+    """The (lat_dim, lon_dim) of a netCDF variable: the connector's configured
+    lat_dim/lon_dim when valid, else name detection (lat/latitude/y…, lon/longitude/x…),
+    else the last two dimensions. (None, None) when fewer than 2 dims."""
+    dims = list(v.dimensions)
+    cfg = cfg or {}
+    lat_d = (cfg.get("lat_dim") or "").strip() or None
+    lon_d = (cfg.get("lon_dim") or "").strip() or None
+    if lat_d not in dims:
+        lat_d = None
+    if lon_d not in dims:
+        lon_d = None
+    if lat_d is None:
+        lat_d = next((d for d in dims if d.lower() in
+                      ("lat", "latitude", "y", "north", "rlat", "nav_lat")), None)
+    if lon_d is None:
+        lon_d = next((d for d in dims if d.lower() in
+                      ("lon", "longitude", "x", "east", "rlon", "nav_lon")), None)
+    if (lat_d is None or lon_d is None) and len(dims) >= 2:
+        if lat_d is None:
+            lat_d = dims[-2]
+        if lon_d is None:
+            lon_d = dims[-1]
+    return lat_d, lon_d
+
+
+def _netcdf_grid_2d(ds, v, x_dim, cfg, bbox=None):
+    """A 2-D (lat×lon) slice of variable ``v`` for a raster: the LAST index on the
+    time-like axis, every other non-spatial axis averaged. Optionally cropped to
+    ``bbox=(minlon,minlat,maxlon,maxlat)`` (+ a small margin) so a global grid renders
+    just the region. Returns (grid, lons, lats) with longitudes normalized to -180..180;
+    (None, None, None) when no usable grid."""
+    import numpy as np
+    dims = list(v.dimensions)
+    lat_d, lon_d = _latlon_dims(v, cfg)
+    if not lat_d or not lon_d or lat_d not in dims or lon_d not in dims or lat_d == lon_d:
+        return None, None, None
+    arr = np.ma.asarray(v[:])
+    work = list(dims)
+    # Collapse the time axis to its LAST step (most recent), if present + non-spatial.
+    time_d = (x_dim if (x_dim in work and x_dim not in (lat_d, lon_d)) else
+              next((d for d in work if d.lower() in ("time", "ansi", "t", "date", "unix")
+                    and d not in (lat_d, lon_d)), None))
+    if time_d and time_d in work:
+        ax = work.index(time_d)
+        arr = np.ma.take(arr, arr.shape[ax] - 1, axis=ax)
+        work.pop(ax)
+    # Average any leftover non-spatial axes (e.g. depth/level).
+    others = tuple(i for i, d in enumerate(work) if d not in (lat_d, lon_d))
+    if others:
+        arr = np.ma.mean(arr, axis=others)
+        work = [d for d in work if d in (lat_d, lon_d)]
+    if arr.ndim != 2:
+        return None, None, None
+    if work == [lon_d, lat_d]:
+        arr = arr.T
+    elif work != [lat_d, lon_d]:
+        return None, None, None
+    latv, lonv = ds.variables.get(lat_d), ds.variables.get(lon_d)
+    if latv is None or lonv is None:
+        return None, None, None
+    try:
+        lats = np.asarray(latv[:], dtype="float64").ravel()
+        lons = np.asarray(lonv[:], dtype="float64").ravel()
+    except Exception:
+        return None, None, None
+    if lats.size != arr.shape[0] or lons.size != arr.shape[1]:
+        return None, None, None
+    if lons.size and float(np.nanmax(lons)) > 180.0:    # 0..360 -> -180..180 for Leaflet
+        lons = ((lons + 180.0) % 360.0) - 180.0
+        order = np.argsort(lons)
+        lons, arr = lons[order], arr[:, order]
+    if bbox:
+        try:
+            minlon, minlat, maxlon, maxlat = [float(x) for x in bbox]
+            mlon = max((maxlon - minlon) * 0.15, 1e-6)
+            mlat = max((maxlat - minlat) * 0.15, 1e-6)
+            ci = np.where((lons >= minlon - mlon) & (lons <= maxlon + mlon))[0]
+            ri = np.where((lats >= minlat - mlat) & (lats <= maxlat + mlat))[0]
+            if ci.size >= 1 and ri.size >= 1:
+                arr = arr[ri[0]:ri[-1] + 1, ci[0]:ci[-1] + 1]
+                lats = lats[ri[0]:ri[-1] + 1]
+                lons = lons[ci[0]:ci[-1] + 1]
+        except Exception:
+            pass
+    return arr, lons, lats
+
+
+def _grid_raster_result(ds, v, x_dim, var_name, cfg, attrs):
+    """Render variable ``v`` as a per-pixel raster image result (kind 'image'): a colored
+    PNG data-URI + lat/lon bounds, masked to the record's polygon when one applies. Shared
+    by the NetCDF/THREDDS/WCS fetchers. Returns an image dict (url '' + note on failure)."""
+    rings = (_shapefile_union_rings(cfg, attrs)
+             if (cfg or {}).get("spatial") in ("shapefile", "polygon", "zones") else None)
+    bbox = None
+    if rings:
+        xs = [p[0] for r in rings for p in r]
+        ys = [p[1] for r in rings for p in r]
+        if xs and ys:
+            bbox = (min(xs), min(ys), max(xs), max(ys))
+    grid, lons, lats = _netcdf_grid_2d(ds, v, x_dim, cfg, bbox)
+    if grid is None:
+        return {"kind": "image", "url": "", "bounds": None,
+                "note": "no 2-D lat/lon grid available to render a raster"}
+    vmin = _wms_num((cfg or {}).get("raster_min"))
+    vmax = _wms_num((cfg or {}).get("raster_max"))
+    palette = ((cfg or {}).get("raster_palette") or "viridis").strip()
+    uri, bounds, vmn, vmx = _render_raster_png(grid, lons, lats, vmin, vmax, palette, rings)
+    if uri is None:
+        return {"kind": "image", "url": "", "bounds": None,
+                "note": "raster render produced no pixels (empty subset?)"}
+    # Return the palette as sampled hex stops so the map LEGEND ramp matches the raster
+    # (the named colormap is only known server-side); fall back to the raw name.
+    pal_stops = _palette_hex_list(palette)
+    return {"kind": "image", "url": uri, "bounds": bounds, "vmin": vmn, "vmax": vmx,
+            "palette": (",".join(pal_stops) if pal_stops else palette), "band": var_name}
+
+
 def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
                connector_name="connector"):
     """Fetch one output from an Earth Engine connector. 'value' reduces an Image over
@@ -4069,6 +4352,8 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
         if out_kind == "series":
             return {"kind": "series", "columns": [], "n": 0, "x": [], "y": [],
                     "url": "", "cached": cached}
+        if out_kind == "image":
+            return {"kind": "image", "url": "", "bounds": None, "cached": cached}
         return {"kind": "value", "value": None, "url": "", "cached": cached}
 
     lon, lat = _wms_point(cfg, attrs)
@@ -4094,6 +4379,14 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
                                              for d in derived)
     cache_key = (connector_name, "gee::%s::%s::%s,%s::%s::%s"
                  % (asset, _rgn, _gstart, _gend, out_entry.get("name") or "", _bsig))
+    if (out_entry.get("kind") or "").lower() == "image":
+        # Visualization params change the rendered raster but not the value/series, so
+        # they must be part of the raster's cache key (else a palette/stretch edit is stale).
+        cache_key = (cache_key[0], cache_key[1] + "::vis=%s|%s|%s|%s|%s" % (
+            (cfg.get("gee_raster_band") or ""), (cfg.get("gee_vis_min") or ""),
+            (cfg.get("gee_vis_max") or ""),
+            (cfg.get("gee_palette") or cfg.get("raster_palette") or ""),
+            (cfg.get("gee_dimensions") or "")))
     now = time.time()
     hit = _API_CACHE.get(cache_key)
     if hit and (now - hit[0]) < ttl:
@@ -4117,6 +4410,84 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
         if geom is None:
             return _empty(False)
         start, end = str(_gstart or ""), str(_gend or "")
+        if (out_entry.get("kind") or "value").lower() == "image":
+            # ---- RASTER: a colored thumbnail of the asset CLIPPED to the polygon. ----
+            # Build the image (single Image, or a date-window-reduced ImageCollection),
+            # pick a band OR a DERIVED expression (e.g. NDVI from B8,B4), color it, and
+            # return a getThumbURL (transparent outside the polygon) + the lat/lon bounds.
+            try:
+                asset_type = (ee.data.getAsset(asset) or {}).get("type", "")
+            except Exception:
+                asset_type = ""
+            if "COLLECTION" in (asset_type or "").upper():
+                ic = ee.ImageCollection(asset).filterBounds(geom)
+                if start and end:
+                    ic = ic.filterDate(start, end)
+                temporal = (cfg.get("gee_temporal") or "mean").strip().lower()
+                base_img = {"mean": ic.mean, "median": ic.median, "max": ic.max,
+                            "min": ic.min, "first": ic.first, "sum": ic.sum,
+                            "mosaic": ic.mosaic}.get(temporal, ic.mean)()
+            else:
+                base_img = ee.Image(asset)
+            der_names = [d.get("name") for d in derived]
+            rband = (cfg.get("gee_raster_band") or "").strip()
+            vis_img = None
+            if rband and rband not in der_names:
+                vis_img = base_img.select([rband])
+            elif derived and (not rband or rband in der_names):
+                d0 = next((d for d in derived if d.get("name") == rband), derived[0])
+                try:
+                    vis_img = base_img.expression(
+                        d0.get("formula"), {b: base_img.select(b) for b in bands})
+                except Exception:
+                    vis_img = None
+            if vis_img is None:
+                vis_img = base_img.select([bands[0]]) if bands else base_img
+            vmin = _wms_num(cfg.get("gee_vis_min"))
+            vmax = _wms_num(cfg.get("gee_vis_max"))
+            if vmin is None or vmax is None:        # auto 2/98 percentile over the polygon
+                try:
+                    st = vis_img.reduceRegion(
+                        ee.Reducer.percentile([2, 98]), geom, scale,
+                        maxPixels=int(1e9), bestEffort=True).getInfo() or {}
+                    vals = sorted(v for v in st.values() if isinstance(v, (int, float)))
+                    if len(vals) >= 2:
+                        if vmin is None:
+                            vmin = vals[0]
+                        if vmax is None:
+                            vmax = vals[-1]
+                except Exception:
+                    pass
+            palette = (cfg.get("gee_palette") or cfg.get("raster_palette") or "").strip()
+            pal_list = _palette_hex_list(palette)
+            try:
+                dim = int(cfg.get("gee_dimensions") or 512)
+            except (TypeError, ValueError):
+                dim = 512
+            vis = {"region": geom, "dimensions": dim, "format": "png"}
+            if vmin is not None:
+                vis["min"] = vmin
+            if vmax is not None:
+                vis["max"] = vmax
+            if pal_list:
+                vis["palette"] = pal_list
+            url = vis_img.clip(geom).getThumbURL(vis)
+            try:
+                ring = ee.Geometry(geom).bounds().coordinates().getInfo()[0]
+                xs = [p[0] for p in ring]
+                ys = [p[1] for p in ring]
+                bounds = [[min(ys), min(xs)], [max(ys), max(xs)]]
+            except Exception:
+                bounds = None
+            extracted = {"kind": "image", "url": url, "bounds": bounds,
+                         "vmin": vmin, "vmax": vmax,
+                         "palette": (",".join(pal_list) if pal_list else palette),
+                         "band": (rband or (der_names[0] if der_names else
+                                            (bands[0] if bands else "")))}
+            _API_CACHE[cache_key] = (now, extracted)
+            res = dict(extracted)
+            res["cached"] = False
+            return res
         if (out_entry.get("kind") or "value").lower() == "series":
             import datetime as _dt
             col = ee.ImageCollection(asset).filterBounds(geom)
@@ -8915,15 +9286,20 @@ def _render_stored_image(val, label="map"):
         "border-radius:6px;'></a></div>", s, s, label or "map")
 
 
-def _render_image_block(result, label="map"):
-    """Render an 'image' output (e.g. a WMS GetMap) as a lazy <img> linking to the
-    full image. The URL is built from connector config + record attrs; format_html
-    escapes it in both the href and src attributes (no injection)."""
+def _render_image_block(result, label="map", sample_ctx=None):
+    """Render an 'image' output (e.g. a WMS GetMap, or a connector RASTER) as a lazy
+    <img> linking to the full image. The URL is built from connector config + record
+    attrs; format_html escapes it in both the href and src attributes (no injection).
+
+    When the result is a RASTER (carries geographic ``bounds``), also emit a hidden
+    JSON blob (class ``hd-raster-data``) with the url/bounds/legend + the sample context
+    (field + output) so the detail map can drop it as a Leaflet imageOverlay AND wire the
+    click-to-sample interaction. The blob is inert until the map script reads it."""
     url = (result or {}).get("url") or ""
     if not url:
         return mark_safe(
             "<span class='frappe-muted frappe-text-sm'>no map (set a point / layer)</span>")
-    return format_html(
+    img = format_html(
         "<div class='hd-api-image'>"
         "<a href='{}' target='_blank' rel='noopener'>"
         "<img src='{}' alt='{}' loading='lazy' "
@@ -8931,6 +9307,25 @@ def _render_image_block(result, label="map"):
         "border:1px solid var(--fr-border-color,#d1d8dd);border-radius:6px;'>"
         "</a></div>",
         url, url, label or "map")
+    bounds = (result or {}).get("bounds")
+    if not bounds:
+        return img
+    blob = {
+        "url": url, "bounds": bounds, "label": label or "raster",
+        "vmin": (result or {}).get("vmin"), "vmax": (result or {}).get("vmax"),
+        "palette": (result or {}).get("palette") or "", "band": (result or {}).get("band") or "",
+    }
+    if isinstance(sample_ctx, dict):
+        blob["field"] = sample_ctx.get("field") or ""
+        blob["output"] = sample_ctx.get("output") or ""
+        blob["connector"] = sample_ctx.get("connector") or ""
+    try:
+        payload = json.dumps(blob).replace("</", "<\\/")
+    except (TypeError, ValueError):
+        payload = "{}"
+    data = mark_safe(
+        "<script type='application/json' class='hd-raster-data'>" + payload + "</script>")
+    return mark_safe(str(img) + str(data))
 
 
 # Connector kinds that accept a per-record parameter mapping (x-nc-map): a record's
@@ -9083,7 +9478,7 @@ def _json_to_table_html(payload, cap=200):
 
 
 def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
-                      field_map=None, api_outputs=None, nc_map=None):
+                      field_map=None, api_outputs=None, nc_map=None, record_ctx=None):
     """Render an API field's LIVE result as safe HTML for the detail view.
 
     Resolves the connector (already loaded), and renders by the field's
@@ -9137,7 +9532,10 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
                              if result.get("cached")
                              else '<span class="indicator-pill blue">live</span>')
             if (result.get("kind") == "image") or ft == "Image":
-                body = _render_image_block(result, label)
+                body = _render_image_block(
+                    result, label,
+                    sample_ctx=dict(record_ctx or {}, output=oname,
+                                    connector=connector_name))
             elif (result.get("kind") == "series") or ft == "Time-Series":
                 body = _render_columns_table(result)
             elif result.get("kind") == "json":
@@ -9166,7 +9564,11 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
             if cached else '<span class="indicator-pill blue">live</span>')
 
     if kind == "image":
-        body = _render_image_block(result)
+        body = _render_image_block(
+            result, sample_ctx=dict(record_ctx or {},
+                                    output=(_primary_output(_connector_outputs(_cfg))
+                                            or {}).get("name") or "",
+                                    connector=connector_name))
         return mark_safe(
             "<div class='hd-api-field'>" + str(body) + " "
             + str(mark_safe(pill)) + str(refresh)
@@ -9307,7 +9709,8 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
                 refresh_url=refresh_urls.get(name),
                 field_map=prop.get("x-api-map"),
                 api_outputs=prop.get("x-api-outputs"),
-                nc_map=prop.get("x-nc-map"))
+                nc_map=prop.get("x-nc-map"),
+                record_ctx={"slug": parent_slug, "record_id": parent_id, "field": name})
             if (prop.get("x-nc-map") and connector       # edit-in-place params bar
                     and _supports_record_params(connector.config or {})):
                 bar = _nc_params_bar(parent_slug, parent_id, name,
@@ -9402,6 +9805,77 @@ def api_params_update(request, slug=None, record_id=None, field=None):
         rec.attributes = attrs
         session.commit()
     return redirect(detail_url + "?refresh=" + urllib.parse.quote(field or ""))
+
+
+@controller(name="record_raster_sample",
+            url="record/{slug}/{record_id}/raster-sample/{field}",
+            title="Sample raster")
+def record_raster_sample(request, slug=None, record_id=None, field=None):
+    """AJAX: sample a record's API field at a CLICKED point (lon/lat) — the per-pixel
+    complement to the basin-reduced value/series shown on the page. FORCES a point
+    geometry at the click (overriding the field's region/shapefile) and returns the
+    connector's value + series THERE so the detail map's readout can update on click.
+    POST only; read-gated; never mutates the record."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    try:
+        lon = float(request.POST.get("lon"))
+        lat = float(request.POST.get("lat"))
+    except (TypeError, ValueError):
+        return JsonResponse({"ok": False, "error": "lon/lat required"}, status=400)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return JsonResponse({"ok": False, "error": "unknown doctype"}, status=404)
+        _dn, field_schema, _gk = meta
+        if not _user_can(request, field_schema, "read"):
+            return JsonResponse({"ok": False, "error": "not allowed"}, status=403)
+        prop = ((field_schema.get("properties") or {}).get(field)) or {}
+        connector_name = prop.get("x-api-connector")
+        if not connector_name:
+            return JsonResponse({"ok": False, "error": "not an API field"}, status=400)
+        connector = _load_connector(session, connector_name)
+        if connector is None:
+            return JsonResponse({"ok": False, "error": "connector missing"}, status=404)
+        rec = session.execute(
+            select(m.HydroRecord)
+            .where(m.HydroRecord.hydrotype_slug == slug)
+            .where(m.HydroRecord.id == record_id)
+        ).scalar_one_or_none()
+        if rec is None:
+            return JsonResponse({"ok": False, "error": "unknown record"}, status=404)
+        # Resolve the per-record DATE window (x-nc-map) but FORCE a point: drop the region
+        # sources and pin the clicked lon/lat so every grid kind samples that one pixel.
+        cfg, attrs = _apply_nc_map(connector.config or {},
+                                   dict(rec.attributes or {}), prop.get("x-nc-map"))
+        cfg = dict(cfg or {})
+        cfg["spatial"] = "point"
+        attrs = dict(attrs or {})
+        for k in ("_shapefile", "_geojson", "_zones"):
+            attrs.pop(k, None)
+        attrs["_lon"], attrs["_lat"] = lon, lat
+        field_map = prop.get("x-api-map")
+        catalog = _connector_outputs(cfg)
+        v_out = next((o for o in catalog if (o.get("kind") or "") == "value"), None)
+        s_out = next((o for o in catalog if (o.get("kind") or "") == "series"), None)
+        resp = {"ok": True, "lon": lon, "lat": lat}
+        if v_out is not None:
+            vr = fetch_api(cfg, attrs, connector_name=connector_name,
+                           field_map=field_map, output=v_out.get("name")) or {}
+            resp["value"] = vr.get("value")
+            resp["unit"] = (v_out.get("unit") or cfg.get("unit") or "").strip()
+            if vr.get("note"):
+                resp["note"] = vr.get("note")
+        if s_out is not None:
+            sr = fetch_api(cfg, attrs, connector_name=connector_name,
+                           field_map=field_map, output=s_out.get("name")) or {}
+            cols = sr.get("columns") or []
+            resp["series"] = {"columns": [
+                {"name": c.get("name"),
+                 "values": (c.get("values") or [])[-200:]}
+                for c in cols if isinstance(c, dict)]}
+        return JsonResponse(resp)
 
 
 @controller(name="record_restore", url="record/{slug}/{record_id}/restore/{rev_id}",
@@ -12064,6 +12538,21 @@ def _connector_config_from_post(post, files=None):
             config["gee_scale"] = int(post.get("gee_scale") or 30)
         except (TypeError, ValueError):
             config["gee_scale"] = 30
+        # Date-window reducer (collections) + RASTER visualization (per-pixel map): set only
+        # when provided so a blank form field never wipes a programmatically-set value.
+        gtemporal = (post.get("gee_temporal") or "").strip().lower()
+        if gtemporal:
+            config["gee_temporal"] = gtemporal
+        for k in ("gee_raster_band", "gee_palette", "gee_vis_min", "gee_vis_max"):
+            v = (post.get(k) or "").strip()
+            if v:
+                config[k] = v
+        gdim = (post.get("gee_dimensions") or "").strip()
+        if gdim:
+            try:
+                config["gee_dimensions"] = int(gdim)
+            except (TypeError, ValueError):
+                pass
         for k in ("default_lon", "default_lat"):
             raw = (post.get(k) or "").strip()
             if raw:
@@ -12093,6 +12582,14 @@ def _connector_config_from_post(post, files=None):
             config["paginate"] = {"next_path": next_path, "max_pages": mp}
         if not config["url_template"]:
             errors.append("URL Template is required.")
+
+    # RASTER (per-pixel map) visualization for the grid kinds (NetCDF/THREDDS/WCS) — set
+    # only when provided so a blank field never wipes a programmatic value. (GEE uses its
+    # own gee_palette/gee_vis_* knobs above.)
+    for k in ("raster_band", "raster_palette", "raster_min", "raster_max"):
+        rv = (post.get(k) or "").strip()
+        if rv:
+            config[k] = rv
 
     # Only attach inputs[] when the editor actually produced rows (REST). An ABSENT
     # key keeps a connector on the legacy implicit token-scan (full back-compat).
@@ -12203,6 +12700,18 @@ def _connector_form_context(mode, name, config, form_errors, conn_id=None,
         "gee_scale": (config or {}).get("gee_scale", 30),
         "gee_unit": (config or {}).get("unit", "") if (config or {}).get("kind") == "gee" else "",
         "gee_demo": (config or {}).get("gee_demo", False),
+        # Raster (per-pixel map) visualization + the date-window reducer.
+        "gee_temporal": (config or {}).get("gee_temporal", ""),
+        "gee_raster_band": (config or {}).get("gee_raster_band", ""),
+        "gee_palette": (config or {}).get("gee_palette", ""),
+        "gee_vis_min": (config or {}).get("gee_vis_min", ""),
+        "gee_vis_max": (config or {}).get("gee_vis_max", ""),
+        "gee_dimensions": (config or {}).get("gee_dimensions", 512),
+        # Generic raster (per-pixel map) for NetCDF/THREDDS/WCS.
+        "raster_band": (config or {}).get("raster_band", ""),
+        "raster_palette": (config or {}).get("raster_palette", ""),
+        "raster_min": (config or {}).get("raster_min", ""),
+        "raster_max": (config or {}).get("raster_max", ""),
         # Per-record region & time (WCS/GEE/REST): round-trip the shared pr_* controls.
         "pr_region": (config or {}).get("spatial") == "shapefile"
         if (config or {}).get("kind") in ("wcs", "gee", "rest") else False,

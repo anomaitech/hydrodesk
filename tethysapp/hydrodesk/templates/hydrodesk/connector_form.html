@@ -481,6 +481,79 @@
           </label>
           <div class="frappe-help">When ticked, this connector returns deterministic <strong>synthetic</strong> data that still varies by each record's region + date window — so you can preview the per-record mapping before installing <code>earthengine-api</code> + a service-account credential. Replace with real EE for live data.</div>
         </div>
+
+        {# Raster (per-pixel map): a colored thumbnail of the asset clipped to the record's polygon, drawn on the detail map. Tick the 'raster' output on a field; these knobs control the visualization, not the value. #}
+        <div class="frappe-section-head" style="margin-top:6px;">Raster (per-pixel map)</div>
+        <div class="frappe-help" style="margin-bottom:8px;">Tick the <code>raster</code> output on a doctype field to draw the asset as a colored layer clipped to each record's polygon. Clicking the map re-samples that pixel's value &amp; series.</div>
+        <div class="frappe-form-grid">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_raster_band">Raster band / derived</label>
+            <input class="form-control" type="text" id="id_gee_raster_band" name="gee_raster_band"
+                   value="{{ gee_raster_band }}" placeholder="blank = first band; or a band / derived name (e.g. NDVI)">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_temporal">Date-window reducer <span class="frappe-muted frappe-text-sm">(collections)</span></label>
+            <select class="form-select" id="id_gee_temporal" name="gee_temporal">
+              <option value="mean"   {% if gee_temporal == 'mean' or not gee_temporal %}selected{% endif %}>mean</option>
+              <option value="median" {% if gee_temporal == 'median' %}selected{% endif %}>median</option>
+              <option value="max"    {% if gee_temporal == 'max' %}selected{% endif %}>max</option>
+              <option value="min"    {% if gee_temporal == 'min' %}selected{% endif %}>min</option>
+              <option value="first"  {% if gee_temporal == 'first' %}selected{% endif %}>first</option>
+              <option value="sum"    {% if gee_temporal == 'sum' %}selected{% endif %}>sum</option>
+              <option value="mosaic" {% if gee_temporal == 'mosaic' %}selected{% endif %}>mosaic</option>
+            </select>
+          </div>
+        </div>
+        <div class="frappe-form-grid">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_palette">Palette</label>
+            <input class="form-control" type="text" id="id_gee_palette" name="gee_palette"
+                   value="{{ gee_palette }}" placeholder="ndvi · terrain · viridis · blues — or hex list 440154,21918c,fde725">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_vis_min">Color min</label>
+            <input class="form-control" type="text" id="id_gee_vis_min" name="gee_vis_min"
+                   value="{{ gee_vis_min }}" placeholder="blank = auto (2nd pctile)">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_vis_max">Color max</label>
+            <input class="form-control" type="text" id="id_gee_vis_max" name="gee_vis_max"
+                   value="{{ gee_vis_max }}" placeholder="blank = auto (98th pctile)">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_gee_dimensions">Pixels</label>
+            <input class="form-control" type="text" id="id_gee_dimensions" name="gee_dimensions"
+                   value="{{ gee_dimensions|default:'512' }}" placeholder="512">
+          </div>
+        </div>
+      </div>
+
+      {# Raster (per-pixel map): NetCDF / THREDDS / WCS render a colored 2-D slice of the variable clipped to each record's polygon, on the detail map. #}
+      <div class="hd-kind-raster">
+        <div class="frappe-section-head" style="margin-top:6px;">Raster (per-pixel map)</div>
+        <div class="frappe-help" style="margin-bottom:8px;">Tick the <code>raster</code> output on a doctype field to draw the variable as a colored layer clipped to each record's polygon. Clicking the map re-samples that pixel's value &amp; series.</div>
+        <div class="frappe-form-grid">
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_raster_band">Raster variable</label>
+            <input class="form-control" type="text" id="id_raster_band" name="raster_band"
+                   value="{{ raster_band }}" placeholder="blank = the connector's variable">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_raster_palette">Palette</label>
+            <input class="form-control" type="text" id="id_raster_palette" name="raster_palette"
+                   value="{{ raster_palette }}" placeholder="viridis · terrain · ndvi · blues · spectral">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_raster_min">Color min</label>
+            <input class="form-control" type="text" id="id_raster_min" name="raster_min"
+                   value="{{ raster_min }}" placeholder="blank = auto">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label" for="id_raster_max">Color max</label>
+            <input class="form-control" type="text" id="id_raster_max" name="raster_max"
+                   value="{{ raster_max }}" placeholder="blank = auto">
+          </div>
+        </div>
       </div>
 
       {# ---- Per-record region & time (WCS + GEE): same shapefile + date-range mapping as NetCDF ---- #}
@@ -971,6 +1044,7 @@
       show('.hd-kind-wms', k === 'wms');
       show('.hd-kind-wcs', k === 'wcs');
       show('.hd-kind-gee', k === 'gee');
+      show('.hd-kind-raster', k === 'netcdf' || k === 'thredds' || k === 'wcs');
       // Per-record region & time mapping applies to the raster kinds + REST ({bbox}/{datetime}).
       show('.hd-kind-prparams', k === 'wcs' || k === 'gee' || k === 'rest');
     }
@@ -1292,6 +1366,16 @@
       setVal('id_gee_project', cfg.gee_project);
       setVal('id_gee_start', cfg.gee_start);
       setVal('id_gee_end', cfg.gee_end);
+      setVal('id_gee_raster_band', cfg.gee_raster_band);
+      setVal('id_gee_temporal', cfg.gee_temporal);
+      setVal('id_gee_palette', cfg.gee_palette);
+      setVal('id_gee_vis_min', cfg.gee_vis_min);
+      setVal('id_gee_vis_max', cfg.gee_vis_max);
+      setVal('id_gee_dimensions', cfg.gee_dimensions);
+      setVal('id_raster_band', cfg.raster_band);
+      setVal('id_raster_palette', cfg.raster_palette);
+      setVal('id_raster_min', cfg.raster_min);
+      setVal('id_raster_max', cfg.raster_max);
       var kindSel = document.getElementById('id_kind');
       if (kindSel) kindSel.dispatchEvent(new Event('change'));   // toggle sections
       setVal('id_url_template', cfg.url_template);
