@@ -545,8 +545,13 @@
         if (!lbl || !lbl.value.trim()) return;
         var tv = typ ? typ.value : 'text';
         if (tv === 'section' || tv === 'column' || tv === 'tab') return;   // layout markers, not data
-        // NOTE: API/connector fields are INCLUDED — a script reads them as live data.
-        out.push({ slug: slugify(lbl.value), label: lbl.value.trim(), type: tv });
+        // Use the field's REAL stored key (data-field-key) when present — the browser's
+        // slugify can disagree with the server's for a non-ASCII label (e.g. "m³/s" -> the
+        // server stores ..._m3s but slugify here gives ..._m_s). A mismatched slug makes the
+        // input map to a non-existent field, so the script never gets the value.
+        // API/connector fields are INCLUDED — a script reads them as live data.
+        var realKey = wrap.getAttribute('data-field-key');
+        out.push({ slug: realKey || slugify(lbl.value), label: lbl.value.trim(), type: tv });
       });
       return out;
     }
