@@ -5,6 +5,7 @@ This is the data-driven 'one code-time class, request-time content' pattern.
 import base64
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
@@ -369,7 +370,74 @@ def report_builder(request):
 
 # --- AI: "Chat with your data" via a LOCAL Ollama (offline-safe). The LLM answers
 #     grounded in a doctype's actual records — no data leaves the machine. ---
-OLLAMA_URL = "http://localhost:11434"
+# Ollama endpoint — configurable so the AI tools work against a remote/containerised
+# Ollama, not only localhost. Set HYDRODESK_OLLAMA_URL (or OLLAMA_HOST) to override.
+OLLAMA_URL = (os.environ.get("HYDRODESK_OLLAMA_URL")
+              or os.environ.get("OLLAMA_HOST")
+              or "http://localhost:11434").rstrip("/")
+
+
+class _AIError(RuntimeError):
+    """A clean, user-facing AI/Ollama failure. Carries a short message safe to show in the
+    UI (never a raw traceback) and an HTTP status the controller should return."""
+
+    def __init__(self, message, status=502):
+        super().__init__(message)
+        self.status = status
+
+
+def _pick_model(models, prefer=()):
+    """Choose a model from the live list by preference prefixes, else the first. None if the
+    list is empty. Centralises the per-endpoint model selection so it can't drift."""
+    if not models:
+        return None
+    for pat in prefer:
+        for name in models:
+            if name and name.startswith(pat):
+                return name
+    return models[0]
+
+
+def _resolve_model(data, models, prefer=()):
+    """Resolve the model to use: an explicit, VALID ?model= wins; otherwise _pick_model.
+    Raises _AIError(502) when Ollama has no models, or _AIError(400) for an unknown ?model=."""
+    if not models:
+        raise _AIError("Ollama isn't reachable at %s (no models). Start it and pull a model, "
+                       "e.g. `ollama pull llama3.2`." % OLLAMA_URL, status=502)
+    want = ((data or {}).get("model") or "").strip()
+    if want:
+        if want in models:
+            return want
+        raise _AIError("Unknown model %r. Available: %s." % (want, ", ".join(models)), status=400)
+    return _pick_model(models, prefer)
+
+
+def _extract_json(text):
+    """Best-effort recover a JSON object/array a model wrapped in prose or ``` fences
+    despite format=json. Returns the parsed value or None."""
+    if not text:
+        return None
+    s = text.strip()
+    try:
+        return json.loads(s)
+    except (ValueError, TypeError):
+        pass
+    m = re.search(r"```(?:json)?\s*\n?(.*?)```", s, re.S)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except (ValueError, TypeError):
+            pass
+    # first balanced {...} or [...] span
+    for op, cl in (("{", "}"), ("[", "]")):
+        i, j = s.find(op), s.rfind(cl)
+        if 0 <= i < j:
+            try:
+                return json.loads(s[i:j + 1])
+            except (ValueError, TypeError):
+                pass
+    return None
+
 
 _AI_SYSTEM = (
     "You are HydroDesk's data assistant, helping a hydrologist understand their data. "
@@ -390,16 +458,40 @@ def _ai_models():
 
 def _ollama_chat(model, messages, timeout=120, fmt=None):
     """One non-streaming Ollama chat completion -> the assistant text. ``fmt='json'``
-    forces a JSON object. Strips any <think>…</think> block (deepseek-r1) for clean text."""
+    forces a JSON object. Strips any <think>…</think> block (deepseek-r1) for clean text.
+    Raises _AIError with a clear, user-safe message on any transport/HTTP/parse failure —
+    never a raw requests/JSON traceback — so every caller can surface it consistently."""
     import requests
     payload = {"model": model, "messages": messages, "stream": False,
                "options": {"temperature": 0.2}}
     if fmt:
         payload["format"] = fmt
-    r = requests.post(OLLAMA_URL + "/api/chat", timeout=timeout, json=payload)
-    r.raise_for_status()
-    txt = ((r.json().get("message") or {}).get("content") or "")
+    try:
+        r = requests.post(OLLAMA_URL + "/api/chat", timeout=timeout, json=payload)
+    except requests.RequestException as exc:
+        raise _AIError("Ollama is unreachable at %s (%s). Is it running?"
+                       % (OLLAMA_URL, type(exc).__name__))
+    if r.status_code == 404:
+        raise _AIError("Model %r isn't pulled in Ollama. Run `ollama pull %s`." % (model, model))
+    if r.status_code != 200:
+        raise _AIError("Ollama returned HTTP %s for model %r." % (r.status_code, model))
+    try:
+        body = r.json()
+    except ValueError:
+        raise _AIError("Ollama returned a non-JSON response from %s (is that an Ollama "
+                       "server?)." % OLLAMA_URL)
+    txt = ((body.get("message") or {}).get("content") or "")
     return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
+
+
+def _ollama_json(model, messages, timeout=120):
+    """Ollama chat in JSON mode, parsed to a Python object. Tolerates a model that wraps
+    its JSON in prose/fences (via _extract_json). Raises _AIError if no JSON can be parsed."""
+    raw = _ollama_chat(model, messages, timeout=timeout, fmt="json")
+    obj = _extract_json(raw)
+    if obj is None:
+        raise _AIError("The model %r did not return valid JSON. Try another model." % model)
+    return obj
 
 
 # In-app guide ("clicky"-style): a local model answers HOW-TO questions and POINTS at the
@@ -440,9 +532,10 @@ def guide_query(request):
     if not question:
         return JsonResponse({"ok": False, "error": "ask a question"}, status=400)
     models = _ai_models()
-    if not models:
-        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
-    model = next((x for x in models if x.startswith("llama3.2")), models[0])
+    try:
+        model = _resolve_model(data, models, prefer=("llama3.2",))
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     kb = "\n".join("- %s — %s (%s)" % (t["key"], t["label"], t["help"]) for t in _GUIDE_TARGETS)
     system = (
         "You are HydroDesk's friendly in-app guide for non-coding hydrologists. HydroDesk is a "
@@ -453,11 +546,10 @@ def guide_query(request):
         "if none fits. The user is currently on page: " + str(data.get("page") or "/") +
         ". Reply with ONLY a JSON object: {\"answer\": \"...\", \"point\": \"<key or null>\"}.")
     try:
-        raw = _ollama_chat(model, [{"role": "system", "content": system},
-                                   {"role": "user", "content": question[:2000]}], fmt="json")
-        obj = json.loads(raw)
-    except Exception as exc:
-        return JsonResponse({"ok": False, "error": "guide error: %s" % str(exc)[:120]}, status=502)
+        obj = _ollama_json(model, [{"role": "system", "content": system},
+                                   {"role": "user", "content": question[:2000]}])
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     point = obj.get("point") if isinstance(obj, dict) else None
     sel = next((t["sel"] for t in _GUIDE_TARGETS if t["key"] == point), None)
     return JsonResponse({"ok": True, "answer": (obj.get("answer") or "").strip() or "(no answer)",
@@ -492,12 +584,10 @@ def ai_codegen(request):
     inputs = [str(x).strip() for x in (data.get("inputs") or []) if str(x).strip()]
     outputs = [str(x).strip() for x in (data.get("outputs") or []) if str(x).strip()]
     models = _ai_models()
-    if not models:
-        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
-    want = (data.get("model") or "").strip()
-    model = (want if want in models else
-             next((x for x in models if x.startswith(("deepseek-coder", "qwen", "codellama"))),
-                  next((x for x in models if x.startswith("llama3.2")), models[0])))
+    try:
+        model = _resolve_model(data, models, prefer=("deepseek-coder", "qwen", "codellama", "llama3.2"))
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     sys = (
         "You write short, correct Python for HydroDesk's SANDBOXED script runner. Rules:\n"
         "- The INPUT variables are ALREADY defined — use them, never redefine or read input().\n"
@@ -511,8 +601,8 @@ def ai_codegen(request):
     try:
         raw = _ollama_chat(model, [{"role": "system", "content": sys},
                                    {"role": "user", "content": description[:2000]}], timeout=180)
-    except Exception as exc:
-        return JsonResponse({"ok": False, "error": "codegen failed: %s" % str(exc)[:120]}, status=502)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     code = _strip_code_fences(raw)
     syntax_ok = True
     try:
@@ -565,11 +655,10 @@ def ai_build_doctype(request):
     if not description:
         return JsonResponse({"ok": False, "error": "describe the doctype"}, status=400)
     models = _ai_models()
-    if not models:
-        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
-    model = (data.get("model") if data.get("model") in models else
-             next((x for x in models if x.startswith("llama3.2")),
-                  next((x for x in models if x.startswith("qwen")), models[0])))
+    try:
+        model = _resolve_model(data, models, prefer=("llama3.2", "qwen"))
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     sys = (
         "You design HydroDesk doctypes (data tables) for hydrologists. From the user's request, "
         "return ONLY a JSON object:\n"
@@ -584,11 +673,10 @@ def ai_build_doctype(request):
         "- Make the FIRST field the human-readable name/title (type text). Only include fields the user asked for, "
         "plus the name field. Keep labels short and clear.")
     try:
-        raw = _ollama_chat(model, [{"role": "system", "content": sys},
-                                   {"role": "user", "content": description[:2000]}], fmt="json", timeout=180)
-        spec = json.loads(raw)
-    except Exception as exc:
-        return JsonResponse({"ok": False, "error": "design failed: %s" % str(exc)[:120]}, status=502)
+        spec = _ollama_json(model, [{"role": "system", "content": sys},
+                                    {"role": "user", "content": description[:2000]}], timeout=180)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     name = re.sub(r"[_]+", " ", (spec.get("name") or "").strip()).strip() if isinstance(spec, dict) else ""
     raw_fields = spec.get("fields") if isinstance(spec, dict) else None
     if not name or not isinstance(raw_fields, list) or not raw_fields:
@@ -766,11 +854,10 @@ def ai_build_connector(request):
     if not description:
         return JsonResponse({"ok": False, "error": "describe the data source to connect"}, status=400)
     models = _ai_models()
-    if not models:
-        return JsonResponse({"ok": False, "error": "Ollama isn't running on :11434"}, status=502)
-    model = (data.get("model") if data.get("model") in models else
-             next((x for x in models if x.startswith("llama3.2")),
-                  next((x for x in models if x.startswith("qwen")), models[0])))
+    try:
+        model = _resolve_model(data, models, prefer=("llama3.2", "qwen"))
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
 
     menu = "\n".join("- %s: %s" % (k, v) for k, v in _AI_CONNECTOR_PRESETS.items())
     sys = (
@@ -793,12 +880,10 @@ def ai_build_connector(request):
         "- Keep \"name\" short and human (e.g. 'Provo River Discharge').\n\n"
         "MENU:\n%s" % menu)
     try:
-        raw = _ollama_chat(model, [{"role": "system", "content": sys},
-                                   {"role": "user", "content": description[:2000]}],
-                           fmt="json", timeout=180)
-        spec = json.loads(raw)
-    except Exception as exc:
-        return JsonResponse({"ok": False, "error": "design failed: %s" % str(exc)[:120]}, status=502)
+        spec = _ollama_json(model, [{"role": "system", "content": sys},
+                                    {"role": "user", "content": description[:2000]}], timeout=180)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     if not isinstance(spec, dict):
         return JsonResponse({"ok": False, "error": "the model didn't return a usable config"}, status=502)
 
@@ -935,7 +1020,7 @@ def ai_chat(request):
     with Session(engine) as session:
         slugs = _all_slugs(session)
     models = _ai_models()
-    default_model = next((x for x in models if x.startswith("llama3.2")), models[0] if models else "")
+    default_model = _pick_model(models, ("llama3.2",)) or ""
     ctx = {"slugs": slugs, "selected": request.GET.get("slug") or (slugs[0]["slug"] if slugs else None),
            "models": models, "default_model": default_model, "ollama_up": bool(models)}
     return render(request, "hydrodesk/ai_chat.html", ctx)
@@ -974,10 +1059,8 @@ def ai_chat_query(request):
     messages.append({"role": "user", "content": question[:4000]})
     try:
         answer = _ollama_chat(model, messages)
-    except Exception as exc:
-        return JsonResponse({"ok": False,
-                             "error": "Ollama call failed (%s). Is it running on :11434?"
-                                      % str(exc)[:120]}, status=502)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     return JsonResponse({"ok": True, "answer": answer or "(no answer)"})
 
 
