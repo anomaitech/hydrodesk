@@ -1421,6 +1421,29 @@ def ai_copilot(request):
     req = (data.get("request") or data.get("question") or "").strip()
     if not req:
         return JsonResponse({"ok": False, "error": "tell me what to fill or where to go"}, status=400)
+    # Skill: "open / show me / go to the X list" -> navigate to that doctype's list view. A
+    # deliberate navigation the user asked for (distinct from the removed auto-"take me there");
+    # gated on a leading open verb so it never fires on "add a field called station".
+    if re.match(r"^\s*(?:please\s+|can you\s+|could you\s+)?"
+                r"(?:open|show|go\s*to|goto|take me|navigate|view|browse|see|list)\b", req, re.I):
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            all_slugs = _all_slugs(session)
+        low_us = re.sub(r"[^a-z0-9]+", "_", req.lower())
+        best, blen = None, 0
+        for s in all_slugs:
+            for cand in (s["slug"].lower(), (s.get("name") or "").lower()):
+                cu = re.sub(r"[^a-z0-9]+", "_", cand).strip("_")
+                if cu and cu in low_us and len(cu) > blen:
+                    best, blen = s, len(cu)
+        if best:
+            try:
+                url = reverse("hydrodesk:list", kwargs={"slug": best["slug"]})
+            except Exception:
+                url = None
+            if url:
+                return JsonResponse({"ok": True, "actions": [], "navigate": url,
+                                     "answer": "Opening the %s list…" % (best.get("name") or best["slug"])})
     # DATA mode: on a LIST or RECORD page the client sends data_slug — answer the user's question
     # grounded in that doctype's records (the Chat-with-data engine), right here in the panel.
     data_slug = (data.get("data_slug") or "").strip()

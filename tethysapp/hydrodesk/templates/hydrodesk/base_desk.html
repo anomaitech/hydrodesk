@@ -1243,6 +1243,7 @@
       postJSON("{% url 'hydrodesk:ai_copilot' %}", payload)
         .then(function(j){
           if(!j.ok){ coBody.textContent="⚠ "+(j.error||"error"); return; }
+          if(j.navigate){ coBody.textContent=(j.answer||"Opening…"); location.href=j.navigate; return; }
           if(dataSlug){ coBody.textContent=(j.answer||"").trim()||"(no answer)"; return; }
           var r=applyActions(j.actions);
           if(r.groups.length){
