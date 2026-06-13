@@ -1192,25 +1192,28 @@
     function flash(el){ if(!el) return; el.scrollIntoView({block:"center",behavior:"smooth"});
       el.classList.add("hd-ai-pointed"); setTimeout(function(){ el.classList.remove("hd-ai-pointed"); },4500); }
     function applyActions(actions){
-      var n=0;
+      var r={n:0, notes:[]};
       (actions||[]).forEach(function(a){
         var el=actTarget(a.id); if(!el) return;
         if(a.op==="set"){
           if(el.type==="checkbox"){ el.checked=(a.value===true||a.value==="true"||a.value===1); } else { el.value=a.value; }
           el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true}));
-          flash(el); n++;
-        } else if(a.op==="click"){ flash(el); try{ el.click(); }catch(e){} n++; }
+          flash(el); r.n++;
+        } else if(a.op==="click"){ flash(el); try{ el.click(); }catch(e){} r.n++; }
         else if(a.op==="open"){
           flash(el); try{ el.focus({preventScroll:true}); }catch(e){}
-          if(el.tagName==="SELECT" && el.options.length>1){      // visually pop a dropdown open inline
-            var prev=el.size; el.size=Math.min(el.options.length,8);
+          if(el.tagName==="SELECT" && el.options.length){
+            var prev=el.size; el.size=Math.min(el.options.length,8);   // pop the dropdown open inline
             var close=function(){ try{ el.size=prev||0; }catch(e){} el.removeEventListener("change",close); el.removeEventListener("blur",close); };
-            el.addEventListener("change",close); el.addEventListener("blur",close); setTimeout(close,6000);
+            el.addEventListener("change",close); el.addEventListener("blur",close); setTimeout(close,8000);
+            // …and list the REAL options so the user sees them exactly as they are
+            var labels=Array.prototype.map.call(el.options,function(o){return (o.textContent||o.value||"").trim();}).filter(Boolean);
+            if(labels.length) r.notes.push((fieldLabel(el)||el.name||"Options")+": "+labels.join(", "));
           }
-          n++;
+          r.n++;
         }
       });
-      return n;
+      return r;
     }
     function copilotRun(text){
       if(!text.trim()) return; coQ.value="";
@@ -1220,9 +1223,10 @@
                targets:collectTargets(), form:(ttlEl?ttlEl.textContent.trim():"")})
         .then(function(j){
           if(!j.ok){ coBody.textContent="⚠ "+(j.error||"error"); return; }
-          var n=applyActions(j.actions);
-          coBody.textContent = n ? ("✓ applied "+n+" change"+(n===1?"":"s")+" on this page — review before saving.")
-                                  : ((j.answer||"").trim() || "I couldn't find that on this page.");
+          var r=applyActions(j.actions);
+          if(r.notes.length){ coBody.textContent=r.notes.join("\n"); }
+          else if(r.n){ coBody.textContent="✓ applied "+r.n+" change"+(r.n===1?"":"s")+" on this page — review before saving."; }
+          else { coBody.textContent=(j.answer||"").trim() || "I couldn't find that on this page."; }
         }).catch(function(e){ coBody.textContent="⚠ "+e; }).finally(function(){ coAsk.disabled=false; coQ.focus(); });
     }
     coAsk.addEventListener("click", function(){ copilotRun(coQ.value); });
