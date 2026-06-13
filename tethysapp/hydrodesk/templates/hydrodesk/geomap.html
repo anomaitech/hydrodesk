@@ -1,23 +1,23 @@
 {% extends "hydrodesk/base_desk.html" %}
 {% block title %}Map: {{ display_name }} - {{ block.super }}{% endblock %}
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Map</div>
-  <div class="frappe-page-head"><div class="frappe-title-area">
-    <h1 class="frappe-title">Map</h1>
-    <p class="frappe-muted">Records on a map, colored by an attribute you choose. {{ n_features }} mapped feature{{ n_features|pluralize }}.</p>
+<div class="desk-page">
+  <div class="desk-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Map</div>
+  <div class="desk-page-head"><div class="desk-title-area">
+    <h1 class="desk-title">Map</h1>
+    <p class="desk-muted">Records on a map, colored by an attribute you choose. {{ n_features }} mapped feature{{ n_features|pluralize }}.</p>
   </div></div>
 
-  <form method="get" class="frappe-form-card" style="padding:14px 18px;margin-bottom:14px;display:flex;gap:14px;align-items:end;flex-wrap:wrap;">
-    <div class="frappe-form-group" style="margin:0;min-width:240px;">
-      <label class="frappe-label">Doctype</label>
+  <form method="get" class="desk-form-card" style="padding:14px 18px;margin-bottom:14px;display:flex;gap:14px;align-items:end;flex-wrap:wrap;">
+    <div class="desk-form-group" style="margin:0;min-width:240px;">
+      <label class="desk-label">Doctype</label>
       <select class="form-select" name="slug" onchange="this.form.submit()">
         {% for t in spatial %}<option value="{{ t.slug }}"{% if t.slug == selected %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
         {% if not spatial %}<option>(no spatial doctypes)</option>{% endif %}
       </select>
     </div>
-    <div class="frappe-form-group" style="margin:0;min-width:220px;">
-      <label class="frappe-label">Color by</label>
+    <div class="desk-form-group" style="margin:0;min-width:220px;">
+      <label class="desk-label">Color by</label>
       <select class="form-select" id="hd-color-by">
         <option value="">&mdash; uniform &mdash;</option>
         {% for f in color_fields %}<option value="{{ f.key }}" data-kind="{{ f.kind }}"{% if f.key == color_by %} selected{% endif %}>{{ f.title }}</option>{% endfor %}
@@ -26,12 +26,12 @@
   </form>
 
   {% if n_features %}
-  <div class="frappe-form-card" style="padding:0;overflow:hidden;position:relative;">
+  <div class="desk-form-card" style="padding:0;overflow:hidden;position:relative;">
     <div id="hd-map" style="height:560px;width:100%;"></div>
     <div id="hd-legend" style="position:absolute;bottom:14px;right:14px;background:#fff;border:1px solid #e6e9ee;border-radius:6px;padding:8px 12px;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,.1);max-width:230px;z-index:500;"></div>
   </div>
   {% else %}
-  <div class="frappe-muted">This doctype has no records with geometry yet. <a href="{{ list_url }}">Add one</a> (draw it on the map).</div>
+  <div class="desk-muted">This doctype has no records with geometry yet. <a href="{{ list_url }}">Add one</a> (draw it on the map).</div>
   {% endif %}
 </div>
 

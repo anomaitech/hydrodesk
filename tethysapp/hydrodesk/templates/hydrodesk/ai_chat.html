@@ -3,28 +3,28 @@
 {% block nav_active_ai %} active{% endblock %}
 {% block desk_content %}
 {% csrf_token %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Chat with data</div>
-  <div class="frappe-page-head"><div class="frappe-title-area">
-    <h1 class="frappe-title">Chat with your data <span class="indicator-pill" style="background:#ecf7f0;color:#0a9d6e;font-size:11px;">local · Ollama</span></h1>
-    <p class="frappe-muted">Ask questions in plain English &mdash; a local model answers grounded in a doctype's records. Nothing leaves this machine.</p>
+<div class="desk-page">
+  <div class="desk-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Chat with data</div>
+  <div class="desk-page-head"><div class="desk-title-area">
+    <h1 class="desk-title">Chat with your data <span class="indicator-pill" style="background:#ecf7f0;color:#0a9d6e;font-size:11px;">local · Ollama</span></h1>
+    <p class="desk-muted">Ask questions in plain English &mdash; a local model answers grounded in a doctype's records. Nothing leaves this machine.</p>
   </div></div>
 
   {% if not ollama_up %}
-  <div class="frappe-form-card" style="border-color:#f5c2c7;background:#fff5f5;padding:12px 16px;color:#b42318;">
+  <div class="desk-form-card" style="border-color:#f5c2c7;background:#fff5f5;padding:12px 16px;color:#b42318;">
     Ollama isn't reachable on <code>localhost:11434</code>. Start it (<code>ollama serve</code>) and pull a model
     (<code>ollama pull llama3.2</code>), then reload.
   </div>
   {% else %}
-  <div class="frappe-form-card" style="padding:14px 18px;margin-bottom:14px;display:flex;gap:14px;align-items:end;flex-wrap:wrap;">
-    <div class="frappe-form-group" style="margin:0;min-width:220px;">
-      <label class="frappe-label">Data (doctype)</label>
+  <div class="desk-form-card" style="padding:14px 18px;margin-bottom:14px;display:flex;gap:14px;align-items:end;flex-wrap:wrap;">
+    <div class="desk-form-group" style="margin:0;min-width:220px;">
+      <label class="desk-label">Data (doctype)</label>
       <select class="form-select" id="ai-slug">
         {% for t in slugs %}<option value="{{ t.slug }}"{% if t.slug == selected %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
       </select>
     </div>
-    <div class="frappe-form-group" style="margin:0;min-width:200px;">
-      <label class="frappe-label">Model</label>
+    <div class="desk-form-group" style="margin:0;min-width:200px;">
+      <label class="desk-label">Model</label>
       <select class="form-select" id="ai-model">
         {% for m in models %}<option value="{{ m }}"{% if m == default_model %} selected{% endif %}>{{ m }}</option>{% endfor %}
       </select>
@@ -32,9 +32,9 @@
     <button class="btn btn-default btn-sm" id="ai-clear" type="button" style="margin-bottom:2px;">Clear chat</button>
   </div>
 
-  <div class="frappe-form-card" style="padding:0;display:flex;flex-direction:column;height:540px;">
+  <div class="desk-form-card" style="padding:0;display:flex;flex-direction:column;height:540px;">
     <div id="ai-messages" style="flex:1;overflow-y:auto;padding:16px 20px;">
-      <div class="frappe-muted frappe-text-sm" id="ai-empty">
+      <div class="desk-muted desk-text-sm" id="ai-empty">
         Try: <a href="#" class="ai-suggest">Which scenario has the highest estimated loss?</a> &middot;
         <a href="#" class="ai-suggest">How many buildings are flooded in total?</a> &middot;
         <a href="#" class="ai-suggest">Summarize this dataset.</a>

@@ -3,19 +3,19 @@
 {% block title %}Schedules - {{ block.super }}{% endblock %}
 {% block nav_active_schedules %} active{% endblock %}
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Schedules</div>
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">Schedules</h1>
+<div class="desk-page">
+  <div class="desk-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Schedules</div>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">Schedules</h1>
       <span class="indicator-pill gray">{{ record_count }} schedule{{ record_count|pluralize }}</span>
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{{ alerts_url }}"><i class="bi bi-bell"></i> Alerts</a>
       <a class="btn btn-primary btn-sm" href="{{ new_url }}"><i class="bi bi-plus-lg"></i> New Schedule</a>
     </div>
   </div>
-  <p class="frappe-muted frappe-text-sm" style="margin:-10px 0 14px;">
+  <p class="desk-muted desk-text-sm" style="margin:-10px 0 14px;">
     Every interval, a schedule can <strong>refresh</strong> a doctype's records (re-run formulas + scripts &rarr;
     re-fetch live connector data) and raise <strong>alerts</strong> when a field crosses a threshold.
     Due schedules fire automatically (an in-app scheduler checks ~every minute); <strong>Run now</strong>
@@ -30,11 +30,11 @@
       padding:1px 7px; border-radius:10px; font-weight:600; margin-right:4px; white-space:nowrap; }
     .notify-chip.green { background:#e6f4ea; color:#137333; }
     .notify-chip.red   { background:#fce8e6; color:#c5221f; }
-    .notify-chip.gray  { background:var(--fr-control-bg,#f1f3f4); color:var(--fr-text-muted,#5f6368); }
+    .notify-chip.gray  { background:var(--desk-control-bg,#f1f3f4); color:var(--desk-text-muted,#5f6368); }
     html[data-theme="dark"] .notify-chip.green { background:rgba(24,128,56,.22); color:#a8dab5; }
     html[data-theme="dark"] .notify-chip.red   { background:rgba(217,48,37,.22); color:#f6aea9; }
     .hd-test-banner { display:flex; gap:10px; align-items:flex-start; padding:11px 14px;
-      border-radius:8px; margin:0 0 14px; border:1px solid var(--fr-border-color); }
+      border-radius:8px; margin:0 0 14px; border:1px solid var(--desk-border-color); }
     .hd-test-banner.ok  { background:#e6f4ea; border-color:#a8dab5; color:#137333; }
     .hd-test-banner.bad { background:#fce8e6; border-color:#f3b9b3; color:#c5221f; }
     .hd-test-banner i { font-size:16px; margin-top:1px; }
@@ -48,41 +48,41 @@
     <i class="bi bi-{% if tested_banner.ok %}check-circle-fill{% else %}exclamation-triangle-fill{% endif %}"></i>
     <div>
       <strong>Test notification{% if tested_banner.name %} — {{ tested_banner.name }}{% endif %}</strong>
-      {% for ln in tested_banner.lines %}<div class="frappe-text-sm">{{ ln }}</div>{% endfor %}
+      {% for ln in tested_banner.lines %}<div class="desk-text-sm">{{ ln }}</div>{% endfor %}
     </div>
   </div>
   {% endif %}
 
   {% if rows %}
-  <div class="frappe-list">
-    <div class="frappe-list-head">
-      <span class="frappe-list-check" style="visibility:hidden;"></span>
-      <span class="frappe-list-subject head">Name</span>
-      <span class="frappe-list-col head">Target</span>
-      <span class="frappe-list-col head">Every</span>
-      <span class="frappe-list-col head">Alerts</span>
-      <span class="frappe-list-col head">Last run</span>
-      <span class="frappe-list-col head hd-notify-col">Notify</span>
-      <span class="frappe-list-activity">&nbsp;</span>
+  <div class="desk-list">
+    <div class="desk-list-head">
+      <span class="desk-list-check" style="visibility:hidden;"></span>
+      <span class="desk-list-subject head">Name</span>
+      <span class="desk-list-col head">Target</span>
+      <span class="desk-list-col head">Every</span>
+      <span class="desk-list-col head">Alerts</span>
+      <span class="desk-list-col head">Last run</span>
+      <span class="desk-list-col head hd-notify-col">Notify</span>
+      <span class="desk-list-activity">&nbsp;</span>
     </div>
     {% for row in rows %}
-    <div class="frappe-list-row">
-      <input type="checkbox" class="frappe-list-check" aria-label="Select row">
-      <span class="frappe-list-subject">
+    <div class="desk-list-row">
+      <input type="checkbox" class="desk-list-check" aria-label="Select row">
+      <span class="desk-list-subject">
         <a href="{{ row.edit_url }}">{{ row.name }}</a>
         {% if not row.enabled %}<span class="indicator-pill gray" style="margin-left:6px;">disabled</span>{% endif %}
         {% if row.refresh %}<span class="indicator-pill blue" style="margin-left:6px;">refresh</span>{% endif %}
       </span>
-      <span class="frappe-list-col"><code>{{ row.target_slug }}</code></span>
-      <span class="frappe-list-col">{{ row.interval }} min</span>
-      <span class="frappe-list-col">{{ row.n_alerts }}</span>
-      <span class="frappe-list-col frappe-text-sm">{{ row.last_run }}</span>
-      <span class="frappe-list-col hd-notify-col hd-notify-cell">
+      <span class="desk-list-col"><code>{{ row.target_slug }}</code></span>
+      <span class="desk-list-col">{{ row.interval }} min</span>
+      <span class="desk-list-col">{{ row.n_alerts }}</span>
+      <span class="desk-list-col desk-text-sm">{{ row.last_run }}</span>
+      <span class="desk-list-col hd-notify-col hd-notify-cell">
         {% if row.email_status %}<span class="notify-chip {{ row.email_status.cls }}" title="{{ row.email_status.title }}"><i class="bi bi-envelope"></i> {{ row.email_status.label }}</span>{% endif %}
         {% if row.webhook_status %}<span class="notify-chip {{ row.webhook_status.cls }}" title="{{ row.webhook_status.title }}"><i class="bi bi-broadcast"></i> {{ row.webhook_status.label }}</span>{% endif %}
-        {% if not row.has_notify %}<span class="frappe-muted frappe-text-sm">—</span>{% endif %}
+        {% if not row.has_notify %}<span class="desk-muted desk-text-sm">—</span>{% endif %}
       </span>
-      <span class="frappe-list-activity">
+      <span class="desk-list-activity">
         <form method="post" action="{{ row.run_url }}" style="display:inline;">{% csrf_token %}
           <button type="submit" class="btn btn-link btn-sm" style="color:#1a7f37;">Run now</button>
         </form>
@@ -101,7 +101,7 @@
     {% endfor %}
   </div>
   {% else %}
-  <div class="frappe-list"><div class="frappe-list-empty">
+  <div class="desk-list"><div class="desk-list-empty">
     <span class="ico"><i class="bi bi-clock-history"></i></span>
     No schedules yet. <a href="{{ new_url }}">Create one</a> to auto-refresh records and raise alerts.
   </div></div>

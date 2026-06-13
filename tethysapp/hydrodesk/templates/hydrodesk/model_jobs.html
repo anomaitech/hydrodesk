@@ -3,23 +3,23 @@
 {% block title %}Model Jobs - {{ block.super }}{% endblock %}
 {% block nav_active_model_jobs %} active{% endblock %}
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb">
+<div class="desk-page">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Model Jobs
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">Model Jobs</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">Model Jobs</h1>
       <span class="indicator-pill gray">{{ total }} job{{ total|pluralize }}</span>
       {% if running %}<span class="indicator-pill blue">{{ running }} running</span>{% endif %}
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:model_jobs' %}"><i class="bi bi-arrow-clockwise"></i> Refresh</a>
     </div>
   </div>
 
-  <p class="frappe-muted frappe-text-sm" style="margin:-10px 0 14px;">
+  <p class="desk-muted desk-text-sm" style="margin:-10px 0 14px;">
     Every model run (per record) creates a Tethys job. The default backend is a local worker
     thread; a model can opt into a <strong>Condor</strong>/<strong>Dask</strong> scheduler for cluster execution
     (it falls back to the thread when no scheduler is configured). Output files and the full run log are
@@ -27,10 +27,10 @@
   </p>
 
   {% if jobs %}
-  <div class="hd-jobs-wrap" style="border:1px solid var(--fr-border-color,#e2e6ea);border-radius:8px;overflow:hidden;background:#fff;">
+  <div class="hd-jobs-wrap" style="border:1px solid var(--desk-border-color,#e2e6ea);border-radius:8px;overflow:hidden;background:#fff;">
     <table class="hd-jobs" style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead>
-        <tr style="background:var(--fr-bg-color,#f7f8fa);color:var(--fr-text-muted,#6b7785);text-align:left;">
+        <tr style="background:var(--desk-bg-color,#f7f8fa);color:var(--desk-text-muted,#6b7785);text-align:left;">
           <th style="padding:8px 12px;">Status</th>
           <th style="padding:8px 12px;">Model · Record</th>
           <th style="padding:8px 12px;">Backend</th>
@@ -48,23 +48,23 @@
             {% elif j.status == 'Aborted' %}<span class="indicator-pill orange">Aborted</span>
             {% elif j.status == 'Running' %}<span class="indicator-pill blue">Running</span>
             {% else %}<span class="indicator-pill gray">{{ j.status }}</span>{% endif %}
-            <div class="frappe-muted frappe-text-xs" style="margin-top:2px;">{{ j.created|date:"M j, H:i" }}</div>
+            <div class="desk-muted desk-text-xs" style="margin-top:2px;">{{ j.created|date:"M j, H:i" }}</div>
           </td>
           <td style="padding:8px 12px;">
             <div style="font-weight:600;">{{ j.model|default:"model" }}</div>
             {% if j.slug and j.record_id %}
-              <a class="frappe-text-sm" href="{% url 'hydrodesk:detail' slug=j.slug record_id=j.record_id %}">{{ j.slug }} / {{ j.record_id|slice:":8" }}</a>
+              <a class="desk-text-sm" href="{% url 'hydrodesk:detail' slug=j.slug record_id=j.record_id %}">{{ j.slug }} / {{ j.record_id|slice:":8" }}</a>
             {% endif %}
           </td>
-          <td style="padding:8px 12px;"><code class="frappe-text-xs">{{ j.backend }}</code></td>
+          <td style="padding:8px 12px;"><code class="desk-text-xs">{{ j.backend }}</code></td>
           <td style="padding:8px 12px;max-width:340px;">
-            <div class="frappe-text-sm" style="word-break:break-word;">{{ j.message|default:"&mdash;" }}</div>
-            {% for n in j.notes %}<div class="frappe-text-xs" style="color:#9a6700;">{{ n }}</div>{% endfor %}
+            <div class="desk-text-sm" style="word-break:break-word;">{{ j.message|default:"&mdash;" }}</div>
+            {% for n in j.notes %}<div class="desk-text-xs" style="color:#9a6700;">{{ n }}</div>{% endfor %}
           </td>
           <td style="padding:8px 12px;">
             {% for a in j.artifacts %}
-              <a class="frappe-text-xs" href="{{ a.url }}" style="display:block;" title="download">&#128190; {{ a.name }}</a>
-            {% empty %}<span class="frappe-muted frappe-text-xs">&mdash;</span>{% endfor %}
+              <a class="desk-text-xs" href="{{ a.url }}" style="display:block;" title="download">&#128190; {{ a.name }}</a>
+            {% empty %}<span class="desk-muted desk-text-xs">&mdash;</span>{% endfor %}
           </td>
           <td style="padding:8px 12px;text-align:right;white-space:nowrap;">
             {% if j.slug and j.record_id %}
@@ -85,7 +85,7 @@
     </table>
   </div>
   {% else %}
-  <div class="frappe-help" style="padding:14px;">No model runs yet. Bind a model to a doctype and click <strong>Run</strong> on a record.</div>
+  <div class="desk-help" style="padding:14px;">No model runs yet. Bind a model to a doctype and click <strong>Run</strong> on a record.</div>
   {% endif %}
 </div>
 {% endblock %}

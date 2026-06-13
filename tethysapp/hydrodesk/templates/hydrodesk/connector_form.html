@@ -19,22 +19,22 @@
 {% block nav_active_connectors %} active{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page frappe-page--form" style="max-width:1040px;">
+<div class="desk-page desk-page--form" style="max-width:1040px;">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
     <span class="sep">/</span><a href="{% url 'hydrodesk:connectors' %}">Connectors</a>
     <span class="sep">/</span>{{ page_title }}
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">{{ page_title }}</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">{{ page_title }}</h1>
       <span class="indicator-pill {% if mode == 'edit' %}blue{% else %}orange{% endif %}">
         {% if mode == 'edit' %}Editing{% else %}Draft{% endif %}
       </span>
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:connectors' %}">
         <i class="bi bi-arrow-left"></i> Back to Connectors
       </a>
@@ -51,15 +51,15 @@
   {% endif %}
 
   {# ---- Presets ---- #}
-  <div class="frappe-card" style="padding:14px 18px;margin-bottom:20px;">
-    <div class="frappe-section-head" style="margin-bottom:10px;">Presets</div>
+  <div class="desk-card" style="padding:14px 18px;margin-bottom:20px;">
+    <div class="desk-section-head" style="margin-bottom:10px;">Presets</div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;">
       {% for p in presets %}
       <button type="button" class="btn btn-default btn-sm hd-preset"
               data-config="{{ p.config }}">{{ p.label }}</button>
       {% endfor %}
     </div>
-    <div class="frappe-help" style="margin-top:8px;">
+    <div class="desk-help" style="margin-top:8px;">
       Presets prefill the URL, paths, auth, and the <strong>Inputs</strong> table
       (source-typed). USGS NWIS IV/DV map <code>sites</code>&larr;<code>nwis_site_id</code>;
       NWPS stage/flow maps <code>identifier</code>&larr;<code>nws_lid</code>;
@@ -67,21 +67,21 @@
     </div>
   </div>
 
-  <form method="post" action="{{ form_action }}" class="frappe-form-card" id="hd-connector-form" enctype="multipart/form-data" novalidate>
+  <form method="post" action="{{ form_action }}" class="desk-form-card" id="hd-connector-form" enctype="multipart/form-data" novalidate>
     {% csrf_token %}
 
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Connector</div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Connector</div>
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_name">Name<span class="req">*</span></label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_name">Name<span class="req">*</span></label>
         <input class="form-control" type="text" id="id_name" name="name"
                value="{{ name }}" placeholder="e.g. usgs_iv" required>
-        <div class="frappe-help">The exact name an API field's Options column references.</div>
+        <div class="desk-help">The exact name an API field's Options column references.</div>
       </div>
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_kind">Kind</label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_kind">Kind</label>
         <select class="form-select" id="id_kind" name="kind">
           <option value="rest"    {% if kind == 'rest' %}selected{% endif %}>REST / JSON API</option>
           <option value="netcdf"  {% if kind == 'netcdf' %}selected{% endif %}>NetCDF / OPeNDAP</option>
@@ -91,175 +91,175 @@
           <option value="wcs"     {% if kind == 'wcs' %}selected{% endif %}>WCS coverage service</option>
           <option value="gee"     {% if kind == 'gee' %}selected{% endif %}>Google Earth Engine</option>
         </select>
-        <div class="frappe-help">REST = a URL returning JSON. NetCDF/THREDDS = a gridded dataset (a variable becomes a time series + latest value). CSV = a tabular file (the whole table becomes one series). WMS = a map service (a GetMap image centred on the record's point). WCS = a coverage service (the value at the record's point). GEE = Google Earth Engine (sample an asset at the point — needs the earthengine-api package + a service-account credential).</div>
+        <div class="desk-help">REST = a URL returning JSON. NetCDF/THREDDS = a gridded dataset (a variable becomes a time series + latest value). CSV = a tabular file (the whole table becomes one series). WMS = a map service (a GetMap image centred on the record's point). WCS = a coverage service (the value at the record's point). GEE = Google Earth Engine (sample an asset at the point — needs the earthengine-api package + a service-account credential).</div>
       </div>
 
       {# ---- NetCDF / THREDDS source ---- #}
       <div class="hd-kind-netcdf">
-        <div class="hd-thredds-only frappe-form-group">
-          <label class="frappe-label" for="id_catalog_url">Catalog URL<span class="req">*</span></label>
+        <div class="hd-thredds-only desk-form-group">
+          <label class="desk-label" for="id_catalog_url">Catalog URL<span class="req">*</span></label>
           <input class="form-control" type="text" id="id_catalog_url" name="catalog_url"
                  value="{{ catalog_url }}" placeholder="https://thredds.example.org/.../catalog.xml">
         </div>
-        <div class="hd-thredds-only frappe-form-group">
-          <label class="frappe-label" for="id_dataset">Dataset (name contains)</label>
+        <div class="hd-thredds-only desk-form-group">
+          <label class="desk-label" for="id_dataset">Dataset (name contains)</label>
           <input class="form-control" type="text" id="id_dataset" name="dataset"
                  value="{{ dataset }}" placeholder="blank = first dataset in the catalog">
         </div>
-        <div class="hd-netcdf-only frappe-form-group">
-          <label class="frappe-label" for="id_dataset_url">Dataset URL<span class="req">*</span></label>
+        <div class="hd-netcdf-only desk-form-group">
+          <label class="desk-label" for="id_dataset_url">Dataset URL<span class="req">*</span></label>
           <input class="form-control" type="text" id="id_dataset_url" name="dataset_url"
                  value="{{ dataset_url }}"
                  placeholder="http://.../file.nc  &mdash; a .nc file or OPeNDAP/dodsC URL ({field} ok)">
-          <div class="frappe-help">A local <code>.nc</code> path or a remote OPeNDAP/dodsC URL. <code>{field}</code> placeholders are filled from the record.</div>
+          <div class="desk-help">A local <code>.nc</code> path or a remote OPeNDAP/dodsC URL. <code>{field}</code> placeholders are filled from the record.</div>
         </div>
         <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_variable">Variable(s)<span class="req">*</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_variable">Variable(s)<span class="req">*</span></label>
             <input class="form-control" type="text" id="id_variable" name="variable"
                    value="{{ variable }}" placeholder="e.g. SST, AIRT, SLP">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_x_dim">Time dim</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_x_dim">Time dim</label>
             <input class="form-control" type="text" id="id_x_dim" name="x_dim"
                    value="{{ x_dim|default:'time' }}" placeholder="time">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_nc_unit">Unit</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_nc_unit">Unit</label>
             <input class="form-control" type="text" id="id_nc_unit" name="nc_unit"
                    value="{{ nc_unit }}" placeholder="optional">
           </div>
         </div>
-        <div class="frappe-help">Comma-separate several variables (e.g. <code>SST, AIRT, SLP</code>) to get a combined table plus a per-variable series + latest value. Click <strong>Test</strong> below to list the dataset's variables. Each is averaged over its non-time dimensions. Declare <strong>Inputs</strong> below to substitute <code>{field}</code> into the dataset/catalog URL.</div>
-        <div class="frappe-form-group" style="margin-top:10px;">
-          <label class="frappe-label" for="id_nc_derived">Derived variables <span class="frappe-muted frappe-text-sm">(optional &mdash; a calculator between variables)</span></label>
+        <div class="desk-help">Comma-separate several variables (e.g. <code>SST, AIRT, SLP</code>) to get a combined table plus a per-variable series + latest value. Click <strong>Test</strong> below to list the dataset's variables. Each is averaged over its non-time dimensions. Declare <strong>Inputs</strong> below to substitute <code>{field}</code> into the dataset/catalog URL.</div>
+        <div class="desk-form-group" style="margin-top:10px;">
+          <label class="desk-label" for="id_nc_derived">Derived variables <span class="desk-muted desk-text-sm">(optional &mdash; a calculator between variables)</span></label>
           <textarea class="form-control" id="id_nc_derived" name="nc_derived" rows="2"
                     placeholder="WSPD = sqrt(UWND**2 + VWND**2)">{{ nc_derived }}</textarea>
-          <div class="frappe-help">One <code>name = formula</code> per line. The formula is evaluated per row over the real variables (by their exact names) and added as an extra <strong>table</strong> column. Operators <code>+ - * / ** %</code>; functions <code>sqrt, abs, min, max, round, floor, ceil, log, exp</code>.</div>
+          <div class="desk-help">One <code>name = formula</code> per line. The formula is evaluated per row over the real variables (by their exact names) and added as an extra <strong>table</strong> column. Operators <code>+ - * / ** %</code>; functions <code>sqrt, abs, min, max, round, floor, ceil, log, exp</code>.</div>
         </div>
 
         {# ---- Spatial filter (how the lat/lon axes are reduced) ---- #}
-        <div class="frappe-form-group" style="margin-top:10px;">
-          <label class="frappe-label" for="id_nc_spatial">Shapefile reduction</label>
+        <div class="desk-form-group" style="margin-top:10px;">
+          <label class="desk-label" for="id_nc_spatial">Shapefile reduction</label>
           <select class="form-select" id="id_nc_spatial" name="nc_spatial">
             <option value="shapefile_mean"  {% if nc_spatial == 'shapefile_mean' %}selected{% endif %}>Mean inside the shapefile (one series)</option>
             <option value="shapefile_cells" {% if nc_spatial == 'shapefile_cells' %}selected{% endif %}>All cells inside the shapefile (no aggregation)</option>
             {% if nc_spatial_legacy %}<option value="{{ nc_spatial_legacy }}" selected>(legacy: {{ nc_spatial_legacy }})</option>{% endif %}
           </select>
-          <div class="frappe-help">The region comes from each record's uploaded <strong>Shapefile</strong> field (or its geometry). <strong>Mean</strong> = average the grid cells inside the shapefile → one series. <strong>All cells</strong> = every cell inside the shapefile becomes its own <code>lat,lon</code> column, no averaging. (For the Test panel, paste a polygon in the Polygon box below as a stand-in.)</div>
+          <div class="desk-help">The region comes from each record's uploaded <strong>Shapefile</strong> field (or its geometry). <strong>Mean</strong> = average the grid cells inside the shapefile → one series. <strong>All cells</strong> = every cell inside the shapefile becomes its own <code>lat,lon</code> column, no averaging. (For the Test panel, paste a polygon in the Polygon box below as a stand-in.)</div>
         </div>
 
         {# ---- Time filter (date range, optionally per-record) ---- #}
-        <div class="frappe-form-group" style="margin-top:10px;">
-          <label class="frappe-label" for="id_nc_time_source">Time filter</label>
+        <div class="desk-form-group" style="margin-top:10px;">
+          <label class="desk-label" for="id_nc_time_source">Time filter</label>
           <select class="form-select" id="id_nc_time_source" name="nc_time_source">
             <option value="none"  {% if nc_time_source != 'range' %}selected{% endif %}>All timesteps</option>
             <option value="range" {% if nc_time_source == 'range' %}selected{% endif %}>Date range (start&ndash;end)</option>
           </select>
         </div>
         <div class="hd-nc-timerange" style="display:none;grid-template-columns:1fr 1fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_nc_time_start">Start</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_nc_time_start">Start</label>
             <input class="form-control" type="text" id="id_nc_time_start" name="nc_time_start"
                    value="{{ nc_time_start }}" placeholder="{start_date} or 2020-01-01">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_nc_time_end">End</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_nc_time_end">End</label>
             <input class="form-control" type="text" id="id_nc_time_end" name="nc_time_end"
                    value="{{ nc_time_end }}" placeholder="{end_date} or 2020-03-01">
           </div>
-          <div class="frappe-help" style="grid-column:1/-1;">Keeps only timesteps within the window. Use <code>{field}</code> to read a record's date field (so each record sets its own range), or type a literal date. Left blank = open-ended on that side.</div>
+          <div class="desk-help" style="grid-column:1/-1;">Keeps only timesteps within the window. Use <code>{field}</code> to read a record's date field (so each record sets its own range), or type a literal date. Left blank = open-ended on that side.</div>
         </div>
         <div class="hd-nc-spatial" style="display:none;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_lat_dim">Lat dim/coord<span class="req">*</span></label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_nc_lat_dim">Lat dim/coord<span class="req">*</span></label>
               <input class="form-control" type="text" id="id_nc_lat_dim" name="nc_lat_dim"
                      value="{{ nc_lat_dim }}" placeholder="e.g. COADSY, lat">
             </div>
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_lon_dim">Lon dim/coord<span class="req">*</span></label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_nc_lon_dim">Lon dim/coord<span class="req">*</span></label>
               <input class="form-control" type="text" id="id_nc_lon_dim" name="nc_lon_dim"
                      value="{{ nc_lon_dim }}" placeholder="e.g. COADSX, lon">
             </div>
           </div>
           <div class="hd-nc-point" style="display:none;grid-template-columns:1fr 1fr;gap:14px;">
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_lon">Longitude <span class="frappe-muted frappe-text-sm">(blank = record geom)</span></label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_nc_lon">Longitude <span class="desk-muted desk-text-sm">(blank = record geom)</span></label>
               <input class="form-control" type="text" id="id_nc_lon" name="nc_lon" value="{{ nc_lon }}" placeholder="optional">
             </div>
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_lat">Latitude</label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_nc_lat">Latitude</label>
               <input class="form-control" type="text" id="id_nc_lat" name="nc_lat" value="{{ nc_lat }}" placeholder="optional">
             </div>
           </div>
           <div class="hd-nc-bbox" style="display:none;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;">
-            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lon_min">Lon min</label>
+            <div class="desk-form-group"><label class="desk-label" for="id_nc_lon_min">Lon min</label>
               <input class="form-control" type="text" id="id_nc_lon_min" name="nc_lon_min" value="{{ nc_lon_min }}"></div>
-            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lon_max">Lon max</label>
+            <div class="desk-form-group"><label class="desk-label" for="id_nc_lon_max">Lon max</label>
               <input class="form-control" type="text" id="id_nc_lon_max" name="nc_lon_max" value="{{ nc_lon_max }}"></div>
-            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lat_min">Lat min</label>
+            <div class="desk-form-group"><label class="desk-label" for="id_nc_lat_min">Lat min</label>
               <input class="form-control" type="text" id="id_nc_lat_min" name="nc_lat_min" value="{{ nc_lat_min }}"></div>
-            <div class="frappe-form-group"><label class="frappe-label" for="id_nc_lat_max">Lat max</label>
+            <div class="desk-form-group"><label class="desk-label" for="id_nc_lat_max">Lat max</label>
               <input class="form-control" type="text" id="id_nc_lat_max" name="nc_lat_max" value="{{ nc_lat_max }}"></div>
           </div>
           <div class="hd-nc-polygon" style="display:none;">
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_polygon">Polygon <span class="frappe-muted frappe-text-sm">(WKT or GeoJSON)</span></label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_nc_polygon">Polygon <span class="desk-muted desk-text-sm">(WKT or GeoJSON)</span></label>
               <textarea class="form-control" id="id_nc_polygon" name="nc_polygon" rows="2"
                         placeholder="POLYGON((-175 -15, -145 -15, -145 15, -175 15, -175 -15))">{{ nc_polygon }}</textarea>
             </div>
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_shapefile_file">…or import a shapefile <span class="frappe-muted frappe-text-sm">(upload a .zip bundle, or a .shp)</span></label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_nc_shapefile_file">…or import a shapefile <span class="desk-muted desk-text-sm">(upload a .zip bundle, or a .shp)</span></label>
               <input class="form-control" type="file" id="id_nc_shapefile_file" name="nc_shapefile_file"
                      accept=".zip,.shp,application/zip">
-              <div class="frappe-help">Upload a zipped shapefile (<code>.shp</code> + <code>.shx</code> + <code>.dbf</code>) or a bare <code>.shp</code>. On save it is converted to inline GeoJSON — no file is kept on the server. In <strong>Polygon</strong> mode the first polygon becomes the region; in <strong>Per-zone</strong> mode EVERY polygon is imported (one column each). (Then re-open to Test, which reads the stored geometry.)</div>
+              <div class="desk-help">Upload a zipped shapefile (<code>.shp</code> + <code>.shx</code> + <code>.dbf</code>) or a bare <code>.shp</code>. On save it is converted to inline GeoJSON — no file is kept on the server. In <strong>Polygon</strong> mode the first polygon becomes the region; in <strong>Per-zone</strong> mode EVERY polygon is imported (one column each). (Then re-open to Test, which reads the stored geometry.)</div>
             </div>
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_nc_shapefile">…or shapefile path <span class="frappe-muted frappe-text-sm">(.shp already on the server)</span></label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_nc_shapefile">…or shapefile path <span class="desk-muted desk-text-sm">(.shp already on the server)</span></label>
               <input class="form-control" type="text" id="id_nc_shapefile" name="nc_shapefile"
                      value="{{ nc_shapefile }}" placeholder="/path/to/region.shp">
-              <div class="frappe-help">In <strong>Polygon</strong> mode the grid cells inside the first polygon (holes excluded) are averaged; in <strong>Per-zone</strong> mode every polygon in the file becomes its own column. Lon is normalised to −180…180; a polygon crossing the antimeridian isn't supported yet.</div>
+              <div class="desk-help">In <strong>Polygon</strong> mode the grid cells inside the first polygon (holes excluded) are averaged; in <strong>Per-zone</strong> mode every polygon in the file becomes its own column. Lon is normalised to −180…180; a polygon crossing the antimeridian isn't supported yet.</div>
             </div>
           </div>
           <div class="hd-nc-cells" style="display:none;">
-            <div class="frappe-form-group" style="max-width:220px;">
-              <label class="frappe-label" for="id_nc_cells_max">Max cells</label>
+            <div class="desk-form-group" style="max-width:220px;">
+              <label class="desk-label" for="id_nc_cells_max">Max cells</label>
               <input class="form-control" type="text" id="id_nc_cells_max" name="nc_cells_max"
                      value="{{ nc_cells_max|default:'24' }}" placeholder="24">
-              <div class="frappe-help">Per-cell uses the <strong>Bounding box</strong> bounds above to pick the region (or the record ± buffer when blank). Each cell becomes a column labelled <code>lat,lon</code>; if the box has more than this many cells, evenly-spaced ones are sampled.</div>
+              <div class="desk-help">Per-cell uses the <strong>Bounding box</strong> bounds above to pick the region (or the record ± buffer when blank). Each cell becomes a column labelled <code>lat,lon</code>; if the box has more than this many cells, evenly-spaced ones are sampled.</div>
             </div>
           </div>
           <div class="hd-nc-zones" style="display:none;">
             <input type="hidden" id="id_nc_zones" name="nc_zones" value="{{ nc_zones }}">
-            <div class="frappe-form-group" style="max-width:360px;">
-              <label class="frappe-label" for="id_nc_zones_source">Zones from</label>
+            <div class="desk-form-group" style="max-width:360px;">
+              <label class="desk-label" for="id_nc_zones_source">Zones from</label>
               <select class="form-select" id="id_nc_zones_source" name="nc_zones_source">
                 <option value="shapefile" {% if nc_zones_source != 'record' %}selected{% endif %}>An imported shapefile (fixed, shared by all records)</option>
                 <option value="record"    {% if nc_zones_source == 'record' %}selected{% endif %}>Each record's own geometry (dynamic, per record)</option>
               </select>
-              <div class="frappe-help">Fixed = upload one multi-polygon layer; every record reduces over the same zones. Dynamic = each record's <strong>own</strong> Polygon/MultiPolygon geometry IS its zone set — so a record drawn as 3 cells gets 3 columns from those exact cells.</div>
+              <div class="desk-help">Fixed = upload one multi-polygon layer; every record reduces over the same zones. Dynamic = each record's <strong>own</strong> Polygon/MultiPolygon geometry IS its zone set — so a record drawn as 3 cells gets 3 columns from those exact cells.</div>
             </div>
-            <div class="hd-zones-dynamic frappe-help" style="display:none;margin-bottom:10px;">
+            <div class="hd-zones-dynamic desk-help" style="display:none;margin-bottom:10px;">
               <strong>Dynamic zones:</strong> bind this connector to a doctype with a <strong>polygon</strong> geometry — each record's Polygon/MultiPolygon parts become its zone columns (no shapefile here). A point/geometry-less record yields no zones (not shared ones). To <strong>Test</strong>, paste a sample <code>MultiPolygon</code> in the <strong>Polygon</strong> box above — it stands in for a record's geometry here only.
             </div>
             <div class="hd-zones-fixed" style="display:none;">
-            <div class="frappe-help" id="hd-zones-status" style="margin-bottom:10px;"></div>
+            <div class="desk-help" id="hd-zones-status" style="margin-bottom:10px;"></div>
             <div style="display:grid;grid-template-columns:1fr 220px;gap:14px;">
-              <div class="frappe-form-group">
-                <label class="frappe-label" for="id_nc_zone_label">Label field <span class="frappe-muted frappe-text-sm">(.dbf attribute)</span></label>
+              <div class="desk-form-group">
+                <label class="desk-label" for="id_nc_zone_label">Label field <span class="desk-muted desk-text-sm">(.dbf attribute)</span></label>
                 <input class="form-control" type="text" id="id_nc_zone_label" name="nc_zone_label"
                        value="{{ nc_zone_label }}" placeholder="e.g. NAME, HUC12, GRIDID (blank = auto)">
-                <div class="frappe-help">Which shapefile attribute names each zone's column. Blank = a well-known id field (name/id/huc/gridid…) or the polygon centroid.</div>
+                <div class="desk-help">Which shapefile attribute names each zone's column. Blank = a well-known id field (name/id/huc/gridid…) or the polygon centroid.</div>
               </div>
-              <div class="frappe-form-group">
-                <label class="frappe-label" for="id_nc_zones_max">Max zones</label>
+              <div class="desk-form-group">
+                <label class="desk-label" for="id_nc_zones_max">Max zones</label>
                 <input class="form-control" type="text" id="id_nc_zones_max" name="nc_zones_max"
                        value="{{ nc_zones_max|default:'60' }}" placeholder="60">
-                <div class="frappe-help">Caps how many polygons become columns (extras dropped).</div>
+                <div class="desk-help">Caps how many polygons become columns (extras dropped).</div>
               </div>
             </div>
-            <div class="frappe-help">Per-zone imports a <strong>multi-polygon</strong> shapefile (above) — a grid, cells, or subbasins layer. Each polygon → one column = the variable's mean over the cells inside it. (You can also paste a GeoJSON <code>FeatureCollection</code>/<code>MultiPolygon</code> in the Polygon box.)</div>
+            <div class="desk-help">Per-zone imports a <strong>multi-polygon</strong> shapefile (above) — a grid, cells, or subbasins layer. Each polygon → one column = the variable's mean over the cells inside it. (You can also paste a GeoJSON <code>FeatureCollection</code>/<code>MultiPolygon</code> in the Polygon box.)</div>
             </div>{# /hd-zones-fixed #}
           </div>
         </div>
@@ -267,172 +267,172 @@
 
       {# ---- CSV source ---- #}
       <div class="hd-kind-csv">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_csv_url">CSV URL or path<span class="req">*</span></label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_csv_url">CSV URL or path<span class="req">*</span></label>
           <input class="form-control" type="text" id="id_csv_url" name="csv_url"
                  value="{{ csv_url }}"
                  placeholder="https://example.com/data.csv  &mdash; {field} placeholders ok">
-          <div class="frappe-help">A remote <code>http(s)</code> CSV or a local file path. <code>{field}</code> placeholders are filled from the record. The whole table becomes one series (each column a variable).</div>
+          <div class="desk-help">A remote <code>http(s)</code> CSV or a local file path. <code>{field}</code> placeholders are filled from the record. The whole table becomes one series (each column a variable).</div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_delimiter">Delimiter</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_delimiter">Delimiter</label>
             <input class="form-control" type="text" id="id_delimiter" name="delimiter"
                    value="{{ delimiter|default:',' }}" placeholder=",">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_has_header">Header row</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_has_header">Header row</label>
             <select class="form-select" id="id_has_header" name="has_header">
               <option value="true"  {% if has_header %}selected{% endif %}>Yes</option>
               <option value="false" {% if not has_header %}selected{% endif %}>No</option>
             </select>
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_value_column">Value column <span class="frappe-muted frappe-text-sm">(for "latest")</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_value_column">Value column <span class="desk-muted desk-text-sm">(for "latest")</span></label>
             <input class="form-control" type="text" id="id_value_column" name="value_column"
                    value="{{ value_column }}" placeholder="blank = last column">
           </div>
         </div>
-        <div class="frappe-help">Click <strong>Test</strong> below to preview the columns. The "latest" value comes from the Value column's last non-empty row.</div>
+        <div class="desk-help">Click <strong>Test</strong> below to preview the columns. The "latest" value comes from the Value column's last non-empty row.</div>
       </div>
 
       {# ---- WMS source ---- #}
       <div class="hd-kind-wms">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_wms_url">WMS service URL<span class="req">*</span></label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_wms_url">WMS service URL<span class="req">*</span></label>
           <input class="form-control" type="text" id="id_wms_url" name="wms_url"
                  value="{{ wms_url }}"
                  placeholder="https://.../MapServer/WMSServer  &mdash; GetCapabilities endpoint">
-          <div class="frappe-help">The base WMS endpoint. A GetMap image centred on the record's point (longitude/latitude) is shown on the detail. Click <strong>Test</strong> to list the service's layers.</div>
+          <div class="desk-help">The base WMS endpoint. A GetMap image centred on the record's point (longitude/latitude) is shown on the detail. Click <strong>Test</strong> to list the service's layers.</div>
         </div>
         <div style="display:grid;grid-template-columns:1.4fr 0.8fr 0.8fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_layers">Layer(s)<span class="req">*</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_layers">Layer(s)<span class="req">*</span></label>
             <input class="form-control" type="text" id="id_layers" name="layers"
                    value="{{ layers }}" placeholder="comma-separated layer names">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_wms_version">Version</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_wms_version">Version</label>
             <select class="form-select" id="id_wms_version" name="wms_version">
               <option value="1.3.0" {% if wms_version == '1.3.0' %}selected{% endif %}>1.3.0</option>
               <option value="1.1.1" {% if wms_version == '1.1.1' %}selected{% endif %}>1.1.1</option>
             </select>
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_image_format">Format</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_image_format">Format</label>
             <input class="form-control" type="text" id="id_image_format" name="image_format"
                    value="{{ image_format|default:'image/png' }}" placeholder="image/png">
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 0.8fr 0.8fr 1fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_crs">CRS</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_crs">CRS</label>
             <input class="form-control" type="text" id="id_crs" name="crs"
                    value="{{ crs|default:'EPSG:4326' }}" placeholder="EPSG:4326">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_bbox_buffer">BBox ± (deg)</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_bbox_buffer">BBox ± (deg)</label>
             <input class="form-control" type="text" id="id_bbox_buffer" name="bbox_buffer"
                    value="{{ bbox_buffer|default:'0.5' }}" placeholder="0.5">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_wms_width">Width</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_wms_width">Width</label>
             <input class="form-control" type="text" id="id_wms_width" name="wms_width"
                    value="{{ wms_width|default:'512' }}" placeholder="512">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_wms_height">Height</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_wms_height">Height</label>
             <input class="form-control" type="text" id="id_wms_height" name="wms_height"
                    value="{{ wms_height|default:'384' }}" placeholder="384">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_styles">Styles</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_styles">Styles</label>
             <input class="form-control" type="text" id="id_styles" name="styles"
                    value="{{ styles }}" placeholder="optional">
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_default_lon">Default centre lon <span class="frappe-muted frappe-text-sm">(non-spatial types)</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_default_lon">Default centre lon <span class="desk-muted desk-text-sm">(non-spatial types)</span></label>
             <input class="form-control" type="text" id="id_default_lon" name="default_lon"
                    value="{{ default_lon }}" placeholder="optional, e.g. -111.65">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_default_lat">Default centre lat</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_default_lat">Default centre lat</label>
             <input class="form-control" type="text" id="id_default_lat" name="default_lat"
                    value="{{ default_lat }}" placeholder="optional, e.g. 40.23">
           </div>
         </div>
-        <div class="frappe-help">The map centres on the record's geometry (a point type) or its <code>longitude</code>/<code>latitude</code> fields. The default centre is the fallback for non-spatial doctypes. A best-effort GetFeatureInfo value at that point is also available as a second output.</div>
+        <div class="desk-help">The map centres on the record's geometry (a point type) or its <code>longitude</code>/<code>latitude</code> fields. The default centre is the fallback for non-spatial doctypes. A best-effort GetFeatureInfo value at that point is also available as a second output.</div>
       </div>
 
       {# ---- WCS source ---- #}
       <div class="hd-kind-wcs">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_wcs_url">WCS service URL<span class="req">*</span></label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_wcs_url">WCS service URL<span class="req">*</span></label>
           <input class="form-control" type="text" id="id_wcs_url" name="wcs_url"
                  value="{{ wcs_url }}"
                  placeholder="https://ows.example.org/ows  &mdash; GetCapabilities endpoint">
-          <div class="frappe-help">A WCS 2.0.1 endpoint. The coverage value near the record's point is read by requesting a small NetCDF subset. Click <strong>Test</strong> to list coverage IDs.</div>
+          <div class="desk-help">A WCS 2.0.1 endpoint. The coverage value near the record's point is read by requesting a small NetCDF subset. Click <strong>Test</strong> to list coverage IDs.</div>
         </div>
         <div style="display:grid;grid-template-columns:1.4fr 0.8fr 1fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_coverage">Coverage ID<span class="req">*</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_coverage">Coverage ID<span class="req">*</span></label>
             <input class="form-control" type="text" id="id_coverage" name="coverage"
                    value="{{ coverage }}" placeholder="e.g. AvgLandTemp">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_wcs_version">Version</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_wcs_version">Version</label>
             <input class="form-control" type="text" id="id_wcs_version" name="wcs_version"
                    value="{{ wcs_version|default:'2.0.1' }}" placeholder="2.0.1">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_wcs_variable">NetCDF var <span class="frappe-muted frappe-text-sm">(blank = first)</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_wcs_variable">NetCDF var <span class="desk-muted desk-text-sm">(blank = first)</span></label>
             <input class="form-control" type="text" id="id_wcs_variable" name="wcs_variable"
                    value="{{ wcs_variable }}" placeholder="optional">
           </div>
         </div>
         <div style="display:grid;grid-template-columns:0.8fr 0.8fr 0.8fr 2fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_lat_axis">Lat axis</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_lat_axis">Lat axis</label>
             <input class="form-control" type="text" id="id_lat_axis" name="lat_axis"
                    value="{{ lat_axis|default:'Lat' }}" placeholder="Lat">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_lon_axis">Lon axis</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_lon_axis">Lon axis</label>
             <input class="form-control" type="text" id="id_lon_axis" name="lon_axis"
                    value="{{ lon_axis|default:'Long' }}" placeholder="Long">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_wcs_bbox_buffer">Subset ± (deg)</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_wcs_bbox_buffer">Subset ± (deg)</label>
             <input class="form-control" type="text" id="id_wcs_bbox_buffer" name="wcs_bbox_buffer"
                    value="{{ wcs_bbox_buffer|default:'0.25' }}" placeholder="0.25">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_extra_subset">Extra subset <span class="frappe-muted frappe-text-sm">(e.g. a time axis)</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_extra_subset">Extra subset <span class="desk-muted desk-text-sm">(e.g. a time axis)</span></label>
             <input class="form-control" type="text" id="id_extra_subset" name="extra_subset"
                    value="{{ extra_subset }}" placeholder='ansi("2014-07-01")'>
           </div>
         </div>
-        <div class="frappe-help">The point comes from the record geometry / longitude-latitude fields (default centre for non-spatial types). The primary output is the coverage's spatial-mean value near the point; add a time <em>range</em> in Extra subset to get a series.</div>
+        <div class="desk-help">The point comes from the record geometry / longitude-latitude fields (default centre for non-spatial types). The primary output is the coverage's spatial-mean value near the point; add a time <em>range</em> in Extra subset to get a series.</div>
       </div>
 
       {# ---- Google Earth Engine source ---- #}
       <div class="hd-kind-gee">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_gee_asset">Earth Engine asset<span class="req">*</span></label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_gee_asset">Earth Engine asset<span class="req">*</span></label>
           <input class="form-control" type="text" id="id_gee_asset" name="gee_asset"
                  value="{{ gee_asset }}" placeholder="e.g. USGS/SRTMGL1_003 (Image) or MODIS/... (ImageCollection)">
-          <div class="frappe-help">An <code>ee.Image</code> id for a value, or an <code>ee.ImageCollection</code> id (with a date range below) for a series. Requires the <code>earthengine-api</code> package + a service-account credential.</div>
+          <div class="desk-help">An <code>ee.Image</code> id for a value, or an <code>ee.ImageCollection</code> id (with a date range below) for a series. Requires the <code>earthengine-api</code> package + a service-account credential.</div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 0.8fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_band">Band</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_band">Band</label>
             <input class="form-control" type="text" id="id_gee_band" name="gee_band"
                    value="{{ gee_band }}" placeholder="e.g. elevation">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_reducer">Reducer (value)</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_reducer">Reducer (value)</label>
             <select class="form-select" id="id_gee_reducer" name="gee_reducer">
               <option value="first"  {% if gee_reducer == 'first' %}selected{% endif %}>first</option>
               <option value="mean"   {% if gee_reducer == 'mean' %}selected{% endif %}>mean</option>
@@ -441,58 +441,58 @@
               <option value="max"    {% if gee_reducer == 'max' %}selected{% endif %}>max</option>
             </select>
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_scale">Scale (m)</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_scale">Scale (m)</label>
             <input class="form-control" type="text" id="id_gee_scale" name="gee_scale"
                    value="{{ gee_scale|default:'30' }}" placeholder="30">
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_project">GCP project</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_project">GCP project</label>
             <input class="form-control" type="text" id="id_gee_project" name="gee_project"
                    value="{{ gee_project }}" placeholder="blank = from the key">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_start">Series start <span class="frappe-muted frappe-text-sm">(collection)</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_start">Series start <span class="desk-muted desk-text-sm">(collection)</span></label>
             <input class="form-control" type="text" id="id_gee_start" name="gee_start"
                    value="{{ gee_start }}" placeholder="2023-01-01">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_end">Series end</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_end">Series end</label>
             <input class="form-control" type="text" id="id_gee_end" name="gee_end"
                    value="{{ gee_end }}" placeholder="2023-12-31">
           </div>
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_gee_credential">Service-account credential</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_gee_credential">Service-account credential</label>
           <select class="form-select" id="id_gee_credential" name="gee_credential">
             <option value="">— none (Earth Engine disabled until set) —</option>
             {% for c in credentials %}
             <option value="{{ c }}" {% if gee_credential == c %}selected{% endif %}>{{ c }}</option>
             {% endfor %}
           </select>
-          <div class="frappe-help">A stored credential whose secret is the service-account key JSON. Add one under <a href="{% url 'hydrodesk:credentials' %}">Credentials</a>. Click <strong>Test</strong> to confirm Earth Engine initialises.</div>
+          <div class="desk-help">A stored credential whose secret is the service-account key JSON. Add one under <a href="{% url 'hydrodesk:credentials' %}">Credentials</a>. Click <strong>Test</strong> to confirm Earth Engine initialises.</div>
         </div>
-        <div class="frappe-form-group">
+        <div class="desk-form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
             <input type="checkbox" id="id_gee_demo" name="gee_demo" value="on" {% if gee_demo %}checked{% endif %}>
-            Synthetic preview <span class="frappe-muted frappe-text-sm">(no Earth Engine)</span>
+            Synthetic preview <span class="desk-muted desk-text-sm">(no Earth Engine)</span>
           </label>
-          <div class="frappe-help">When ticked, this connector returns deterministic <strong>synthetic</strong> data that still varies by each record's region + date window — so you can preview the per-record mapping before installing <code>earthengine-api</code> + a service-account credential. Replace with real EE for live data.</div>
+          <div class="desk-help">When ticked, this connector returns deterministic <strong>synthetic</strong> data that still varies by each record's region + date window — so you can preview the per-record mapping before installing <code>earthengine-api</code> + a service-account credential. Replace with real EE for live data.</div>
         </div>
 
         {# Raster (per-pixel map): a colored thumbnail of the asset clipped to the record's polygon, drawn on the detail map. Tick the 'raster' output on a field; these knobs control the visualization, not the value. #}
-        <div class="frappe-section-head" style="margin-top:6px;">Raster (per-pixel map)</div>
-        <div class="frappe-help" style="margin-bottom:8px;">Tick the <code>raster</code> output on a doctype field to draw the asset as a colored layer clipped to each record's polygon. Clicking the map re-samples that pixel's value &amp; series.</div>
-        <div class="frappe-form-grid">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_raster_band">Raster band / derived</label>
+        <div class="desk-section-head" style="margin-top:6px;">Raster (per-pixel map)</div>
+        <div class="desk-help" style="margin-bottom:8px;">Tick the <code>raster</code> output on a doctype field to draw the asset as a colored layer clipped to each record's polygon. Clicking the map re-samples that pixel's value &amp; series.</div>
+        <div class="desk-form-grid">
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_raster_band">Raster band / derived</label>
             <input class="form-control" type="text" id="id_gee_raster_band" name="gee_raster_band"
                    value="{{ gee_raster_band }}" placeholder="blank = first band; or a band / derived name (e.g. NDVI)">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_temporal">Date-window reducer <span class="frappe-muted frappe-text-sm">(collections)</span></label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_temporal">Date-window reducer <span class="desk-muted desk-text-sm">(collections)</span></label>
             <select class="form-select" id="id_gee_temporal" name="gee_temporal">
               <option value="mean"   {% if gee_temporal == 'mean' or not gee_temporal %}selected{% endif %}>mean</option>
               <option value="median" {% if gee_temporal == 'median' %}selected{% endif %}>median</option>
@@ -504,24 +504,24 @@
             </select>
           </div>
         </div>
-        <div class="frappe-form-grid">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_palette">Palette</label>
+        <div class="desk-form-grid">
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_palette">Palette</label>
             <input class="form-control" type="text" id="id_gee_palette" name="gee_palette"
                    value="{{ gee_palette }}" placeholder="ndvi · terrain · viridis · blues — or hex list 440154,21918c,fde725">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_vis_min">Color min</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_vis_min">Color min</label>
             <input class="form-control" type="text" id="id_gee_vis_min" name="gee_vis_min"
                    value="{{ gee_vis_min }}" placeholder="blank = auto (2nd pctile)">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_vis_max">Color max</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_vis_max">Color max</label>
             <input class="form-control" type="text" id="id_gee_vis_max" name="gee_vis_max"
                    value="{{ gee_vis_max }}" placeholder="blank = auto (98th pctile)">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_gee_dimensions">Pixels</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_gee_dimensions">Pixels</label>
             <input class="form-control" type="text" id="id_gee_dimensions" name="gee_dimensions"
                    value="{{ gee_dimensions|default:'512' }}" placeholder="512">
           </div>
@@ -530,26 +530,26 @@
 
       {# Raster (per-pixel map): NetCDF / THREDDS / WCS render a colored 2-D slice of the variable clipped to each record's polygon, on the detail map. #}
       <div class="hd-kind-raster">
-        <div class="frappe-section-head" style="margin-top:6px;">Raster (per-pixel map)</div>
-        <div class="frappe-help" style="margin-bottom:8px;">Tick the <code>raster</code> output on a doctype field to draw the variable as a colored layer clipped to each record's polygon. Clicking the map re-samples that pixel's value &amp; series.</div>
-        <div class="frappe-form-grid">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_raster_band">Raster variable</label>
+        <div class="desk-section-head" style="margin-top:6px;">Raster (per-pixel map)</div>
+        <div class="desk-help" style="margin-bottom:8px;">Tick the <code>raster</code> output on a doctype field to draw the variable as a colored layer clipped to each record's polygon. Clicking the map re-samples that pixel's value &amp; series.</div>
+        <div class="desk-form-grid">
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_raster_band">Raster variable</label>
             <input class="form-control" type="text" id="id_raster_band" name="raster_band"
                    value="{{ raster_band }}" placeholder="blank = the connector's variable">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_raster_palette">Palette</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_raster_palette">Palette</label>
             <input class="form-control" type="text" id="id_raster_palette" name="raster_palette"
                    value="{{ raster_palette }}" placeholder="viridis · terrain · ndvi · blues · spectral">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_raster_min">Color min</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_raster_min">Color min</label>
             <input class="form-control" type="text" id="id_raster_min" name="raster_min"
                    value="{{ raster_min }}" placeholder="blank = auto">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_raster_max">Color max</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_raster_max">Color max</label>
             <input class="form-control" type="text" id="id_raster_max" name="raster_max"
                    value="{{ raster_max }}" placeholder="blank = auto">
           </div>
@@ -558,42 +558,42 @@
 
       {# ---- Per-record region & time (WCS + GEE): same shapefile + date-range mapping as NetCDF ---- #}
       <div class="hd-kind-prparams">
-        <div class="frappe-section-head" style="margin-top:6px;">Per-record region &amp; time</div>
-        <div class="hd-kind-rest frappe-help" style="margin-bottom:8px;">
+        <div class="desk-section-head" style="margin-top:6px;">Per-record region &amp; time</div>
+        <div class="hd-kind-rest desk-help" style="margin-bottom:8px;">
           For a REST API this exposes two URL tokens from each record: <code>{bbox}</code> (the record's shapefile bounding box, <code>minlon,minlat,maxlon,maxlat</code>) and <code>{datetime}</code> (the date window as an RFC3339 interval). Put them in the URL Template below, e.g. <code>…/items?bbox={bbox}&amp;datetime={datetime}&amp;f=json</code>.
         </div>
-        <div class="frappe-form-group">
+        <div class="desk-form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
             <input type="checkbox" id="id_pr_region" name="pr_region" value="on" {% if pr_region %}checked{% endif %}>
             Region = the record's uploaded <strong>Shapefile</strong> field
           </label>
-          <div class="frappe-help">When ticked, the query uses each record's own shapefile (raster kinds reduce over it; REST gets its <code>{bbox}</code>). Otherwise it uses the record's point.</div>
+          <div class="desk-help">When ticked, the query uses each record's own shapefile (raster kinds reduce over it; REST gets its <code>{bbox}</code>). Otherwise it uses the record's point.</div>
         </div>
-        <div class="frappe-form-group" style="max-width:360px;">
-          <label class="frappe-label" for="id_pr_time_source">Date range</label>
+        <div class="desk-form-group" style="max-width:360px;">
+          <label class="desk-label" for="id_pr_time_source">Date range</label>
           <select class="form-select" id="id_pr_time_source" name="pr_time_source">
             <option value="none"  {% if pr_time_source != 'range' %}selected{% endif %}>None</option>
             <option value="range" {% if pr_time_source == 'range' %}selected{% endif %}>Per-record (start&ndash;end)</option>
           </select>
         </div>
         <div class="hd-pr-timerange" style="display:none;grid-template-columns:1fr 1fr;gap:14px;">
-          <div class="frappe-form-group"><label class="frappe-label" for="id_pr_time_start">Start</label>
+          <div class="desk-form-group"><label class="desk-label" for="id_pr_time_start">Start</label>
             <input class="form-control" type="text" id="id_pr_time_start" name="pr_time_start" value="{{ pr_time_start }}" placeholder="{start_date} or 2014-07-01"></div>
-          <div class="frappe-form-group"><label class="frappe-label" for="id_pr_time_end">End</label>
+          <div class="desk-form-group"><label class="desk-label" for="id_pr_time_end">End</label>
             <input class="form-control" type="text" id="id_pr_time_end" name="pr_time_end" value="{{ pr_time_end }}" placeholder="{end_date} or 2014-07-31"></div>
-          <div class="hd-kind-wcs frappe-form-group" style="grid-column:1/-1;max-width:220px;">
-            <label class="frappe-label" for="id_pr_time_axis">WCS time axis</label>
+          <div class="hd-kind-wcs desk-form-group" style="grid-column:1/-1;max-width:220px;">
+            <label class="desk-label" for="id_pr_time_axis">WCS time axis</label>
             <input class="form-control" type="text" id="id_pr_time_axis" name="pr_time_axis" value="{{ time_axis|default:'ansi' }}" placeholder="ansi">
           </div>
         </div>
-        <div class="frappe-help">These let the DocType builder map a record's Shapefile + Date fields to this connector — the same per-record mapping as NetCDF. Use <code>{field}</code> tokens or a literal date.</div>
+        <div class="desk-help">These let the DocType builder map a record's Shapefile + Date fields to this connector — the same per-record mapping as NetCDF. Use <code>{field}</code> tokens or a literal date.</div>
 
         {# ---- Test region: a stand-in shapefile so the Test button has a geometry ---- #}
-        <div class="frappe-form-group" style="margin-top:8px;border-top:1px dashed var(--fr-border,#e2e6ea);padding-top:10px;">
-          <label class="frappe-label">Test region <span class="frappe-muted frappe-text-sm">(stand-in for the Test button)</span></label>
-          <div class="frappe-help" style="margin-bottom:6px;">Real records use their own Shapefile field. The <strong>Test</strong> button has no record, so a per-record connector can't build <code>{bbox}</code> — upload a shapefile <em>or</em> paste a polygon here and it fills the region so you can see the outputs. (Saved on the connector as a stand-in; a real record's shapefile always takes priority.)</div>
+        <div class="desk-form-group" style="margin-top:8px;border-top:1px dashed var(--desk-border,#e2e6ea);padding-top:10px;">
+          <label class="desk-label">Test region <span class="desk-muted desk-text-sm">(stand-in for the Test button)</span></label>
+          <div class="desk-help" style="margin-bottom:6px;">Real records use their own Shapefile field. The <strong>Test</strong> button has no record, so a per-record connector can't build <code>{bbox}</code> — upload a shapefile <em>or</em> paste a polygon here and it fills the region so you can see the outputs. (Saved on the connector as a stand-in; a real record's shapefile always takes priority.)</div>
           <input class="form-control" type="file" id="id_pr_shapefile_file" name="pr_shapefile_file" accept=".zip,.shp,application/zip">
-          <div class="frappe-help" style="margin:5px 0 3px;">…or paste a WKT / GeoJSON polygon:</div>
+          <div class="desk-help" style="margin:5px 0 3px;">…or paste a WKT / GeoJSON polygon:</div>
           <textarea class="form-control" id="id_pr_polygon" name="pr_polygon" rows="2"
                     placeholder="POLYGON((-112 37, -111 37, -111 38, -112 38, -112 37))">{{ pr_polygon }}</textarea>
         </div>
@@ -601,27 +601,27 @@
 
       {# ---- REST URL + method ---- #}
       <div class="hd-kind-rest">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_url_template">URL Template<span class="req">*</span></label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_url_template">URL Template<span class="req">*</span></label>
           <input class="form-control" type="text" id="id_url_template" name="url_template"
                  value="{{ url_template }}"
                  placeholder="https://api.example.com/v1/sites/{site_id}/latest">
-          <div class="frappe-help">
+          <div class="desk-help">
             Use <code>{field}</code> placeholders &mdash; filled from the record's
             attributes at fetch time (a missing field becomes empty). Values are URL-encoded.
           </div>
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_method">Method</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_method">Method</label>
             <select class="form-select" id="id_method" name="method">
               <option value="GET"  {% if method == 'GET' %}selected{% endif %}>GET</option>
               <option value="POST" {% if method == 'POST' %}selected{% endif %}>POST</option>
             </select>
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label" for="id_result_kind">Result Kind</label>
+          <div class="desk-form-group">
+            <label class="desk-label" for="id_result_kind">Result Kind</label>
             <select class="form-select" id="id_result_kind" name="result_kind">
               <option value="value"  {% if result_kind == 'value' %}selected{% endif %}>Value (single latest)</option>
               <option value="series" {% if result_kind == 'series' %}selected{% endif %}>Series (x/y arrays)</option>
@@ -631,55 +631,55 @@
         </div>
         {# ---- Advanced: request body + pagination + Accept (broadens format coverage) ---- #}
         <details style="margin-top:8px;">
-          <summary class="frappe-label" style="cursor:pointer;">Advanced &mdash; request body, pagination, XML</summary>
+          <summary class="desk-label" style="cursor:pointer;">Advanced &mdash; request body, pagination, XML</summary>
           <div style="padding:8px 0;">
-            <div class="frappe-form-group">
-              <label class="frappe-label" for="id_body_template">Request body <span class="frappe-muted frappe-text-sm">(POST/PUT/GraphQL; <code>{field}</code> tokens, not URL-encoded)</span></label>
+            <div class="desk-form-group">
+              <label class="desk-label" for="id_body_template">Request body <span class="desk-muted desk-text-sm">(POST/PUT/GraphQL; <code>{field}</code> tokens, not URL-encoded)</span></label>
               <textarea class="form-control" id="id_body_template" name="body_template" rows="2"
                         placeholder='{"query":"...","variables":{"site":"{site}"}}'>{{ body_template }}</textarea>
-              <div class="frappe-help">Sent as the request body (set Method to POST/PUT). Defaults to <code>application/json</code>; override below.</div>
+              <div class="desk-help">Sent as the request body (set Method to POST/PUT). Defaults to <code>application/json</code>; override below.</div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-              <div class="frappe-form-group">
-                <label class="frappe-label" for="id_body_content_type">Body Content-Type</label>
+              <div class="desk-form-group">
+                <label class="desk-label" for="id_body_content_type">Body Content-Type</label>
                 <input class="form-control" type="text" id="id_body_content_type" name="body_content_type"
                        value="{{ body_content_type|default:'application/json' }}" placeholder="application/json">
               </div>
-              <div class="frappe-form-group">
-                <label class="frappe-label" for="id_accept">Accept header <span class="frappe-muted frappe-text-sm">(XML APIs work too)</span></label>
+              <div class="desk-form-group">
+                <label class="desk-label" for="id_accept">Accept header <span class="desk-muted desk-text-sm">(XML APIs work too)</span></label>
                 <input class="form-control" type="text" id="id_accept" name="accept" value="{{ accept }}" placeholder="application/json or application/xml">
               </div>
             </div>
             <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;">
-              <div class="frappe-form-group">
-                <label class="frappe-label" for="id_paginate_next_path">Pagination &mdash; next-link path</label>
+              <div class="desk-form-group">
+                <label class="desk-label" for="id_paginate_next_path">Pagination &mdash; next-link path</label>
                 <input class="form-control" type="text" id="id_paginate_next_path" name="paginate_next_path"
                        value="{{ paginate_next_path }}" placeholder="e.g. links.next or next">
-                <div class="frappe-help">A JSON path to the next-page URL; the fetch follows it and merges pages. Blank = single page.</div>
+                <div class="desk-help">A JSON path to the next-page URL; the fetch follows it and merges pages. Blank = single page.</div>
               </div>
-              <div class="frappe-form-group">
-                <label class="frappe-label" for="id_paginate_max_pages">Max pages</label>
+              <div class="desk-form-group">
+                <label class="desk-label" for="id_paginate_max_pages">Max pages</label>
                 <input class="form-control" type="text" id="id_paginate_max_pages" name="paginate_max_pages"
                        value="{{ paginate_max_pages|default:'10' }}" placeholder="10">
               </div>
             </div>
-            <div class="frappe-help">The extractor also parses <strong>XML</strong> automatically (normalised to the same path language) — no JSON required.</div>
+            <div class="desk-help">The extractor also parses <strong>XML</strong> automatically (normalised to the same path language) — no JSON required.</div>
           </div>
         </details>
       </div>
     </div>
 
     <div class="hd-kind-rest">
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Headers &amp; Query <span class="frappe-muted frappe-text-sm">(JSON, values may use {field})</span></div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Headers &amp; Query <span class="desk-muted desk-text-sm">(JSON, values may use {field})</span></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_headers">Headers</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_headers">Headers</label>
           <textarea class="form-control" id="id_headers" name="headers" rows="4"
                     placeholder="{}">{{ headers }}</textarea>
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_query">Query</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_query">Query</label>
           <textarea class="form-control" id="id_query" name="query" rows="4"
                     placeholder="{}">{{ query }}</textarea>
         </div>
@@ -690,12 +690,12 @@
 
     {# ---- Inputs editor — shown for REST + NetCDF/THREDDS (any {field}-substituting kind) ---- #}
     <div class="hd-kind-inputs">
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Inputs
-        <span class="frappe-muted frappe-text-sm">
+    <div class="desk-form-section">
+      <div class="desk-section-head">Inputs
+        <span class="desk-muted desk-text-sm">
           (each becomes a <code>{token}</code> filled at fetch time)</span>
       </div>
-      <div class="frappe-help" style="margin-bottom:8px;">
+      <div class="desk-help" style="margin-bottom:8px;">
         Resolution per input: runtime override &rarr; mapped record field &rarr;
         constant &rarr; default &rarr; empty. A required input that resolves empty
         yields a soft-empty result (no fetch). Leave the table EMPTY to keep the
@@ -704,7 +704,7 @@
 
       <div class="hd-inputs-head" style="display:grid;
             grid-template-columns:1.2fr 1.2fr 0.9fr 1fr 1fr 1fr 1fr 0.6fr 0.9fr 0.4fr;
-            gap:6px;font-size:11px;color:var(--fr-text-muted,#8d99a6);
+            gap:6px;font-size:11px;color:var(--desk-text-muted,#8d99a6);
             font-weight:600;margin-bottom:4px;">
         <div>Name (token)</div><div>Label</div><div>Type</div><div>Source</div>
         <div>Field</div><div>Value</div><div>Default</div><div>Req</div>
@@ -789,12 +789,12 @@
 
     <div class="hd-kind-rest">
     {# ---- Outputs editor (the multi-output catalog) ---- #}
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Outputs
-        <span class="frappe-muted frappe-text-sm">
+    <div class="desk-form-section">
+      <div class="desk-section-head">Outputs
+        <span class="desk-muted desk-text-sm">
           (each ticked on a DocType field becomes a value or an inline chart)</span>
       </div>
-      <div class="frappe-help" style="margin-bottom:8px;">
+      <div class="desk-help" style="margin-bottom:8px;">
         A <strong>value</strong> output is a single scalar leaf (path with a fixed
         index, e.g. <code>…value.-1.value</code> = latest). A <strong>series</strong>
         output is an ARRAY collapsed to TWO variables &mdash; time and value &mdash;
@@ -807,7 +807,7 @@
 
       <div class="hd-outputs-head" style="display:grid;
             grid-template-columns:1.1fr 0.8fr 2.4fr 0.9fr 0.8fr 0.5fr 0.4fr;
-            gap:6px;font-size:11px;color:var(--fr-text-muted,#8d99a6);
+            gap:6px;font-size:11px;color:var(--desk-text-muted,#8d99a6);
             font-weight:600;margin-bottom:4px;">
         <div>Name</div><div>Kind</div><div>Source</div>
         <div>Type</div><div>Unit</div><div>Primary</div><div></div>
@@ -834,8 +834,8 @@
                    name="output_arraypath_{{ forloop.counter0 }}" value="{{ out.array_path }}">
             <input type="hidden" class="hd-out-vars"
                    name="output_vars_{{ forloop.counter0 }}" value="{{ out.vars_json }}">
-            <span class="hd-out-series-chip frappe-text-sm"
-                  style="color:var(--fr-text-muted,#8d99a6);{% if out.kind != 'series' %}display:none;{% endif %}"></span>
+            <span class="hd-out-series-chip desk-text-sm"
+                  style="color:var(--desk-text-muted,#8d99a6);{% if out.kind != 'series' %}display:none;{% endif %}"></span>
           </div>
           <select class="form-select form-select-sm hd-out-type" name="output_type_{{ forloop.counter0 }}">
             {% for t in output_types %}
@@ -868,8 +868,8 @@
                    placeholder="value.timeSeries.0.values.0.value.-1.value">
             <input type="hidden" class="hd-out-arraypath" name="output_arraypath_IDX">
             <input type="hidden" class="hd-out-vars" name="output_vars_IDX">
-            <span class="hd-out-series-chip frappe-text-sm"
-                  style="color:var(--fr-text-muted,#8d99a6);display:none;"></span>
+            <span class="hd-out-series-chip desk-text-sm"
+                  style="color:var(--desk-text-muted,#8d99a6);display:none;"></span>
           </div>
           <select class="form-select form-select-sm hd-out-type" name="output_type_IDX">
             <option value="string">string</option><option value="number">number</option>
@@ -887,14 +887,14 @@
               style="margin-top:4px;padding-left:0;">
         <i class="bi bi-plus-lg"></i> Add output
       </button>
-      <div class="frappe-help" style="margin-top:8px;">Tip: a series can carry several columns (click each sub-key in the Test tree). Which columns form an <strong>uncertainty fan band</strong> is chosen per-view on the record page, not here.</div>
+      <div class="desk-help" style="margin-top:8px;">Tip: a series can carry several columns (click each sub-key in the Test tree). Which columns form an <strong>uncertainty fan band</strong> is chosen per-view on the record page, not here.</div>
     </div>
 
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Authentication</div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Authentication</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_auth_scheme">Scheme</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_auth_scheme">Scheme</label>
           <select class="form-select" id="id_auth_scheme" name="auth_scheme">
             <option value="none"    {% if auth_scheme == 'none' %}selected{% endif %}>None</option>
             <option value="api_key" {% if auth_scheme == 'api_key' %}selected{% endif %}>API Key</option>
@@ -902,46 +902,46 @@
             <option value="basic"   {% if auth_scheme == 'basic' %}selected{% endif %}>Basic</option>
           </select>
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_auth_credential">Credential</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_auth_credential">Credential</label>
           <select class="form-select" id="id_auth_credential" name="auth_credential">
             <option value="">&mdash; none &mdash;</option>
             {% for c in credentials %}
               <option value="{{ c }}" {% if c == auth_credential %}selected{% endif %}>{{ c }}</option>
             {% endfor %}
           </select>
-          <div class="frappe-help">Secret is resolved by NAME at fetch time. Never stored here.</div>
+          <div class="desk-help">Secret is resolved by NAME at fetch time. Never stored here.</div>
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_auth_placement">Placement</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_auth_placement">Placement</label>
           <select class="form-select" id="id_auth_placement" name="auth_placement">
             <option value="header" {% if auth_placement == 'header' %}selected{% endif %}>Header</option>
             <option value="query"  {% if auth_placement == 'query' %}selected{% endif %}>Query</option>
           </select>
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_auth_param">Param</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_auth_param">Param</label>
           <input class="form-control" type="text" id="id_auth_param" name="auth_param"
                  value="{{ auth_param }}" placeholder="X-Api-Key or api_key">
-          <div class="frappe-help">For api_key: the header/query key the secret is placed under.</div>
+          <div class="desk-help">For api_key: the header/query key the secret is placed under.</div>
         </div>
       </div>
     </div>
 
     </div>{# /hd-kind-rest #}
 
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Caching <span class="frappe-muted frappe-text-sm">(REST: outputs above; NetCDF: series synthesized from the variable)</span></div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Caching <span class="desk-muted desk-text-sm">(REST: outputs above; NetCDF: series synthesized from the variable)</span></div>
       {# Legacy single-value fallback path; outputs are now defined in the editor above (kept hidden for old connectors). #}
       <input type="hidden" id="id_output_path" name="output_path" value="{{ output_path }}">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_ttl_seconds">Cache TTL (seconds)</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_ttl_seconds">Cache TTL (seconds)</label>
           <input class="form-control" type="number" step="1" id="id_ttl_seconds" name="ttl_seconds"
                  value="{{ ttl_seconds }}">
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_timeout">Timeout (seconds)</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_timeout">Timeout (seconds)</label>
           <input class="form-control" type="number" step="1" id="id_timeout" name="timeout"
                  value="{{ timeout }}">
         </div>
@@ -949,13 +949,13 @@
     </div>
 
     {# ---- Test panel ---- #}
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Test</div>
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_test_attrs">Sample field values (JSON)</label>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Test</div>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_test_attrs">Sample field values (JSON)</label>
         <textarea class="form-control" id="id_test_attrs" rows="3"
                   placeholder='{"sites": "01646500", "parameterCd": "00060"}'>{}</textarea>
-        <div class="frappe-help">
+        <div class="desk-help">
           When the Inputs table is used these key off <strong>input names</strong>
           (e.g. <code>sites</code>) as a runtime override or the source field;
           otherwise they fill the implicit <code>{placeholders}</code> directly.
@@ -966,11 +966,11 @@
       <button type="button" id="hd-test-btn" class="btn btn-default">
         <i class="bi bi-lightning-charge"></i> Test fetch
       </button>
-      <span id="hd-test-status" class="frappe-muted frappe-text-sm" style="margin-left:10px;"></span>
+      <span id="hd-test-status" class="desk-muted desk-text-sm" style="margin-left:10px;"></span>
 
       <div id="hd-test-target" style="margin-top:10px;display:none;">
         <div style="margin-bottom:6px;">
-          <span class="frappe-muted frappe-text-sm">
+          <span class="desk-muted desk-text-sm">
             Click a <strong>scalar</strong> leaf (e.g. <code>…value.-1.value</code>)
             &rarr; adds a <em>value</em> output. Click an <strong>array</strong>
             <code>[n]</code> node &rarr; adds <em>one series</em> output that captures
@@ -983,11 +983,11 @@
              style="display:none;margin-bottom:6px;"></div>
       </div>
       <div id="hd-test-result" style="margin-top:10px;"></div>
-      <div id="hd-test-tree" class="frappe-card" style="margin-top:10px;padding:10px 14px;display:none;
+      <div id="hd-test-tree" class="desk-card" style="margin-top:10px;padding:10px 14px;display:none;
             max-height:360px;overflow:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;"></div>
     </div>
 
-    <div class="frappe-form-actions">
+    <div class="desk-form-actions">
       <a class="btn btn-default" href="{% url 'hydrodesk:connectors' %}">Cancel</a>
       <button type="submit" class="btn btn-primary">
         <i class="bi bi-check-lg"></i> Save connector
@@ -1005,12 +1005,12 @@
   .hd-tree-children { margin-left:16px; border-left:1px dotted var(--gray-300); padding-left:8px; }
   /* NetCDF Test variable picker: click a discovered variable to add it. */
   .hd-nc-picker { margin-bottom:10px; padding-bottom:10px; border-bottom:1px dashed var(--gray-300); }
-  .hd-nc-chip { border:1px solid var(--fr-border-color,#d1d8dd); background:#fff;
+  .hd-nc-chip { border:1px solid var(--desk-border-color,#d1d8dd); background:#fff;
                 border-radius:12px; padding:2px 10px; font-size:12px; cursor:pointer; }
-  .hd-nc-chip:hover { border-color:var(--fr-primary,#2490ef); }
-  .hd-nc-chip.on { background:var(--fr-primary,#2490ef); color:#fff;
-                   border-color:var(--fr-primary,#2490ef); }
-  .hd-nc-chip.coord { color:var(--fr-text-muted,#8d99a6); }
+  .hd-nc-chip:hover { border-color:var(--desk-primary,#2490ef); }
+  .hd-nc-chip.on { background:var(--desk-primary,#2490ef); color:#fff;
+                   border-color:var(--desk-primary,#2490ef); }
+  .hd-nc-chip.coord { color:var(--desk-text-muted,#8d99a6); }
 </style>
 
 <script>
@@ -1591,7 +1591,7 @@
     var box = document.createElement('div');
     box.className = 'hd-nc-picker';
     var head = document.createElement('div');
-    head.className = 'frappe-help';
+    head.className = 'desk-help';
     head.style.margin = '0 0 6px';
     head.innerHTML = 'Found <strong>' + dataVars.length + '</strong> variable'
       + (dataVars.length === 1 ? '' : 's') + ' — click to add to <strong>Variable(s)</strong>'
@@ -1632,7 +1632,7 @@
       var crow = document.createElement('div');
       crow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;';
       var clab = document.createElement('span');
-      clab.className = 'frappe-muted frappe-text-sm';
+      clab.className = 'desk-muted desk-text-sm';
       clab.textContent = 'Coordinates:';
       crow.appendChild(clab);
       coordVars.forEach(function (vn) {
@@ -1676,7 +1676,7 @@
     var box = document.createElement('div');
     box.className = 'hd-nc-picker';
     var h = document.createElement('div');
-    h.className = 'frappe-help';
+    h.className = 'desk-help';
     h.style.margin = '0 0 6px';
     h.innerHTML = headHtml;
     box.appendChild(h);

@@ -7,43 +7,43 @@
 {% block title %}Link existing {{ child_display }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page frappe-page--form">
+<div class="desk-page desk-page--form">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
     <span class="sep">/</span><a href="{{ parent_detail_url }}">{{ parent_label }}</a>
     <span class="sep">/</span>Link existing
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">Link an existing {{ child_display }}</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">Link an existing {{ child_display }}</h1>
       <span class="indicator-pill blue">{{ field }}</span>
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{{ parent_detail_url }}">
         <i class="bi bi-arrow-left"></i> Back
       </a>
     </div>
   </div>
 
-  <div class="frappe-form-card" style="max-width:620px;">
+  <div class="desk-form-card" style="max-width:620px;">
     {% if options %}
     <form method="post" action="{{ form_action }}">
       {% csrf_token %}
-      <div class="frappe-form-section">
-        <div class="frappe-section-head">Attach to <strong>{{ parent_label }}</strong></div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_child_id">{{ child_display }} record</label>
+      <div class="desk-form-section">
+        <div class="desk-section-head">Attach to <strong>{{ parent_label }}</strong></div>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_child_id">{{ child_display }} record</label>
           <select class="form-select" id="id_child_id" name="child_id" required>
             {% for o in options %}
             <option value="{{ o.id }}">{{ o.label }}</option>
             {% endfor %}
           </select>
-          <div class="frappe-help">Only {{ child_display }} records not already linked here are shown. Attaching re-points the record at this parent.</div>
+          <div class="desk-help">Only {{ child_display }} records not already linked here are shown. Attaching re-points the record at this parent.</div>
         </div>
       </div>
-      <div class="frappe-form-actions">
+      <div class="desk-form-actions">
         <button type="submit" class="btn btn-primary btn-sm">
           <i class="bi bi-link-45deg"></i> Attach
         </button>
@@ -51,13 +51,13 @@
       </div>
     </form>
     {% else %}
-    <div class="frappe-form-section">
+    <div class="desk-form-section">
       <p style="margin:0;">
         <i class="bi bi-info-circle"></i>
         No unlinked {{ child_display }} records are available to attach.
       </p>
     </div>
-    <div class="frappe-form-actions">
+    <div class="desk-form-actions">
       <a class="btn btn-primary btn-sm" href="{{ new_url }}">
         <i class="bi bi-plus-lg"></i> Create a new {{ child_display }}
       </a>

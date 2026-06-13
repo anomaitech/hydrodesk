@@ -3,52 +3,52 @@
 {% block title %}Alerts - {{ block.super }}{% endblock %}
 {% block nav_active_alerts %} active{% endblock %}
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Alerts</div>
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">Alerts</h1>
+<div class="desk-page">
+  <div class="desk-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Alerts</div>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">Alerts</h1>
       {% if unack %}<span class="indicator-pill red">{{ unack }} unacknowledged</span>
       {% else %}<span class="indicator-pill green">all clear</span>{% endif %}
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:schedules' %}"><i class="bi bi-clock-history"></i> Schedules</a>
     </div>
   </div>
 
   {% if rows %}
-  <div class="frappe-list">
-    <div class="frappe-list-head">
-      <span class="frappe-list-subject head">Record</span>
-      <span class="frappe-list-col head">Condition</span>
-      <span class="frappe-list-col head">Message</span>
-      <span class="frappe-list-col head">When</span>
-      <span class="frappe-list-activity">&nbsp;</span>
+  <div class="desk-list">
+    <div class="desk-list-head">
+      <span class="desk-list-subject head">Record</span>
+      <span class="desk-list-col head">Condition</span>
+      <span class="desk-list-col head">Message</span>
+      <span class="desk-list-col head">When</span>
+      <span class="desk-list-activity">&nbsp;</span>
     </div>
     {% for row in rows %}
-    <div class="frappe-list-row" style="{% if not row.acknowledged %}background:{% if row.severity == 'critical' %}#fff1f0{% elif row.severity == 'warning' %}#fff7ed{% else %}#f0f7ff{% endif %};{% else %}opacity:.6;{% endif %}">
-      <span class="frappe-list-subject">
+    <div class="desk-list-row" style="{% if not row.acknowledged %}background:{% if row.severity == 'critical' %}#fff1f0{% elif row.severity == 'warning' %}#fff7ed{% else %}#f0f7ff{% endif %};{% else %}opacity:.6;{% endif %}">
+      <span class="desk-list-subject">
         {% if row.severity == 'critical' %}<span class="indicator-pill red">critical</span>
         {% elif row.severity == 'warning' %}<span class="indicator-pill" style="background:#fed7aa;color:#9a3412;">warning</span>
         {% else %}<span class="indicator-pill blue">info</span>{% endif %}
         <a href="{{ row.record_url }}" style="margin-left:6px;">{{ row.record_title }}</a>
-        <span class="frappe-muted frappe-text-sm"><code>{{ row.slug }}</code></span>
+        <span class="desk-muted desk-text-sm"><code>{{ row.slug }}</code></span>
       </span>
-      <span class="frappe-list-col"><code>{{ row.field }} {{ row.op }} {{ row.threshold }}</code> &middot; got <strong>{{ row.actual }}</strong></span>
-      <span class="frappe-list-col frappe-text-sm">{{ row.message|default:"—" }}</span>
-      <span class="frappe-list-col frappe-text-sm">{{ row.when }}<div class="frappe-muted">{{ row.schedule_name }}</div></span>
-      <span class="frappe-list-activity">
+      <span class="desk-list-col"><code>{{ row.field }} {{ row.op }} {{ row.threshold }}</code> &middot; got <strong>{{ row.actual }}</strong></span>
+      <span class="desk-list-col desk-text-sm">{{ row.message|default:"—" }}</span>
+      <span class="desk-list-col desk-text-sm">{{ row.when }}<div class="desk-muted">{{ row.schedule_name }}</div></span>
+      <span class="desk-list-activity">
         {% if not row.acknowledged %}
         <form method="post" action="{{ row.ack_url }}" style="display:inline;">{% csrf_token %}
           <button type="submit" class="btn btn-link btn-sm">Acknowledge</button>
         </form>
-        {% else %}<span class="frappe-muted frappe-text-sm">acknowledged</span>{% endif %}
+        {% else %}<span class="desk-muted desk-text-sm">acknowledged</span>{% endif %}
       </span>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <div class="frappe-list"><div class="frappe-list-empty">
+  <div class="desk-list"><div class="desk-list-empty">
     <span class="ico"><i class="bi bi-bell-slash"></i></span>
     No alerts. Add alert rules to a <a href="{% url 'hydrodesk:schedules' %}">schedule</a> to get warned when a value crosses a threshold.
   </div></div>

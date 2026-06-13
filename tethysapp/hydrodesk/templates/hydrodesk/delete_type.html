@@ -9,22 +9,22 @@
 {% block title %}Delete {{ display_name }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page frappe-page--form">
+<div class="desk-page desk-page--form">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{{ home_url }}">HydroDesk</a>
     <span class="sep">/</span>Delete {{ display_name }}
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">Delete {{ display_name }}?</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">Delete {{ display_name }}?</h1>
       <span class="indicator-pill red">Destructive</span>
     </div>
   </div>
 
-  <div class="frappe-form-card" style="max-width:720px;">
-    <div class="frappe-form-section">
+  <div class="desk-form-card" style="max-width:720px;">
+    <div class="desk-form-section">
       <div class="alert alert-danger" role="alert" style="margin-bottom:16px;">
         <strong>This permanently deletes the type and cannot be undone.</strong>
       </div>
@@ -55,7 +55,7 @@
       {% endif %}
     </div>
 
-    <div class="frappe-form-actions">
+    <div class="desk-form-actions">
       <a class="btn btn-default" href="{{ cancel_url }}">Cancel</a>
       <form method="post" action="{{ form_action }}" style="display:inline;">
         {% csrf_token %}

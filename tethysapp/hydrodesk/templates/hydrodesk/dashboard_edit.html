@@ -4,18 +4,18 @@
 {% block title %}Edit {{ name }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb">
+<div class="desk-page">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
     <a href="{{ dashboards_url }}">Dashboards</a><span class="sep">/</span>{{ name }}<span class="sep">/</span>Edit
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">{{ name }}</h1>
-      <div class="frappe-sub-heading">Add or remove widgets</div>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">{{ name }}</h1>
+      <div class="desk-sub-heading">Add or remove widgets</div>
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-primary btn-sm" href="{{ view_url }}">View dashboard &rarr;</a>
     </div>
   </div>
@@ -29,13 +29,13 @@
     .hd-add-grid > div { min-width:120px; }
   </style>
 
-  <div class="frappe-form-card" style="margin-bottom:16px;">
-    <div class="frappe-section-head">Widgets ({{ widgets|length }})</div>
+  <div class="desk-form-card" style="margin-bottom:16px;">
+    <div class="desk-section-head">Widgets ({{ widgets|length }})</div>
     {% for w in widgets %}
     <div class="hd-wrow">
       <span class="hd-wtag">{{ w.type }}</span>
       <strong>{{ w.title|default:w.doctype }}</strong>
-      <span class="frappe-muted frappe-text-sm">{{ w.doctype }}{% if w.field %} &middot; {{ w.field }}{% endif %}{% if w.agg and w.type != 'table' and w.type != 'map' %} &middot; {{ w.agg }}{% endif %}{% if w.group_field %} &middot; by {{ w.group_field }}{% endif %}</span>
+      <span class="desk-muted desk-text-sm">{{ w.doctype }}{% if w.field %} &middot; {{ w.field }}{% endif %}{% if w.agg and w.type != 'table' and w.type != 'map' %} &middot; {{ w.agg }}{% endif %}{% if w.group_field %} &middot; by {{ w.group_field }}{% endif %}</span>
       <form method="post" style="margin-left:auto;">{% csrf_token %}
         <input type="hidden" name="action" value="remove">
         <input type="hidden" name="idx" value="{{ w.i }}">
@@ -43,54 +43,54 @@
       </form>
     </div>
     {% empty %}
-    <div class="frappe-muted frappe-text-sm">No widgets yet — add one below.</div>
+    <div class="desk-muted desk-text-sm">No widgets yet — add one below.</div>
     {% endfor %}
   </div>
 
-  <div class="frappe-form-card">
-    <div class="frappe-section-head">Add a widget</div>
+  <div class="desk-form-card">
+    <div class="desk-section-head">Add a widget</div>
     <form method="post">
       {% csrf_token %}
       <input type="hidden" name="action" value="add">
       <div class="hd-add-grid">
         <div>
-          <label class="frappe-label">Type</label>
+          <label class="desk-label">Type</label>
           <select class="form-select" name="type" id="w-type">
             {% for t in widget_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
           </select>
         </div>
         <div>
-          <label class="frappe-label">Doctype</label>
+          <label class="desk-label">Doctype</label>
           <select class="form-select" name="doctype" id="w-doctype">
             {% for d in doctypes %}<option value="{{ d.slug }}">{{ d.name }}</option>{% endfor %}
           </select>
         </div>
         <div id="w-field-wrap">
-          <label class="frappe-label">Value field</label>
+          <label class="desk-label">Value field</label>
           <select class="form-select" name="field" id="w-field"></select>
         </div>
         <div id="w-agg-wrap">
-          <label class="frappe-label">Aggregate</label>
+          <label class="desk-label">Aggregate</label>
           <select class="form-select" name="agg" id="w-agg">
             {% for a in aggs %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
           </select>
         </div>
         <div id="w-group-wrap">
-          <label class="frappe-label">Group by</label>
+          <label class="desk-label">Group by</label>
           <select class="form-select" name="group_field" id="w-group"><option value="">(per record)</option></select>
         </div>
         <div style="flex:1;min-width:160px;">
-          <label class="frappe-label">Title</label>
+          <label class="desk-label">Title</label>
           <input class="form-control" name="title" placeholder="Widget title">
         </div>
         <div>
-          <label class="frappe-label">Width</label>
+          <label class="desk-label">Width</label>
           <select class="form-select" name="width">
             <option value="half">Half</option><option value="full">Full</option>
           </select>
         </div>
       </div>
-      <div id="w-hint" class="frappe-muted frappe-text-sm" style="margin-top:10px;"></div>
+      <div id="w-hint" class="desk-muted desk-text-sm" style="margin-top:10px;"></div>
       <button class="btn btn-primary" type="submit" style="margin-top:8px;">+ Add widget</button>
     </form>
   </div>

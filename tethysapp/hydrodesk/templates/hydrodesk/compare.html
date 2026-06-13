@@ -10,22 +10,22 @@
 {% block title %}Compare versions - {{ display_name }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page frappe-page--form">
+<div class="desk-page desk-page--form">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
     <span class="sep">/</span><a href="{{ list_url }}">{{ display_name }}</a>
     <span class="sep">/</span><a href="{{ detail_url }}">Record</a>
     <span class="sep">/</span>Compare
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">Compare versions</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">Compare versions</h1>
       {% if changed %}<span class="indicator-pill orange">{{ changed }} of {{ total }} field{{ total|pluralize }} differ</span>
       {% else %}<span class="indicator-pill green">Identical</span>{% endif %}
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{{ detail_url }}"><i class="bi bi-arrow-left"></i> Back to record</a>
     </div>
   </div>
@@ -34,27 +34,27 @@
     .cmp-pickers { display:flex; align-items:flex-end; gap:18px; flex-wrap:wrap; }
     .cmp-pick { display:flex; flex-direction:column; gap:5px; }
     .cmp-pick label { font-size:11px; font-weight:600; letter-spacing:.04em;
-      text-transform:uppercase; color:var(--fr-text-muted); }
-    .cmp-pick select { padding:7px 10px; border:1px solid var(--fr-border-color);
-      border-radius:8px; background:var(--fr-fg-color); color:var(--fr-text-color);
+      text-transform:uppercase; color:var(--desk-text-muted); }
+    .cmp-pick select { padding:7px 10px; border:1px solid var(--desk-border-color);
+      border-radius:8px; background:var(--desk-fg-color); color:var(--desk-text-color);
       font-size:13px; min-width:200px; }
-    .cmp-vs { padding-bottom:9px; font-weight:600; color:var(--fr-text-muted); }
+    .cmp-vs { padding-bottom:9px; font-weight:600; color:var(--desk-text-muted); }
     .cmp-swap { padding-bottom:4px; }
     .cmp-toggle { display:flex; align-items:center; gap:7px; padding-bottom:7px;
-      margin-left:auto; font-size:12px; color:var(--fr-text-muted); user-select:none; }
+      margin-left:auto; font-size:12px; color:var(--desk-text-muted); user-select:none; }
 
     table.cmp { width:100%; border-collapse:collapse; margin-top:6px; }
     table.cmp th { text-align:left; font-size:11px; font-weight:600; letter-spacing:.04em;
-      text-transform:uppercase; color:var(--fr-text-muted); padding:9px 12px;
-      border-bottom:2px solid var(--fr-border-color); }
+      text-transform:uppercase; color:var(--desk-text-muted); padding:9px 12px;
+      border-bottom:2px solid var(--desk-border-color); }
     table.cmp th.col-a, table.cmp th.col-b { width:38%; }
-    table.cmp td { padding:9px 12px; border-bottom:1px solid var(--fr-border-color);
+    table.cmp td { padding:9px 12px; border-bottom:1px solid var(--desk-border-color);
       font-size:13px; vertical-align:top; }
-    table.cmp td.fld { font-weight:600; color:var(--fr-text-color); width:24%; }
+    table.cmp td.fld { font-weight:600; color:var(--desk-text-color); width:24%; }
     table.cmp td .val { white-space:pre-wrap; word-break:break-word; }
-    table.cmp td .muted { color:var(--fr-text-muted); }
+    table.cmp td .muted { color:var(--desk-text-muted); }
     tr.changed { background:rgba(255,193,7,.07); }
-    tr.changed td.fld { box-shadow:inset 3px 0 0 var(--fr-orange,#f9ab00); }
+    tr.changed td.fld { box-shadow:inset 3px 0 0 var(--desk-orange,#f9ab00); }
     td.a.changed-cell .val { background:#fce8e6; color:#c5221f; border-radius:4px; padding:1px 5px; }
     td.b.changed-cell .val { background:#e6f4ea; color:#188038; border-radius:4px; padding:1px 5px; }
     html[data-theme="dark"] td.a.changed-cell .val { background:rgba(217,48,37,.22); color:#f6aea9; }
@@ -62,7 +62,7 @@
     html[data-theme="dark"] tr.changed { background:rgba(249,171,0,.08); }
   </style>
 
-  <div class="frappe-form-card" style="margin-top:16px;padding:16px 20px;">
+  <div class="desk-form-card" style="margin-top:16px;padding:16px 20px;">
     <div class="cmp-pickers">
       <div class="cmp-pick">
         <label>Version A</label>
@@ -81,7 +81,7 @@
     </div>
   </div>
 
-  <div class="frappe-form-card" style="margin-top:16px;padding:0;overflow:hidden;">
+  <div class="desk-form-card" style="margin-top:16px;padding:0;overflow:hidden;">
     <table class="cmp">
       <thead>
         <tr>

@@ -1,9 +1,9 @@
 {% extends "hydrodesk/base_desk.html" %}
 {% comment %}
-  Generic Frappe-Desk read-style DETAIL VIEW for ONE HydroRecord of any
+  Generic Desk read-style DETAIL VIEW for ONE HydroRecord of any
   HydroType. Context (controllers.hydrotype_detail): slug, record_id,
   display_name, record_found, fields:[{label,value}], has_geom, longitude,
-  latitude, list_url, new_url. Rendered as a Frappe form-card read view
+  latitude, list_url, new_url. Rendered as a Desk form-card read view
   (label/value definition list). Zero CDN.
 {% endcomment %}
 {% load static %}
@@ -11,20 +11,20 @@
 {% block title %}{{ display_name }} Record - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page frappe-page--form">
+<div class="desk-page desk-page--form">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
     <span class="sep">/</span><a href="{{ list_url }}">{{ display_name }}</a>
     <span class="sep">/</span>Record
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">{{ record_title|default:display_name }}</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">{{ record_title|default:display_name }}</h1>
       {% if record_found %}<span class="indicator-pill green">Saved</span>{% endif %}
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{{ list_url }}">
         <i class="bi bi-arrow-left"></i> Back to list
       </a>
@@ -35,7 +35,7 @@
               data-auto-job="{{ auto_poll_job_id|default:'' }}">
         <i class="bi bi-play-fill"></i> Run {{ model_name }}
       </button>
-      <span id="hd-model-status" class="frappe-text-sm" style="margin:0 6px;"></span>
+      <span id="hd-model-status" class="desk-text-sm" style="margin:0 6px;"></span>
       {% endif %}
       <a class="btn btn-default btn-sm" href="{{ edit_url }}">
         <i class="bi bi-pencil"></i> Edit
@@ -51,13 +51,13 @@
     </div>
   </div>
 
-  <div class="frappe-breadcrumb" style="margin:-10px 0 16px;">
+  <div class="desk-breadcrumb" style="margin:-10px 0 16px;">
     Hydrotype: <code>{{ slug }}</code> &middot; ID: <code>{{ record_id }}</code>
   </div>
 
   {% if record_found and wf_has %}
-  <div class="frappe-form-card" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-    <span class="frappe-muted frappe-text-sm">Status</span>
+  <div class="desk-form-card" style="margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span class="desk-muted desk-text-sm">Status</span>
     <span style="font-size:13px;padding:3px 14px;border-radius:14px;font-weight:600;background:{{ wf_status_hex }}22;color:{{ wf_status_hex }};">{{ wf_status|default:"&mdash;" }}</span>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       {% for tr in wf_transitions %}
@@ -65,13 +65,13 @@
         <button type="submit" class="btn btn-sm" style="background:{{ tr.hex }};border-color:{{ tr.hex }};color:#fff;">{{ tr.label }}{% if tr.role == 'staff' %} &#128274;{% endif %}</button>
       </form>
       {% empty %}
-      <span class="frappe-muted frappe-text-sm">No actions available from &ldquo;{{ wf_status }}&rdquo;.</span>
+      <span class="desk-muted desk-text-sm">No actions available from &ldquo;{{ wf_status }}&rdquo;.</span>
       {% endfor %}
     </div>
-    {% if can_build %}<a class="frappe-text-sm" href="{{ wf_edit_url }}" style="margin-left:auto;">Configure workflow</a>{% endif %}
+    {% if can_build %}<a class="desk-text-sm" href="{{ wf_edit_url }}" style="margin-left:auto;">Configure workflow</a>{% endif %}
   </div>
   {% elif record_found and can_build %}
-  <div style="margin-bottom:14px;"><a class="frappe-text-sm" href="{{ wf_edit_url }}">+ Set up an approval workflow</a></div>
+  <div style="margin-bottom:14px;"><a class="desk-text-sm" href="{{ wf_edit_url }}">+ Set up an approval workflow</a></div>
   {% endif %}
 
   {% if not record_found %}
@@ -81,26 +81,26 @@
       <a href="{{ list_url }}">Back to the list</a>.
     </div>
   {% else %}
-  <div class="frappe-form-card">
-    <div class="frappe-form-section"{% if fields.0.is_tab %} data-tab-break="1" data-tab-label="{{ fields.0.tab }}"{% endif %}>
-      {% if fields.0.is_section and fields.0.section %}<div class="frappe-section-head">{{ fields.0.section }}</div>{% endif %}
-      <dl class="frappe-dl">
+  <div class="desk-form-card">
+    <div class="desk-form-section"{% if fields.0.is_tab %} data-tab-break="1" data-tab-label="{{ fields.0.tab }}"{% endif %}>
+      {% if fields.0.is_section and fields.0.section %}<div class="desk-section-head">{{ fields.0.section }}</div>{% endif %}
+      <dl class="desk-dl">
         {% for f in fields %}
           {% if forloop.first and f.is_tab %}{# leading tab already opened the first (tab-tagged) section above #}
           {% elif forloop.first and f.is_section %}{# leading section already used as the first heading above #}
           {% elif f.is_tab %}
             {# Tab Break: close this group and start a new TAB-tagged section (JS builds the bar). #}
-            </dl></div><div class="frappe-form-section" data-tab-break="1" data-tab-label="{{ f.tab }}">
-            <dl class="frappe-dl">
+            </dl></div><div class="desk-form-section" data-tab-break="1" data-tab-label="{{ f.tab }}">
+            <dl class="desk-dl">
           {% elif f.is_section %}
             {# Section Break: close this group and start a new titled section. #}
-            </dl></div><div class="frappe-form-section">
-            {% if f.section %}<div class="frappe-section-head">{{ f.section }}</div>{% endif %}
-            <dl class="frappe-dl">
+            </dl></div><div class="desk-form-section">
+            {% if f.section %}<div class="desk-section-head">{{ f.section }}</div>{% endif %}
+            <dl class="desk-dl">
           {% else %}
-            <div class="frappe-dl-row">
-              <dt class="frappe-dl-term">{{ f.label }}</dt>
-              <dd class="frappe-dl-desc{% if not f.value %} empty{% endif %}">{{ f.value|default:"&mdash;" }}</dd>
+            <div class="desk-dl-row">
+              <dt class="desk-dl-term">{{ f.label }}</dt>
+              <dd class="desk-dl-desc{% if not f.value %} empty{% endif %}">{{ f.value|default:"&mdash;" }}</dd>
             </div>
           {% endif %}
         {% endfor %}
@@ -108,17 +108,17 @@
     </div>
 
     {% if has_geom or geom_geojson %}
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Location &amp; geometry</div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Location &amp; geometry</div>
       {% if geom_geojson %}
-        <div id="hd-geom-map" style="height:320px;border-radius:8px;border:1px solid var(--fr-border,#e2e6ea);margin-bottom:12px;"></div>
+        <div id="hd-geom-map" style="height:320px;border-radius:8px;border:1px solid var(--desk-border,#e2e6ea);margin-bottom:12px;"></div>
         <script type="application/json" id="hd-geom-data">{{ geom_geojson|safe }}</script>
       {% endif %}
       {% if has_geom %}
-      <dl class="frappe-dl">
-        <div class="frappe-dl-row">
-          <dt class="frappe-dl-term">Location <span class="frappe-muted frappe-text-sm">(lon, lat)</span></dt>
-          <dd class="frappe-dl-desc">{{ longitude }}, {{ latitude }}</dd>
+      <dl class="desk-dl">
+        <div class="desk-dl-row">
+          <dt class="desk-dl-term">Location <span class="desk-muted desk-text-sm">(lon, lat)</span></dt>
+          <dd class="desk-dl-desc">{{ longitude }}, {{ latitude }}</dd>
         </div>
       </dl>
       {% endif %}
@@ -131,7 +131,7 @@
     .hd-badge.create { background:#e6f4ea; color:#1f7a4d; }
     .hd-badge.update { background:#e8f0fe; color:#1a56c4; }
     .hd-badge.restore { background:#fdeccd; color:#9a6700; }
-    .hd-rev { padding:10px 0; border-bottom:1px solid var(--fr-border,#eef0f2); }
+    .hd-rev { padding:10px 0; border-bottom:1px solid var(--desk-border,#eef0f2); }
     .hd-rev:last-child { border-bottom:none; }
     .hd-rev-head { display:flex; align-items:center; gap:8px; }
     .hd-diff { margin:6px 0 0; border-collapse:collapse; font-size:12px; width:100%; }
@@ -140,7 +140,7 @@
     .hd-diff-old { color:#b94a48; text-decoration:line-through; }
     .hd-diff-arrow { color:#aaa; }
     .hd-diff-new { color:#1f7a4d; }
-    .hd-comment { padding:8px 0; border-bottom:1px solid var(--fr-border,#eef0f2); }
+    .hd-comment { padding:8px 0; border-bottom:1px solid var(--desk-border,#eef0f2); }
     .hd-comment:last-of-type { border-bottom:none; }
     .hd-comment-head { display:flex; align-items:center; gap:8px; }
     .hd-comment-body { margin-top:2px; white-space:pre-wrap; }
@@ -149,48 +149,48 @@
   </style>
 
   {% if can_version %}
-  <div class="frappe-form-card" style="margin-top:16px;">
-    <div class="frappe-form-section">
-      <div class="frappe-section-head" style="display:flex;align-items:center;gap:8px;">
-        Versions{% if version_count > 1 %} <span class="frappe-muted frappe-text-sm">({{ version_count }})</span>{% endif %}
+  <div class="desk-form-card" style="margin-top:16px;">
+    <div class="desk-form-section">
+      <div class="desk-section-head" style="display:flex;align-items:center;gap:8px;">
+        Versions{% if version_count > 1 %} <span class="desk-muted desk-text-sm">({{ version_count }})</span>{% endif %}
         <form method="post" action="{{ new_version_url }}" style="margin-left:auto;">{% csrf_token %}
           <button type="submit" class="btn btn-default btn-sm"><i class="bi bi-files"></i> Save as new version</button>
         </form>
       </div>
       {% if version_count > 1 %}
         {% for v in versions %}
-        <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--fr-border-color);">
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--desk-border-color);">
           <span style="font-weight:600;min-width:40px;">v{{ v.no }}</span>
           <form method="post" action="{{ v.relabel_url }}" style="display:inline-flex;gap:5px;align-items:center;margin:0;">{% csrf_token %}
             <input name="label" value="{{ v.label }}" placeholder="name this version&hellip;"
-                   style="font-size:12px;padding:3px 8px;border:1px solid var(--fr-border-color);border-radius:6px;max-width:190px;background:var(--fr-fg-color);color:var(--fr-text-color);">
+                   style="font-size:12px;padding:3px 8px;border:1px solid var(--desk-border-color);border-radius:6px;max-width:190px;background:var(--desk-fg-color);color:var(--desk-text-color);">
             <button type="submit" class="btn btn-default btn-sm" style="padding:2px 9px;" title="Rename this version">Rename</button>
           </form>
           {% if v.current %}<span style="font-size:11px;padding:1px 9px;border-radius:10px;background:#e6f4ea;color:#1e8e3e;font-weight:600;">current</span>{% endif %}
-          {% if v.is_self %}<span class="frappe-muted frappe-text-sm">viewing</span>{% endif %}
-          <span class="frappe-muted frappe-text-sm" style="margin-left:auto;">{{ v.when|date:"Y-m-d H:i" }}</span>
+          {% if v.is_self %}<span class="desk-muted desk-text-sm">viewing</span>{% endif %}
+          <span class="desk-muted desk-text-sm" style="margin-left:auto;">{{ v.when|date:"Y-m-d H:i" }}</span>
           {% if not v.is_self %}<a class="btn btn-default btn-sm" href="{{ v.compare_url }}" title="Compare with the version you're viewing"><i class="bi bi-distribute-horizontal"></i> Compare</a>{% endif %}
           {% if not v.is_self %}<a class="btn btn-default btn-sm" href="{{ v.url }}">Open</a>{% endif %}
           {% if not v.current %}<form method="post" action="{{ v.set_current_url }}" style="display:inline;">{% csrf_token %}<button class="btn btn-default btn-sm" type="submit">Set current</button></form>{% endif %}
         </div>
         {% endfor %}
       {% else %}
-        <div class="frappe-muted frappe-text-sm">This is the only version. &ldquo;Save as new version&rdquo; branches an editable copy (a re-survey, a model re-run, a revision) &mdash; it becomes the current version and shows in the list.</div>
+        <div class="desk-muted desk-text-sm">This is the only version. &ldquo;Save as new version&rdquo; branches an editable copy (a re-survey, a model re-run, a revision) &mdash; it becomes the current version and shows in the list.</div>
       {% endif %}
     </div>
   </div>
   {% endif %}
 
   {% if wf_log %}
-  <div class="frappe-form-card" style="margin-top:16px;">
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Workflow history</div>
+  <div class="desk-form-card" style="margin-top:16px;">
+    <div class="desk-form-section">
+      <div class="desk-section-head">Workflow history</div>
       {% for a in wf_log %}
       <div class="hd-rev" style="display:flex;align-items:center;gap:8px;">
-        <span class="frappe-text-sm">{{ a.from|default:"(start)" }}</span>
+        <span class="desk-text-sm">{{ a.from|default:"(start)" }}</span>
         <span class="hd-diff-arrow">&rarr;</span>
         <span style="font-weight:600;">{{ a.to }}</span>
-        <span class="frappe-muted frappe-text-sm" style="margin-left:auto;">{{ a.when|date:"Y-m-d H:i" }} &middot; {{ a.actor }}</span>
+        <span class="desk-muted desk-text-sm" style="margin-left:auto;">{{ a.when|date:"Y-m-d H:i" }} &middot; {{ a.actor }}</span>
       </div>
       {% endfor %}
     </div>
@@ -198,15 +198,15 @@
   {% endif %}
 
   {# History — revision timeline with field-level diffs + Restore #}
-  <div class="frappe-form-card" style="margin-top:16px;">
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">History <span class="frappe-muted frappe-text-sm">({{ revision_count }})</span></div>
+  <div class="desk-form-card" style="margin-top:16px;">
+    <div class="desk-form-section">
+      <div class="desk-section-head">History <span class="desk-muted desk-text-sm">({{ revision_count }})</span></div>
       {% for r in revisions %}
       <div class="hd-rev">
         <div class="hd-rev-head">
           <span class="hd-badge {{ r.action }}">{{ r.action }}</span>
-          <span class="frappe-text-sm">{{ r.when|date:"Y-m-d H:i" }}</span>
-          <span class="frappe-muted frappe-text-sm">by {{ r.actor }}</span>
+          <span class="desk-text-sm">{{ r.when|date:"Y-m-d H:i" }}</span>
+          <span class="desk-muted desk-text-sm">by {{ r.actor }}</span>
           {% if not forloop.first and r.can_restore %}
           <form method="post" action="{{ r.restore_url }}" style="display:inline;margin-left:auto;"
                 onsubmit="return confirm('Restore the record to this revision?');">
@@ -225,24 +225,24 @@
           {% endfor %}
         </tbody></table>
         {% else %}
-        <div class="frappe-muted frappe-text-sm">No field changes.</div>
+        <div class="desk-muted desk-text-sm">No field changes.</div>
         {% endif %}
       </div>
       {% empty %}
-      <div class="frappe-muted frappe-text-sm">No history yet.</div>
+      <div class="desk-muted desk-text-sm">No history yet.</div>
       {% endfor %}
     </div>
   </div>
 
   {# Comments — record discussion #}
-  <div class="frappe-form-card" style="margin-top:16px;">
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Comments <span class="frappe-muted frappe-text-sm">({{ comment_count }})</span></div>
+  <div class="desk-form-card" style="margin-top:16px;">
+    <div class="desk-form-section">
+      <div class="desk-section-head">Comments <span class="desk-muted desk-text-sm">({{ comment_count }})</span></div>
       {% for c in comments %}
       <div class="hd-comment">
         <div class="hd-comment-head">
           <strong>{{ c.author }}</strong>
-          <span class="frappe-muted frappe-text-sm">{{ c.when|date:"Y-m-d H:i" }}</span>
+          <span class="desk-muted desk-text-sm">{{ c.when|date:"Y-m-d H:i" }}</span>
           {% if c.can_delete %}
           <form method="post" action="{{ c.delete_url }}" style="display:inline;margin-left:auto;"
                 onsubmit="return confirm('Delete this comment?');">
@@ -254,7 +254,7 @@
         <div class="hd-comment-body">{{ c.body|linebreaksbr }}</div>
       </div>
       {% empty %}
-      <div class="frappe-muted frappe-text-sm">No comments yet.</div>
+      <div class="desk-muted desk-text-sm">No comments yet.</div>
       {% endfor %}
       {% if can_comment %}
       <form method="post" action="{{ comment_add_url }}" class="hd-comment-form">
@@ -272,10 +272,10 @@
 <script>
 // ---- Tab Break: partition the detail's top-level sections into tabs + a tab bar. ----
 (function () {
-  var card = document.querySelector('.frappe-form-card');
+  var card = document.querySelector('.desk-form-card');
   if (!card) return;
   var sections = Array.prototype.slice.call(card.children).filter(function (el) {
-    return el.classList && el.classList.contains('frappe-form-section');
+    return el.classList && el.classList.contains('desk-form-section');
   });
   if (!sections.length) return;
   var tabs = [], cur = null;
@@ -548,11 +548,11 @@
       '</div><div class="hd-series-foot">' + n + ' rows</div></div>';
   }
   function renderReadout(d) {
-    var h = '<div style="font-size:11px;color:var(--fr-text-muted,#8d99a6);letter-spacing:.02em;">Sampled pixel ' +
+    var h = '<div style="font-size:11px;color:var(--desk-text-muted,#8d99a6);letter-spacing:.02em;">Sampled pixel ' +
       d.lat.toFixed(4) + ', ' + d.lon.toFixed(4) + '</div>';
     if (d.value !== undefined && d.value !== null && d.value !== '') {
       h += '<div style="font-size:22px;font-weight:600;color:#2490ef;line-height:1.2;margin:1px 0 3px;">' + esc(fmt(d.value)) +
-        (d.unit ? ' <span style="font-size:12px;font-weight:500;color:var(--fr-text-muted,#8d99a6);">' + esc(d.unit) + '</span>' : '') + '</div>';
+        (d.unit ? ' <span style="font-size:12px;font-weight:500;color:var(--desk-text-muted,#8d99a6);">' + esc(d.unit) + '</span>' : '') + '</div>';
     } else {
       h += '<div style="color:#999;margin:2px 0;">no value at this pixel' + (d.note ? (' — ' + esc(d.note)) : '') + '</div>';
     }
@@ -569,9 +569,9 @@
     if (!out) {
       out = document.createElement('div');
       out.id = 'hd-raster-readout';
-      out.className = 'frappe-help';
-      out.style.cssText = 'margin:10px 0 0;padding:12px 14px;border:1px solid var(--fr-border-color,#e2e6ea);border-radius:8px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.05);';
-      out.innerHTML = '<span class="frappe-muted">Click the raster to sample that pixel’s value &amp; series.</span>';
+      out.className = 'desk-help';
+      out.style.cssText = 'margin:10px 0 0;padding:12px 14px;border:1px solid var(--desk-border-color,#e2e6ea);border-radius:8px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.05);';
+      out.innerHTML = '<span class="desk-muted">Click the raster to sample that pixel’s value &amp; series.</span>';
       holder.parentNode.insertBefore(out, holder.nextSibling);
     }
     var marker = null;
@@ -585,7 +585,7 @@
       lastKey = key;
       if (marker) marker.setLatLng(e.latlng);
       else marker = L.circleMarker(e.latlng, { radius: 6, color: '#2490ef', weight: 2, fillColor: '#fff', fillOpacity: 1, className: 'hd-sample-dot' }).addTo(map);
-      out.innerHTML = '<span class="frappe-muted">Sampling at ' + lat.toFixed(4) + ', ' + lon.toFixed(4) + '…</span>';
+      out.innerHTML = '<span class="desk-muted">Sampling at ' + lat.toFixed(4) + ', ' + lon.toFixed(4) + '…</span>';
       var body = 'lon=' + encodeURIComponent(lon) + '&lat=' + encodeURIComponent(lat);
       fetch(url, { method: 'POST', credentials: 'same-origin', body: body,
         headers: { 'X-CSRFToken': getCookie('csrftoken'),
@@ -647,7 +647,7 @@
   load('script', { src: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
                    integrity: 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=', crossOrigin: 'anonymous' })
     .then(draw)
-    .catch(function () { holder.innerHTML = '<div class="frappe-help" style="padding:12px;">Map library could not be loaded (offline?). Geometry is still stored.</div>'; });
+    .catch(function () { holder.innerHTML = '<div class="desk-help" style="padding:12px;">Map library could not be loaded (offline?). Geometry is still stored.</div>'; });
 })();
 
 // ---- Edit-in-place: a netcdf API field's "Adjust & refresh" -> params modal. ----
@@ -689,7 +689,7 @@
 <div id="hd-ncp-backdrop" hidden style="position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1040;"></div>
 <div id="hd-ncp-modal" hidden role="dialog" aria-modal="true"
      style="position:fixed;z-index:1050;left:50%;top:50%;transform:translate(-50%,-50%);width:min(440px,92vw);background:#fff;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.25);">
-  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--fr-border,#e2e6ea);">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--desk-border,#e2e6ea);">
     <strong>Adjust query &amp; refresh</strong>
     <button type="button" id="hd-ncp-x" class="btn btn-link btn-sm" style="padding:0;">&times;</button>
   </div>
@@ -697,22 +697,22 @@
     {% csrf_token %}
     <div style="padding:16px;">
       <div id="hd-ncp-dates" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="hd-ncp-start">Start date</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="hd-ncp-start">Start date</label>
           <input class="form-control" type="date" id="hd-ncp-start" name="p_start">
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="hd-ncp-end">End date</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="hd-ncp-end">End date</label>
           <input class="form-control" type="date" id="hd-ncp-end" name="p_end">
         </div>
       </div>
-      <div id="hd-ncp-shp" class="frappe-form-group" style="margin-bottom:6px;">
-        <label class="frappe-label">Replace shapefile <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+      <div id="hd-ncp-shp" class="desk-form-group" style="margin-bottom:6px;">
+        <label class="desk-label">Replace shapefile <span class="desk-muted desk-text-sm">(optional)</span></label>
         <input class="form-control" type="file" name="p_shapefile" accept=".zip,.shp,application/zip">
-        <div class="frappe-help">Leave empty to keep the current region.</div>
+        <div class="desk-help">Leave empty to keep the current region.</div>
       </div>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--fr-border,#e2e6ea);">
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--desk-border,#e2e6ea);">
       <button type="button" id="hd-ncp-cancel" class="btn btn-secondary btn-sm">Cancel</button>
       <button type="submit" class="btn btn-primary btn-sm">Save &amp; refresh</button>
     </div>
@@ -745,7 +745,7 @@
             set('<span style="color:#c0392b;">' + d.status + (d.message ? " &mdash; " + d.message : "") + "</span>");
           }
         } else {
-          set('<span class="frappe-muted">' + d.status + (d.message ? " &mdash; " + d.message : "") + "&hellip;</span>");
+          set('<span class="desk-muted">' + d.status + (d.message ? " &mdash; " + d.message : "") + "&hellip;</span>");
           setTimeout(function () { poll(base, jobId); }, 1000);
         }
       })
@@ -753,7 +753,7 @@
   }
   btn.addEventListener("click", function () {
     btn.disabled = true;
-    set('<span class="frappe-muted">starting&hellip;</span>');
+    set('<span class="desk-muted">starting&hellip;</span>');
     fetch(btn.getAttribute("data-run-url"), { method: "POST", credentials: "same-origin",
           headers: { "X-CSRFToken": getCookie("csrftoken"), "Accept": "application/json" } })
       .then(function (r) { return r.json(); })
@@ -769,7 +769,7 @@
   var autoJob = btn.getAttribute("data-auto-job");
   if (autoJob) {
     btn.disabled = true;
-    set('<span class="frappe-muted">running on save&hellip;</span>');
+    set('<span class="desk-muted">running on save&hellip;</span>');
     poll(btn.getAttribute("data-job-base"), autoJob);
   }
 })();
@@ -797,7 +797,7 @@
     cols.forEach(function (c) { n = Math.max(n, (c.values || []).length); });
     lineCols.forEach(function (c) { (c.values || []).forEach(function (v) { var f = fin(v); if (f !== null) allf.push(f); }); });
     [loCol, hiCol].forEach(function (c) { if (c) (c.values || []).forEach(function (v) { var f = fin(v); if (f !== null) allf.push(f); }); });
-    if (allf.length < 2) return '<span class="frappe-muted frappe-text-sm">—</span>';
+    if (allf.length < 2) return '<span class="desk-muted desk-text-sm">—</span>';
     var lo = Math.min.apply(null, allf), hi = Math.max.apply(null, allf);
     if (hi === lo) { lo -= 0.5; hi += 0.5; }
     var plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;

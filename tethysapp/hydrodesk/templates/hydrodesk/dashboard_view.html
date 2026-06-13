@@ -3,22 +3,22 @@
 {% block title %}{{ name }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb">
+<div class="desk-page">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
     <a href="{{ dashboards_url }}">Dashboards</a><span class="sep">/</span>{{ name }}
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area"><h1 class="frappe-title">{{ name }}</h1></div>
-    <div class="frappe-page-actions">
+  <div class="desk-page-head">
+    <div class="desk-title-area"><h1 class="desk-title">{{ name }}</h1></div>
+    <div class="desk-page-actions">
       {% if can_build %}<a class="btn btn-default btn-sm" href="{{ edit_url }}"><i class="bi bi-pencil"></i> Edit</a>{% endif %}
     </div>
   </div>
 
   <style>
     .hd-dash-grid { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; }
-    .hd-w { background:#fff; border:1px solid var(--fr-border,#e2e6ea); border-radius:10px;
+    .hd-w { background:#fff; border:1px solid var(--desk-border,#e2e6ea); border-radius:10px;
             padding:16px; box-sizing:border-box; min-width:0; overflow:hidden; }
     .hd-w.half { width:calc(50% - 8px); }
     .hd-w.full { width:100%; }
@@ -28,16 +28,16 @@
     .hd-w svg { display:block; max-width:100%; height:auto; }   /* charts scale to the card */
     .hd-bars { margin-top:2px; }
     .hd-bar-row { display:flex; align-items:center; gap:10px; margin:7px 0; font-size:12px; }
-    .hd-bar-label { flex:0 0 38%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fr-text-muted,#475467); }
+    .hd-bar-label { flex:0 0 38%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--desk-text-muted,#475467); }
     .hd-bar-track { flex:1 1 auto; min-width:0; height:14px; background:var(--gray-200,#eef2f7); border-radius:7px; overflow:hidden; }
-    .hd-bar-fill { display:block; height:100%; background:var(--fr-primary,#1a73e8); border-radius:7px; }
-    .hd-bar-val { flex:0 0 auto; color:var(--fr-text-muted,#667085); white-space:nowrap; text-align:right; min-width:44px; }
+    .hd-bar-fill { display:block; height:100%; background:var(--desk-primary,#1a73e8); border-radius:7px; }
+    .hd-bar-val { flex:0 0 auto; color:var(--desk-text-muted,#667085); white-space:nowrap; text-align:right; min-width:44px; }
     .hd-w table { width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed; }
     .hd-w th, .hd-w td { padding:5px 8px; vertical-align:top; word-break:break-word; }
     .hd-w th { text-align:left; color:#667085; font-weight:600; border-bottom:1px solid #eef0f2; }
     .hd-w td { border-bottom:1px solid #f4f5f7; }
     .hd-w-err { color:#b54708; font-size:13px; }
-    .hd-map { height:300px; border-radius:8px; border:1px solid var(--fr-border,#e2e6ea); }
+    .hd-map { height:300px; border-radius:8px; border:1px solid var(--desk-border,#e2e6ea); }
     @media (max-width:860px){ .hd-w.half{ width:100%; } }
   </style>
 
@@ -74,8 +74,8 @@
     {% endfor %}
   </div>
   {% else %}
-  <div class="frappe-form-card">
-    <div class="frappe-muted">This dashboard has no widgets yet.{% if can_build %} <a href="{{ edit_url }}">Add some &rarr;</a>{% endif %}</div>
+  <div class="desk-form-card">
+    <div class="desk-muted">This dashboard has no widgets yet.{% if can_build %} <a href="{{ edit_url }}">Add some &rarr;</a>{% endif %}</div>
   </div>
   {% endif %}
 </div>

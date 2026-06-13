@@ -2,28 +2,28 @@
 {% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
 {% block nav_active_schedules %} active{% endblock %}
 {% block desk_content %}
-<div class="frappe-page frappe-page--form">
-  <div class="frappe-breadcrumb">
+<div class="desk-page desk-page--form">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
     <a href="{{ schedules_url }}">Schedules</a><span class="sep">/</span>{{ page_title }}
   </div>
-  <div class="frappe-page-head"><div class="frappe-title-area"><h1 class="frappe-title">{{ page_title }}</h1></div></div>
+  <div class="desk-page-head"><div class="desk-title-area"><h1 class="desk-title">{{ page_title }}</h1></div></div>
 
   {% if errors %}
-  <div class="frappe-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:16px;">
+  <div class="desk-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:16px;">
     <ul style="margin:0;padding-left:18px;color:#b42318;">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
   </div>
   {% endif %}
 
   <form method="post" action="{{ form_action }}">{% csrf_token %}
-    <div class="frappe-form-card" style="padding:18px 20px;">
+    <div class="desk-form-card" style="padding:18px 20px;">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_name">Schedule name</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_name">Schedule name</label>
           <input class="form-control" id="id_name" name="name" value="{{ name }}" placeholder="e.g. flow_watch">
         </div>
-        <div class="frappe-form-group">
-          <label class="frappe-label" for="id_target">Target doctype</label>
+        <div class="desk-form-group">
+          <label class="desk-label" for="id_target">Target doctype</label>
           <select class="form-select" id="id_target" name="target_slug">
             <option value="">— pick a doctype —</option>
             {% for s in slugs %}<option value="{{ s.slug }}"{% if s.slug == target_slug %} selected{% endif %}>{{ s.name }} ({{ s.slug }})</option>{% endfor %}
@@ -31,36 +31,36 @@
         </div>
       </div>
       <div style="display:flex;gap:24px;align-items:center;margin-top:10px;flex-wrap:wrap;">
-        <div class="frappe-form-group" style="margin:0;max-width:180px;">
-          <label class="frappe-label">Every (minutes)</label>
+        <div class="desk-form-group" style="margin:0;max-width:180px;">
+          <label class="desk-label">Every (minutes)</label>
           <input class="form-control form-control-sm" name="interval_minutes" type="number" min="1" max="10080" value="{{ interval_minutes }}">
         </div>
-        <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;">
+        <label class="desk-label" style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;">
           <input type="checkbox" name="enabled" {% if enabled %}checked{% endif %}> Enabled</label>
-        <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;">
+        <label class="desk-label" style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;">
           <input type="checkbox" name="refresh" {% if refresh %}checked{% endif %}> Refresh computed fields each run</label>
       </div>
 
-      <div class="frappe-form-group" style="margin-top:12px;max-width:480px;">
-        <label class="frappe-label">Notify by email <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+      <div class="desk-form-group" style="margin-top:12px;max-width:480px;">
+        <label class="desk-label">Notify by email <span class="desk-muted desk-text-sm">(optional)</span></label>
         <input class="form-control form-control-sm" name="notify_email" type="text"
                value="{{ notify_email }}" placeholder="alerts@example.org, oncall@example.org">
-        <div class="frappe-help">Comma-separated. Emailed once per new breach (deduped while unacknowledged). Requires the portal's email settings to be configured.</div>
+        <div class="desk-help">Comma-separated. Emailed once per new breach (deduped while unacknowledged). Requires the portal's email settings to be configured.</div>
       </div>
 
-      <div class="frappe-form-group" style="margin-top:12px;max-width:480px;">
-        <label class="frappe-label">Webhook URL <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+      <div class="desk-form-group" style="margin-top:12px;max-width:480px;">
+        <label class="desk-label">Webhook URL <span class="desk-muted desk-text-sm">(optional)</span></label>
         <input class="form-control form-control-sm" name="webhook_url" type="text"
                value="{{ webhook_url }}" placeholder="https://hooks.slack.com/services/…">
-        <div class="frappe-help">POSTed a JSON payload on each new breach — works with a Slack / Teams incoming webhook (a <code>text</code> field) or any endpoint (a structured <code>breaches</code> array).</div>
+        <div class="desk-help">POSTed a JSON payload on each new breach — works with a Slack / Teams incoming webhook (a <code>text</code> field) or any endpoint (a structured <code>breaches</code> array).</div>
       </div>
 
-      <div style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head">Alert rules <span class="frappe-muted frappe-text-sm">(raise an alert when a field crosses a threshold)</span></div>
-        <div class="frappe-muted frappe-text-sm" style="margin:-2px 0 8px;">Field choices come from the <strong>target doctype's real fields</strong> — pick a target above to populate them.</div>
+      <div style="border-top:1px solid var(--desk-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="desk-section-head">Alert rules <span class="desk-muted desk-text-sm">(raise an alert when a field crosses a threshold)</span></div>
+        <div class="desk-muted desk-text-sm" style="margin:-2px 0 8px;">Field choices come from the <strong>target doctype's real fields</strong> — pick a target above to populate them.</div>
         <div style="display:grid;grid-template-columns:1fr 90px 1fr 110px 1.4fr;gap:8px;margin-bottom:6px;">
-          <span class="frappe-label">Field</span><span class="frappe-label">Op</span><span class="frappe-label">Value</span>
-          <span class="frappe-label">Severity</span><span class="frappe-label">Message</span>
+          <span class="desk-label">Field</span><span class="desk-label">Op</span><span class="desk-label">Value</span>
+          <span class="desk-label">Severity</span><span class="desk-label">Message</span>
         </div>
         {% for r in alert_rows %}
         <div style="display:grid;grid-template-columns:1fr 90px 1fr 110px 1.4fr;gap:8px;margin-bottom:6px;">
@@ -80,7 +80,7 @@
         {% endfor %}
       </div>
 
-      <div class="frappe-form-actions" style="margin-top:16px;">
+      <div class="desk-form-actions" style="margin-top:16px;">
         <a class="btn btn-default" href="{{ schedules_url }}">Cancel</a>
         <button class="btn btn-primary" type="submit">{{ submit_label }}</button>
       </div>

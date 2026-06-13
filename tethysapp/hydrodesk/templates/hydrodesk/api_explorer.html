@@ -4,20 +4,20 @@
 {% block title %}Data API - {{ block.super }}{% endblock %}
 {% block desk_content %}
 <style>
-  /* The form-card has no padding of its own (the theme expects a .frappe-form-section
+  /* The form-card has no padding of its own (the theme expects a .desk-form-section
      wrapper); on this page content sits directly in the card, so give every card here
      internal breathing room. */
-  .frappe-page .frappe-form-card { padding:20px 22px; }
+  .desk-page .desk-form-card { padding:20px 22px; }
   .hd-api-grid { display:grid; grid-template-columns:320px 1fr; gap:20px; align-items:start; }
   @media (max-width:900px){ .hd-api-grid{ grid-template-columns:1fr; } }
-  .hd-sec { padding-top:18px; margin-top:18px; border-top:1px solid var(--fr-border-color,#e6e9ee); }
+  .hd-sec { padding-top:18px; margin-top:18px; border-top:1px solid var(--desk-border-color,#e6e9ee); }
   .hd-sec:first-child { padding-top:0; margin-top:0; border-top:0; }
   .hd-subhead { font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
-                color:var(--fr-text-muted,#6b7280); margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+                color:var(--desk-text-muted,#6b7280); margin-bottom:10px; display:flex; align-items:center; gap:8px; }
   .hd-opts-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
   .hd-filter-row { padding:12px 0; }
-  .hd-filter-row + .hd-filter-row { border-top:1px solid var(--fr-border-color,#e6e9ee); }
-  .hd-x-btn { border:none; background:none; color:var(--fr-text-muted,#8d99a6); font-size:18px;
+  .hd-filter-row + .hd-filter-row { border-top:1px solid var(--desk-border-color,#e6e9ee); }
+  .hd-x-btn { border:none; background:none; color:var(--desk-text-muted,#8d99a6); font-size:18px;
               line-height:1; cursor:pointer; flex:0 0 auto; padding:2px 6px; border-radius:4px; }
   .hd-x-btn:hover { color:#c0392b; background:rgba(192,57,45,.08); }
   .hd-dt-row { padding:8px 9px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }
@@ -25,34 +25,34 @@
   .hd-toolbar input { flex:1 1 auto; }
 </style>
 
-<div class="frappe-page">
-  <div class="frappe-page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">
+<div class="desk-page">
+  <div class="desk-page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">
     <div>
-      <h1 class="frappe-title">Data API</h1>
-      <div class="frappe-muted">Expose any doctype's records as JSON / GeoJSON so other apps (e.g. TethysDash) can build dashboards. Metadata-driven — every doctype is an endpoint.</div>
+      <h1 class="desk-title">Data API</h1>
+      <div class="desk-muted">Expose any doctype's records as JSON / GeoJSON so other apps (e.g. TethysDash) can build dashboards. Metadata-driven — every doctype is an endpoint.</div>
     </div>
   </div>
 
   {# ---- Access token ---- #}
-  <div class="frappe-form-card" style="margin-bottom:20px;">
+  <div class="desk-form-card" style="margin-bottom:20px;">
     <div class="hd-subhead" style="margin-bottom:8px;">Access</div>
     {% if has_token %}
-      <div class="frappe-help">External consumers authenticate with a read <strong>token</strong> (<code>?token=</code> or the <code>X-API-Token</code> header). Logged-in users with read permission don't need it.</div>
+      <div class="desk-help">External consumers authenticate with a read <strong>token</strong> (<code>?token=</code> or the <code>X-API-Token</code> header). Logged-in users with read permission don't need it.</div>
       <div class="hd-toolbar" style="margin-top:8px;max-width:560px;">
         <input class="form-control" id="hd-token" type="text" readonly value="{{ token }}" style="font-family:monospace;">
         <button class="btn btn-secondary btn-sm" type="button" onclick="navigator.clipboard.writeText(document.getElementById('hd-token').value)">Copy token</button>
         <a class="btn btn-link btn-sm" href="{{ credentials_url }}">Manage</a>
       </div>
     {% else %}
-      <div class="frappe-help">No read token set, so the API is open only to logged-in users with read permission. To let an external app pull data, create a credential named <code>api_read_token</code> under <a href="{{ credentials_url }}">Credentials</a> — its secret becomes the API token.</div>
+      <div class="desk-help">No read token set, so the API is open only to logged-in users with read permission. To let an external app pull data, create a credential named <code>api_read_token</code> under <a href="{{ credentials_url }}">Credentials</a> — its secret becomes the API token.</div>
     {% endif %}
-    <div class="frappe-help" style="margin-top:10px;border-top:1px solid var(--fr-border,#eef0f2);padding-top:10px;">
+    <div class="desk-help" style="margin-top:10px;border-top:1px solid var(--desk-border,#eef0f2);padding-top:10px;">
       <strong>OGC API - Features:</strong> every spatial doctype is also served as a standards-based
       collection (GeoJSON) that QGIS / ArcGIS / OpenLayers can consume directly &mdash;
       <a href="{% url 'hydrodesk:ogc_landing' %}" target="_blank"><code>/ogc</code></a>
       (uses the same read token).
     </div>
-    <div class="frappe-help" style="margin-top:8px;">
+    <div class="desk-help" style="margin-top:8px;">
       <strong>Versioned records:</strong> the API returns the <em>current</em> version of each record by default;
       add <code>?versions=all</code> to get every version (the full audit set).
     </div>
@@ -60,16 +60,16 @@
 
   <div class="hd-api-grid">
     {# ---- Endpoint list ---- #}
-    <div class="frappe-form-card">
-      <div class="hd-subhead">Doctypes <span class="frappe-muted" id="hd-count" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
+    <div class="desk-form-card">
+      <div class="hd-subhead">Doctypes <span class="desk-muted" id="hd-count" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
       <input class="form-control form-control-sm" id="hd-filter" placeholder="filter…" style="margin-bottom:10px;">
       <div id="hd-doctypes" style="max-height:520px;overflow:auto;"></div>
     </div>
 
     {# ---- Query builder + preview ---- #}
-    <div class="frappe-form-card">
-      <div class="frappe-section-head" id="hd-builder-title" style="margin-bottom:4px;">Query builder</div>
-      <div id="hd-builder" class="frappe-muted">Pick a doctype on the left to build a query.</div>
+    <div class="desk-form-card">
+      <div class="desk-section-head" id="hd-builder-title" style="margin-bottom:4px;">Query builder</div>
+      <div id="hd-builder" class="desk-muted">Pick a doctype on the left to build a query.</div>
 
       <div id="hd-builder-body" style="display:none;">
         {# Filters #}
@@ -77,7 +77,7 @@
           <div class="hd-subhead">Filters</div>
           <div id="hd-filters"></div>
           <button class="btn btn-link btn-sm" type="button" id="hd-add-filter" style="padding:0;">+ Add filter</button>
-          <div class="frappe-help" style="margin-top:8px;">
+          <div class="desk-help" style="margin-top:8px;">
             <code>⊞</code> inline table · <code>⚡</code> live connector output (time-series fetched per record).
             Pick a table field to get a <strong>row-condition builder</strong>: choose columns, add conditions,
             and combine them with <strong>AND / OR</strong> (each match is tested against a single row). Live
@@ -89,18 +89,18 @@
         <div class="hd-sec">
           <div class="hd-subhead">Options</div>
           <div class="hd-opts-grid">
-            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Format</label>
+            <div class="desk-form-group" style="margin:0;"><label class="desk-label">Format</label>
               <select class="form-select form-select-sm" id="hd-format"><option value="json">JSON</option><option value="geojson">GeoJSON</option></select></div>
-            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Limit</label>
+            <div class="desk-form-group" style="margin:0;"><label class="desk-label">Limit</label>
               <input class="form-control form-control-sm" id="hd-limit" value="50"></div>
-            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Offset</label>
+            <div class="desk-form-group" style="margin:0;"><label class="desk-label">Offset</label>
               <input class="form-control form-control-sm" id="hd-offset" value="0"></div>
-            <div class="frappe-form-group" style="margin:0;"><label class="frappe-label">Order by</label>
+            <div class="desk-form-group" style="margin:0;"><label class="desk-label">Order by</label>
               <input class="form-control form-control-sm" id="hd-order" placeholder="field or -field"></div>
           </div>
-          <label class="frappe-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal;margin-top:12px;">
+          <label class="desk-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal;margin-top:12px;">
             <input type="checkbox" id="hd-tables" checked> Include inline table fields
-            <span class="frappe-muted frappe-text-sm">(uncheck to omit large row arrays — <code>⊞</code> fields — and slim the payload)</span>
+            <span class="desk-muted desk-text-sm">(uncheck to omit large row arrays — <code>⊞</code> fields — and slim the payload)</span>
           </label>
         </div>
 
@@ -112,12 +112,12 @@
             <button class="btn btn-secondary btn-sm" type="button" id="hd-copy">Copy</button>
             <button class="btn btn-primary btn-sm" type="button" id="hd-run">Run ▸</button>
           </div>
-          <div class="frappe-help">The token is appended automatically when one is set, so this URL works as-is from another app.</div>
+          <div class="desk-help">The token is appended automatically when one is set, so this URL works as-is from another app.</div>
         </div>
 
         {# Preview #}
         <div class="hd-sec">
-          <div class="hd-subhead">Preview <span class="frappe-muted frappe-text-sm" id="hd-preview-meta" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
+          <div class="hd-subhead">Preview <span class="desk-muted desk-text-sm" id="hd-preview-meta" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
           <pre id="hd-preview" style="background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;max-height:380px;overflow:auto;font-size:12px;margin:0;">—</pre>
         </div>
       </div>
@@ -154,7 +154,7 @@
       document.getElementById("hd-count").textContent = "(" + collections.length + ")";
       renderList("");
     })
-    .catch(function () { listEl.innerHTML = '<div class="frappe-help">Could not load the catalog.</div>'; });
+    .catch(function () { listEl.innerHTML = '<div class="desk-help">Could not load the catalog.</div>'; });
 
   document.getElementById("hd-filter").addEventListener("input", function (e) { renderList(e.target.value); });
 
@@ -166,14 +166,14 @@
     }).forEach(function (c) {
       var row = document.createElement("div");
       row.className = "hd-dt-row";
-      row.onmouseover = function () { row.style.background = "var(--fr-control-bg,#f3f5f7)"; };
-      row.onmouseout = function () { row.style.background = (active === c) ? "var(--fr-control-bg,#eef1f4)" : ""; };
+      row.onmouseover = function () { row.style.background = "var(--desk-control-bg,#f3f5f7)"; };
+      row.onmouseout = function () { row.style.background = (active === c) ? "var(--desk-control-bg,#eef1f4)" : ""; };
       row.innerHTML = '<span><strong>' + esc(c.display_name) + '</strong>'
-        + '<div class="frappe-muted frappe-text-sm"><code>' + esc(c.doctype) + '</code>'
+        + '<div class="desk-muted desk-text-sm"><code>' + esc(c.doctype) + '</code>'
         + (c.geometry && c.geometry !== "none" ? ' · ' + esc(c.geometry) : '') + '</div></span>'
-        + '<span class="frappe-muted">' + (c.count || 0) + '</span>';
+        + '<span class="desk-muted">' + (c.count || 0) + '</span>';
       row.onclick = function () { active = c; select(c); renderList(q); };
-      if (active === c) row.style.background = "var(--fr-control-bg,#eef1f4)";
+      if (active === c) row.style.background = "var(--desk-control-bg,#eef1f4)";
       listEl.appendChild(row);
     });
   }
@@ -231,7 +231,7 @@
 
     if (f && f.is_table) {
       var tag = document.createElement("span");
-      tag.className = "frappe-muted frappe-text-sm";
+      tag.className = "desk-muted desk-text-sm";
       tag.style.cssText = "flex:2 1 auto;";
       tag.innerHTML = (f.is_connector_output ? "⚡ live" : "⊞ table") + " — set row conditions below";
       line.appendChild(tag);
@@ -264,10 +264,10 @@
   function tableBuilder(row, f) {
     var panel = document.createElement("div");
     panel.style.cssText = "margin:10px 0 2px 4px;padding:10px 12px;border-left:3px solid "
-      + "var(--fr-primary,#2490ef);background:var(--fr-control-bg,#f6f8fa);border-radius:0 6px 6px 0;";
+      + "var(--desk-primary,#2490ef);background:var(--desk-control-bg,#f6f8fa);border-radius:0 6px 6px 0;";
     var cols = f.columns || [];
     var hint = document.createElement("div");
-    hint.className = "frappe-help"; hint.style.margin = "0 0 8px";
+    hint.className = "desk-help"; hint.style.margin = "0 0 8px";
     hint.innerHTML = (f.is_connector_output
         ? "⚡ live via <code>" + esc(f.connector || "") + "</code>, fetched per record (first 50). "
         : "")
@@ -278,7 +278,7 @@
     var joinWrap = document.createElement("div");
     joinWrap.className = "hd-joinwrap";
     joinWrap.style.cssText = "display:none;align-items:center;gap:6px;margin-bottom:8px;";
-    joinWrap.innerHTML = '<span class="frappe-muted frappe-text-sm">match a row where</span>'
+    joinWrap.innerHTML = '<span class="desk-muted desk-text-sm">match a row where</span>'
       + '<select class="form-select form-select-sm hd-join" style="width:auto;flex:0 0 auto;">'
       + '<option value="AND">all conditions (AND)</option>'
       + '<option value="OR">any condition (OR)</option></select>';

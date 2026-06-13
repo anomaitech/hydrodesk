@@ -2,36 +2,36 @@
 {% block title %}Report Builder - {{ block.super }}{% endblock %}
 {% block nav_active_report %} active{% endblock %}
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Report Builder</div>
-  <div class="frappe-page-head"><div class="frappe-title-area">
-    <h1 class="frappe-title">Report Builder</h1>
-    <p class="frappe-muted">Filter, group by a field, and aggregate a metric &mdash; then export the summary as CSV.</p>
+<div class="desk-page">
+  <div class="desk-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Report Builder</div>
+  <div class="desk-page-head"><div class="desk-title-area">
+    <h1 class="desk-title">Report Builder</h1>
+    <p class="desk-muted">Filter, group by a field, and aggregate a metric &mdash; then export the summary as CSV.</p>
   </div></div>
 
-  <form method="get" class="frappe-form-card" style="padding:16px 20px;margin-bottom:16px;">
+  <form method="get" class="desk-form-card" style="padding:16px 20px;margin-bottom:16px;">
     <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:end;">
-      <div class="frappe-form-group" style="margin:0;min-width:220px;">
-        <label class="frappe-label">Doctype</label>
+      <div class="desk-form-group" style="margin:0;min-width:220px;">
+        <label class="desk-label">Doctype</label>
         <select class="form-select" name="slug" onchange="this.form.submit()">
           {% for t in slugs %}<option value="{{ t.slug }}"{% if t.slug == selected %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
         </select>
       </div>
-      <div class="frappe-form-group" style="margin:0;min-width:180px;">
-        <label class="frappe-label">Group by</label>
+      <div class="desk-form-group" style="margin:0;min-width:180px;">
+        <label class="desk-label">Group by</label>
         <select class="form-select" name="group_by">
           {% for f in group_fields %}<option value="{{ f.key }}"{% if f.key == group_by %} selected{% endif %}>{{ f.title }}</option>{% endfor %}
           {% if not group_fields %}<option value="">(no categorical fields)</option>{% endif %}
         </select>
       </div>
-      <div class="frappe-form-group" style="margin:0;min-width:150px;">
-        <label class="frappe-label">Aggregate</label>
+      <div class="desk-form-group" style="margin:0;min-width:150px;">
+        <label class="desk-label">Aggregate</label>
         <select class="form-select" name="agg">
           {% for a in aggs %}<option value="{{ a }}"{% if a == agg %} selected{% endif %}>{{ a }}</option>{% endfor %}
         </select>
       </div>
-      <div class="frappe-form-group" style="margin:0;min-width:180px;">
-        <label class="frappe-label">Of metric</label>
+      <div class="desk-form-group" style="margin:0;min-width:180px;">
+        <label class="desk-label">Of metric</label>
         <select class="form-select" name="metric">
           <option value="">&mdash; (count only) &mdash;</option>
           {% for f in num_fields %}<option value="{{ f.key }}"{% if f.key == metric %} selected{% endif %}>{{ f.title }}</option>{% endfor %}
@@ -40,7 +40,7 @@
     </div>
 
     <div style="margin-top:14px;">
-      <div class="frappe-muted frappe-text-sm" style="margin-bottom:6px;">Filters (optional)</div>
+      <div class="desk-muted desk-text-sm" style="margin-bottom:6px;">Filters (optional)</div>
       {% for i in "012" %}
       <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
         <select class="form-select form-select-sm" name="rf{{ i }}" style="max-width:220px;">
@@ -58,13 +58,13 @@
     <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
       <button class="btn btn-primary" type="submit">Run report</button>
       {% if rows %}<a class="btn btn-default" href="?{{ csv_qs }}&format=csv"><i class="bi bi-download"></i> Download CSV</a>{% endif %}
-      <span class="frappe-muted frappe-text-sm">{{ matched }} record{{ matched|pluralize }} matched</span>
+      <span class="desk-muted desk-text-sm">{{ matched }} record{{ matched|pluralize }} matched</span>
     </div>
   </form>
 
   {% if rows %}
   <div style="display:flex;flex-wrap:wrap;gap:16px;">
-    <div class="frappe-form-card" style="padding:16px 20px;flex:1;min-width:420px;">
+    <div class="desk-form-card" style="padding:16px 20px;flex:1;min-width:420px;">
       <table class="hd-series-table" style="border-collapse:collapse;font-size:13px;width:100%;">
         <thead><tr>
           <th style="text-align:left;padding:6px 12px;border-bottom:2px solid #e6e9ee;">{{ group_by }}</th>
@@ -87,13 +87,13 @@
         </tbody>
       </table>
     </div>
-    <div class="frappe-form-card" style="padding:16px 20px;flex:1;min-width:520px;">
-      <div class="frappe-section-head" style="margin:0 0 10px;">{{ colname }} by {{ group_by }}</div>
+    <div class="desk-form-card" style="padding:16px 20px;flex:1;min-width:520px;">
+      <div class="desk-section-head" style="margin:0 0 10px;">{{ colname }} by {{ group_by }}</div>
       {{ chart_svg }}
     </div>
   </div>
   {% else %}
-  <div class="frappe-muted">Pick a group-by field (and optionally a metric) and run the report.</div>
+  <div class="desk-muted">Pick a group-by field (and optionally a metric) and run the report.</div>
   {% endif %}
 </div>
 {% endblock %}

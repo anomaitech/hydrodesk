@@ -4,7 +4,7 @@
 {% block nav_active_models %} active{% endblock %}
 {% block desk_content %}
 <style>
-  .hd-dataref{border:1px solid var(--fr-border-color,#e6e9ee);border-radius:8px;background:#fbfcfd;margin-bottom:14px;}
+  .hd-dataref{border:1px solid var(--desk-border-color,#e6e9ee);border-radius:8px;background:#fbfcfd;margin-bottom:14px;}
   .hd-dataref>summary{cursor:pointer;padding:9px 12px;font-weight:600;font-size:13px;list-style:none;user-select:none;}
   .hd-dataref>summary::-webkit-details-marker{display:none;}
   .hd-dataref>summary::before{content:"\25B8";display:inline-block;margin-right:6px;transition:transform .15s;color:#8a94a6;}
@@ -23,7 +23,7 @@
   .hd-key:hover{background:#e4e8ef;}
   .hd-key-computed{background:#fff7e8;color:#9a6700;border-color:#f1e2bf;}
   .hd-copy.hd-copied{background:#1a7f37 !important;color:#fff !important;border-color:#1a7f37 !important;}
-  .hd-dt-list{max-height:172px;overflow:auto;border:1px solid var(--fr-border-color,#e6e9ee);border-radius:6px;background:#fff;padding:4px;}
+  .hd-dt-list{max-height:172px;overflow:auto;border:1px solid var(--desk-border-color,#e6e9ee);border-radius:6px;background:#fff;padding:4px;}
   .hd-dt-opt{display:flex;align-items:center;gap:8px;padding:4px 7px;border-radius:5px;cursor:pointer;font-size:12.5px;}
   .hd-dt-opt:hover{background:#f3f6fa;}
   .hd-dt-opt input{margin:0;}
@@ -31,33 +31,33 @@
   .hd-dt-opt code{color:#6b7280;font-size:11.5px;}
   .hd-source-panel{margin-top:4px;}
 </style>
-<div class="frappe-page frappe-page--form">
-  <div class="frappe-breadcrumb">
+<div class="desk-page desk-page--form">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>
     <a href="{{ models_url }}">Models</a><span class="sep">/</span>{{ page_title }}
   </div>
-  <div class="frappe-page-head"><div class="frappe-title-area"><h1 class="frappe-title">{{ page_title }}</h1></div></div>
+  <div class="desk-page-head"><div class="desk-title-area"><h1 class="desk-title">{{ page_title }}</h1></div></div>
 
   {% if errors %}
-  <div class="frappe-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:16px;">
+  <div class="desk-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:16px;">
     <ul style="margin:0;padding-left:18px;color:#b42318;">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
   </div>
   {% endif %}
 
   <form method="post" action="{{ form_action }}">
     {% csrf_token %}
-    <div class="frappe-form-card" style="padding:18px 20px;">
+    <div class="desk-form-card" style="padding:18px 20px;">
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_name">Model name</label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_name">Model name</label>
         <input class="form-control" id="id_name" name="name" value="{{ name }}"
                placeholder="e.g. rational_runoff" {% if is_edit %}{% endif %}>
-        <div class="frappe-help">Referenced by a doctype's <strong>Model</strong> binding in the builder.</div>
+        <div class="desk-help">Referenced by a doctype's <strong>Model</strong> binding in the builder.</div>
       </div>
 
-      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head">Based on <span class="frappe-muted frappe-text-sm">— what this model reads / runs</span></div>
-        <div class="frappe-form-group" style="max-width:300px;margin-bottom:10px;">
+      <div class="hd-sec" style="border-top:1px solid var(--desk-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="desk-section-head">Based on <span class="desk-muted desk-text-sm">— what this model reads / runs</span></div>
+        <div class="desk-form-group" style="max-width:300px;margin-bottom:10px;">
           <select class="form-select form-select-sm" id="hd-based-on" name="based_on">
             {% for k in source_kinds %}<option value="{{ k.value }}"{% if k.value == based_on %} selected{% endif %}>{{ k.label }}</option>{% endfor %}
           </select>
@@ -65,53 +65,53 @@
 
         {# ---- Doctypes: search + multi-select; only ticked doctypes reveal their slug/keys ---- #}
         <div class="hd-source-panel" data-kind="doctypes"{% if based_on != "doctypes" %} hidden{% endif %}>
-          <div class="frappe-help" style="margin-bottom:6px;">Pick the doctype(s) this model reads with <code>data.records("slug")</code>. Each ticked doctype reveals its <strong>slug</strong> + <strong>field keys</strong> below (click to copy).</div>
+          <div class="desk-help" style="margin-bottom:6px;">Pick the doctype(s) this model reads with <code>data.records("slug")</code>. Each ticked doctype reveals its <strong>slug</strong> + <strong>field keys</strong> below (click to copy).</div>
           <input type="text" id="hd-dt-search" class="form-control form-control-sm" placeholder="Search doctypes by name or slug…" autocomplete="off" style="margin-bottom:6px;">
           <div id="hd-dt-list" class="hd-dt-list">
             {% for dt in field_index %}
             <label class="hd-dt-opt" data-search="{{ dt.name|lower }} {{ dt.slug }}">
               <input type="checkbox" name="input_doctype" value="{{ dt.slug }}"{% if dt.slug in selected_doctypes %} checked{% endif %}>
               <span class="hd-dt-opt-name">{{ dt.name }}</span> <code>{{ dt.slug }}</code>
-              {% if dt.model %}<span class="hd-dt-model frappe-text-sm">⚙ {{ dt.model }}</span>{% endif %}
+              {% if dt.model %}<span class="hd-dt-model desk-text-sm">⚙ {{ dt.model }}</span>{% endif %}
             </label>
             {% empty %}
-            <div class="frappe-muted frappe-text-sm" style="padding:8px;">No doctypes defined yet.</div>
+            <div class="desk-muted desk-text-sm" style="padding:8px;">No doctypes defined yet.</div>
             {% endfor %}
           </div>
 
           <div class="hd-dataref" style="margin-top:10px;">
-            <div class="hd-dataref-hint frappe-text-sm frappe-muted" style="padding:8px 12px 0;">Selected input doctypes — slug &amp; field keys (click to copy):</div>
+            <div class="hd-dataref-hint desk-text-sm desk-muted" style="padding:8px 12px 0;">Selected input doctypes — slug &amp; field keys (click to copy):</div>
             <div class="hd-dataref-body" id="hd-dt-ref">
               {% for dt in field_index %}
               <div class="hd-dataref-dt" data-slug="{{ dt.slug }}"{% if dt.slug not in selected_doctypes %} hidden{% endif %}>
                 <code class="hd-copy hd-slug" data-copy='data.records("{{ dt.slug }}")' title="copy data.records(&quot;{{ dt.slug }}&quot;)">{{ dt.slug }}</code>
-                <span class="hd-dt-name frappe-muted frappe-text-sm">{{ dt.name }}</span>
-                {% if dt.model %}<span class="hd-dt-model frappe-text-sm" title="this doctype runs model '{{ dt.model }}'">⚙ {{ dt.model }}</span>{% endif %}
+                <span class="hd-dt-name desk-muted desk-text-sm">{{ dt.name }}</span>
+                {% if dt.model %}<span class="hd-dt-model desk-text-sm" title="this doctype runs model '{{ dt.model }}'">⚙ {{ dt.model }}</span>{% endif %}
                 <span class="hd-keys">
-                  {% for f in dt.fields %}<code class="hd-copy hd-key{% if f.computed %} hd-key-computed{% endif %}" data-copy='{{ f.key }}' title="{{ f.title }} · {{ f.kind }}{% if f.computed %} · computed{% endif %} — click to copy key">{{ f.key }}</code>{% empty %}<span class="frappe-muted frappe-text-sm">(no fields)</span>{% endfor %}
+                  {% for f in dt.fields %}<code class="hd-copy hd-key{% if f.computed %} hd-key-computed{% endif %}" data-copy='{{ f.key }}' title="{{ f.title }} · {{ f.kind }}{% if f.computed %} · computed{% endif %} — click to copy key">{{ f.key }}</code>{% empty %}<span class="desk-muted desk-text-sm">(no fields)</span>{% endfor %}
                 </span>
               </div>
               {% endfor %}
-              <div id="hd-dt-ref-empty" class="frappe-muted frappe-text-sm" style="padding:4px 12px 10px;"{% if selected_doctypes %} hidden{% endif %}>No input doctypes selected yet — tick one above.</div>
+              <div id="hd-dt-ref-empty" class="desk-muted desk-text-sm" style="padding:4px 12px 10px;"{% if selected_doctypes %} hidden{% endif %}>No input doctypes selected yet — tick one above.</div>
             </div>
           </div>
         </div>
 
         {# ---- Engine kinds: same pre/command/post structure; data.records() still available ---- #}
         <div class="hd-source-panel" data-kind="hecras"{% if based_on != "hecras" %} hidden{% endif %}>
-          <div class="frappe-help">HEC-RAS: stage the project (<code>.prj/.g/.u/.p</code>) into <code>workspace</code> in the pre-script (e.g. <code>data.fetch(record["ras_url"], …)</code>), run the RAS engine in the <strong>Command</strong>, then parse the <code>.hdf</code> result in the post-script. App doctypes are still readable via <code>data.records()</code> — switch to <em>Doctypes</em> to browse their keys.</div>
+          <div class="desk-help">HEC-RAS: stage the project (<code>.prj/.g/.u/.p</code>) into <code>workspace</code> in the pre-script (e.g. <code>data.fetch(record["ras_url"], …)</code>), run the RAS engine in the <strong>Command</strong>, then parse the <code>.hdf</code> result in the post-script. App doctypes are still readable via <code>data.records()</code> — switch to <em>Doctypes</em> to browse their keys.</div>
         </div>
         <div class="hd-source-panel" data-kind="modflow"{% if based_on != "modflow" %} hidden{% endif %}>
-          <div class="frappe-help">MODFLOW 6 / FloPy: build the simulation in the pre-script (FloPy writes inputs into <code>workspace</code>), run <code>mf6</code> in the <strong>Command</strong>, then read heads/budget in the post-script. <code>data.records()</code> remains available for inputs.</div>
+          <div class="desk-help">MODFLOW 6 / FloPy: build the simulation in the pre-script (FloPy writes inputs into <code>workspace</code>), run <code>mf6</code> in the <strong>Command</strong>, then read heads/budget in the post-script. <code>data.records()</code> remains available for inputs.</div>
         </div>
         <div class="hd-source-panel" data-kind="other"{% if based_on != "other" %} hidden{% endif %}>
-          <div class="frappe-help">External / custom: stage inputs into <code>workspace</code> (pre-script), run any executable (<strong>Command</strong>), parse results (post-script). <code>data.records()</code>, <code>data.fetch(url, path)</code> and <code>record</code> are all available.</div>
+          <div class="desk-help">External / custom: stage inputs into <code>workspace</code> (pre-script), run any executable (<strong>Command</strong>), parse results (post-script). <code>data.records()</code>, <code>data.fetch(url, path)</code> and <code>record</code> are all available.</div>
         </div>
       </div>
 
-      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head">1 · Pre-process <span class="frappe-muted frappe-text-sm">(Python, optional)</span></div>
-        <div class="frappe-help" style="margin-bottom:6px;">Stage inputs into the run <code>workspace</code>. Available:
+      <div class="hd-sec" style="border-top:1px solid var(--desk-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="desk-section-head">1 · Pre-process <span class="desk-muted desk-text-sm">(Python, optional)</span></div>
+        <div class="desk-help" style="margin-bottom:6px;">Stage inputs into the run <code>workspace</code>. Available:
           <code>record</code> (this record's fields), <code>data</code> (<code>data.records(slug)</code>,
           <code>data.series(field)</code>, <code>data.fetch(url, path)</code> for DEM/coverage), <code>workspace</code>,
           plus <code>os/json/csv/np/pd/open</code>.</div>
@@ -119,35 +119,35 @@
                   style="font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre;">{{ pre_script }}</textarea>
       </div>
 
-      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head">2 · Command <span class="frappe-muted frappe-text-sm">(shell)</span></div>
-        <div class="frappe-help" style="margin-bottom:6px;">Runs in the workspace. <code>{field}</code> (record fields, shell-quoted)
+      <div class="hd-sec" style="border-top:1px solid var(--desk-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="desk-section-head">2 · Command <span class="desk-muted desk-text-sm">(shell)</span></div>
+        <div class="desk-help" style="margin-bottom:6px;">Runs in the workspace. <code>{field}</code> (record fields, shell-quoted)
           and <code>{workspace}</code> are substituted. e.g. <code>python3 solve.py {region}</code> or
           <code>taudem -z {workspace}/dem.tif</code>.</div>
         <input class="form-control" name="command" value="{{ command }}"
                style="font-family:ui-monospace,Menlo,monospace;font-size:12px;" placeholder="python3 solve.py">
       </div>
 
-      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head">3 · Post-process <span class="frappe-muted frappe-text-sm">(Python, optional)</span></div>
-        <div class="frappe-help" style="margin-bottom:6px;">Parse outputs. Available: <code>stdout</code>, <code>stderr</code>,
+      <div class="hd-sec" style="border-top:1px solid var(--desk-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="desk-section-head">3 · Post-process <span class="desk-muted desk-text-sm">(Python, optional)</span></div>
+        <div class="desk-help" style="margin-bottom:6px;">Parse outputs. Available: <code>stdout</code>, <code>stderr</code>,
           <code>returncode</code>, <code>workspace</code>, <code>record</code>, <code>data</code>. Assign a variable per declared
           output below.</div>
         <textarea class="form-control" name="post_script" rows="6"
                   style="font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre;">{{ post_script }}</textarea>
       </div>
 
-      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head" style="display:flex;align-items:center;gap:10px;">
-          <span>Outputs <span class="frappe-muted frappe-text-sm">(written back to record fields)</span></span>
+      <div class="hd-sec" style="border-top:1px solid var(--desk-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="desk-section-head" style="display:flex;align-items:center;gap:10px;">
+          <span>Outputs <span class="desk-muted desk-text-sm">(written back to record fields)</span></span>
           <button type="button" id="hd-detect-outputs" class="btn btn-default btn-sm" style="margin-left:auto;">
             <i class="bi bi-magic"></i> Detect from post-script</button>
-          <span id="hd-detect-status" class="frappe-text-sm frappe-muted"></span>
+          <span id="hd-detect-status" class="desk-text-sm desk-muted"></span>
         </div>
-        <div class="frappe-muted frappe-text-sm" style="margin:-2px 0 8px;">
+        <div class="desk-muted desk-text-sm" style="margin:-2px 0 8px;">
           Detect fills the variable <strong>name</strong> + <strong>type</strong>; <strong>tick</strong> the ones to store and set a <strong>Label</strong>. (Detect pre-ticks the likely outputs; untick any you don't want.)</div>
         <div style="display:grid;grid-template-columns:28px 1fr 1fr 130px;gap:8px;margin-bottom:6px;">
-          <span class="frappe-label" title="store this output">✓</span><span class="frappe-label">Variable name</span><span class="frappe-label">Label</span><span class="frappe-label">Type</span>
+          <span class="desk-label" title="store this output">✓</span><span class="desk-label">Variable name</span><span class="desk-label">Label</span><span class="desk-label">Type</span>
         </div>
         <div id="hd-out-rows">
         {% for r in output_rows %}
@@ -163,44 +163,44 @@
         </div>
       </div>
 
-      <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-section-head">Execution</div>
+      <div class="hd-sec" style="border-top:1px solid var(--desk-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
+        <div class="desk-section-head">Execution</div>
         <div style="display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:14px;align-items:end;">
-          <div class="frappe-form-group">
-            <label class="frappe-label">Run timeout (s)</label>
+          <div class="desk-form-group">
+            <label class="desk-label">Run timeout (s)</label>
             <input class="form-control form-control-sm" name="timeout" value="{{ timeout }}" type="number" min="1" max="86400">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label">Input fetch (s)</label>
+          <div class="desk-form-group">
+            <label class="desk-label">Input fetch (s)</label>
             <input class="form-control form-control-sm" name="input_timeout" value="{{ input_timeout|default:45 }}" type="number" min="5" max="600">
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label">Backend</label>
+          <div class="desk-form-group">
+            <label class="desk-label">Backend</label>
             <select class="form-select form-select-sm" name="job_backend">
               <option value="thread" {% if job_backend == 'thread' or not job_backend %}selected{% endif %}>Local thread (default)</option>
               <option value="condor" {% if job_backend == 'condor' %}selected{% endif %}>HTCondor (cluster)</option>
               <option value="dask"   {% if job_backend == 'dask' %}selected{% endif %}>Dask (parallel)</option>
             </select>
           </div>
-          <div class="frappe-form-group">
-            <label class="frappe-label">Scheduler name</label>
+          <div class="desk-form-group">
+            <label class="desk-label">Scheduler name</label>
             <input class="form-control form-control-sm" name="scheduler" value="{{ scheduler }}" placeholder="(for condor/dask)">
           </div>
         </div>
-        <div class="frappe-form-group" style="margin-top:12px;">
-          <label class="frappe-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+        <div class="desk-form-group" style="margin-top:12px;">
+          <label class="desk-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
             <input type="checkbox" name="run_on_save" value="1" {% if run_on_save %}checked{% endif %}
                    style="width:16px;height:16px;">
             Run automatically when a record is saved
           </label>
-          <div class="frappe-help" style="margin-top:4px;">
+          <div class="desk-help" style="margin-top:4px;">
             When on, creating or editing a record of a doctype bound to this model fires the run
             <strong>immediately on save</strong> — the outputs populate on the record page on their own
             (it polls and refreshes when the run finishes), with no manual <em>Run</em> click. Leave off
             for heavy/expensive models you'd rather trigger by hand.
           </div>
         </div>
-        <div class="frappe-help" style="margin-top:6px;">
+        <div class="desk-help" style="margin-top:6px;">
           Default runs on a local worker thread. <strong>HTCondor/Dask</strong> submit to a Tethys scheduler of the
           given name — if that scheduler isn't configured on this portal, the run <strong>falls back to the thread</strong>
           (the job log records it). Long runs (&gt;1&nbsp;h) pin a thread — prefer a cluster backend for those. Track every
@@ -208,7 +208,7 @@
         </div>
       </div>
 
-      <div class="frappe-form-actions" style="margin-top:16px;">
+      <div class="desk-form-actions" style="margin-top:16px;">
         <a class="btn btn-default" href="{{ models_url }}">Cancel</a>
         <button class="btn btn-primary" type="submit">{{ submit_label }}</button>
       </div>
@@ -217,7 +217,7 @@
 </div>
 <script>
 (function(){
-  var root = document.querySelector('.frappe-page--form');
+  var root = document.querySelector('.desk-page--form');
   if(!root) return;
   var DETECT_OUTPUTS_URL = '{{ detect_outputs_url }}';
   function getCookie(name){ var m=document.cookie.match('(^|;)\\s*'+name+'\\s*=\\s*([^;]+)'); return m?m.pop():''; }

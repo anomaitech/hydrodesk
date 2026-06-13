@@ -1,6 +1,6 @@
 """HydroType registry — export / import (SHARE) DocTypes as portable JSON.
 
-A HydroType (the Frappe-DocType analog) is fully described by a small JSON spec:
+A HydroType (the DocType analog) is fully described by a small JSON spec:
 slug, display_name, field_schema (a JSON Schema), geometry_kind, timeseries_policy,
 workflow, version. Because every record lives in the generic EAV/JSONB store,
 importing a shared doctype is just INSERTing ONE row into `hydrotype` — no schema

@@ -1,18 +1,18 @@
 {% extends "tethys_apps/app_base.html" %}
 {% comment %}
   ===========================================================================
-  HydroDesk — SHARED Frappe-Desk theme base.
+  HydroDesk — SHARED Desk theme base.
   ---------------------------------------------------------------------------
   Every HydroDesk page extends THIS template (not app_base.html directly) and
   fills {% block desk_content %}. This file:
-    * overrides {% block app_styles %} with a comprehensive Frappe-Desk CSS
-      theme (CSS variables grounded in the frappe/frappe SCSS tokens) that
+    * overrides {% block app_styles %} with a comprehensive Desk CSS
+      theme (a clean workspace design system of CSS variables) that
       re-skins the Tethys chrome — the dark fixed top navbar becomes the light
-      Frappe navbar, and the #app-navigation off-canvas menu becomes a Frappe
+      Desk navbar, and the #app-navigation off-canvas menu becomes a Desk
       workspace sidebar — and ships reusable component classes
-      (.frappe-page-head, .btn-primary / .btn-default, .frappe-list,
-      .frappe-form-card, .frappe-shortcut-card, .indicator-pill, muted labels).
-    * defines the shared Frappe-style sidebar in {% block app_navigation_items %}
+      (.desk-page-head, .btn-primary / .btn-default, .desk-list,
+      .desk-form-card, .desk-shortcut-card, .indicator-pill, muted labels).
+    * defines the shared Desk-style sidebar in {% block app_navigation_items %}
       (Home / + New HydroType / Map View) so every page shares it.
     * wraps {% block app_content %} around a {% block desk_content %} that child
       pages fill.
@@ -23,91 +23,91 @@
 
 {% block title %}HydroDesk - {{ block.super }}{% endblock %}
 
-{# Shared Frappe-style workspace sidebar — used by ALL pages. Children may
+{# Shared Desk-style workspace sidebar — used by ALL pages. Children may
    re-declare this block to mark a different item active. #}
 {% block app_navigation_items %}
-  <li class="nav-item title frappe-sidebar-section">Workspace</li>
+  <li class="nav-item title desk-sidebar-section">Workspace</li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_home %}{% endblock %}" href="{% url 'hydrodesk:home' %}">
-      <span class="frappe-sidebar-ico">&#9632;</span> Home
+      <span class="desk-sidebar-ico">&#9632;</span> Home
     </a>
   </li>
   {% if request.user.is_superuser or request.user.is_staff %}
   <li class="nav-item">
     <a class="nav-link{% block nav_active_doctypes %}{% endblock %}" href="{% url 'hydrodesk:doctypes' %}">
-      <span class="frappe-sidebar-ico">&#9707;</span> DocTypes
+      <span class="desk-sidebar-ico">&#9707;</span> DocTypes
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_newtype %}{% endblock %}" href="{% url 'hydrodesk:new_type' %}">
-      <span class="frappe-sidebar-ico">&#43;</span> New HydroType
+      <span class="desk-sidebar-ico">&#43;</span> New HydroType
     </a>
   </li>
   {% endif %}
   <li class="nav-item">
     <a class="nav-link{% block nav_active_map %}{% endblock %}" href="{% url 'hydrodesk:map' %}">
-      <span class="frappe-sidebar-ico">&#9678;</span> Map View
+      <span class="desk-sidebar-ico">&#9678;</span> Map View
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_dashboards %}{% endblock %}" href="{% url 'hydrodesk:dashboards' %}">
-      <span class="frappe-sidebar-ico">&#9638;</span> Dashboards
+      <span class="desk-sidebar-ico">&#9638;</span> Dashboards
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_ai %}{% endblock %}" href="{% url 'hydrodesk:ai_chat' %}">
-      <span class="frappe-sidebar-ico">&#9728;</span> Chat with data
+      <span class="desk-sidebar-ico">&#9728;</span> Chat with data
     </a>
   </li>
-  <li class="nav-item title frappe-sidebar-section">Integrations</li>
+  <li class="nav-item title desk-sidebar-section">Integrations</li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_connectors %}{% endblock %}" href="{% url 'hydrodesk:connectors' %}">
-      <span class="frappe-sidebar-ico">&#9741;</span> Connectors
+      <span class="desk-sidebar-ico">&#9741;</span> Connectors
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_publish %}{% endblock %}" href="{% url 'hydrodesk:publish_tethysdash' %}">
-      <span class="frappe-sidebar-ico">&#9636;</span> Publish to TethysDash
+      <span class="desk-sidebar-ico">&#9636;</span> Publish to TethysDash
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_credentials %}{% endblock %}" href="{% url 'hydrodesk:credentials' %}">
-      <span class="frappe-sidebar-ico">&#9919;</span> Credentials
+      <span class="desk-sidebar-ico">&#9919;</span> Credentials
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_models %}{% endblock %}" href="{% url 'hydrodesk:models' %}">
-      <span class="frappe-sidebar-ico">&#9881;</span> Models
+      <span class="desk-sidebar-ico">&#9881;</span> Models
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_model_jobs %}{% endblock %}" href="{% url 'hydrodesk:model_jobs' %}">
-      <span class="frappe-sidebar-ico">&#9203;</span> Model Jobs
+      <span class="desk-sidebar-ico">&#9203;</span> Model Jobs
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_report %}{% endblock %}" href="{% url 'hydrodesk:report' %}">
-      <span class="frappe-sidebar-ico">&#9778;</span> Reports
+      <span class="desk-sidebar-ico">&#9778;</span> Reports
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_schedules %}{% endblock %}" href="{% url 'hydrodesk:schedules' %}">
-      <span class="frappe-sidebar-ico">&#8635;</span> Schedules
+      <span class="desk-sidebar-ico">&#8635;</span> Schedules
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_alerts %}{% endblock %}" href="{% url 'hydrodesk:alerts' %}">
-      <span class="frappe-sidebar-ico">&#9888;</span> Alerts
+      <span class="desk-sidebar-ico">&#9888;</span> Alerts
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% block nav_active_api %}{% endblock %}" href="{% url 'hydrodesk:api_explorer' %}">
-      <span class="frappe-sidebar-ico">&#8644;</span> Data API
+      <span class="desk-sidebar-ico">&#8644;</span> Data API
     </a>
   </li>
-  <li class="nav-item" style="margin-top:8px;border-top:1px solid var(--fr-border-color);padding-top:8px;">
+  <li class="nav-item" style="margin-top:8px;border-top:1px solid var(--desk-border-color);padding-top:8px;">
     <a class="nav-link" href="#" id="hd-theme-toggle" role="button">
-      <span class="frappe-sidebar-ico" id="hd-theme-ico">&#9790;</span>
+      <span class="desk-sidebar-ico" id="hd-theme-ico">&#9790;</span>
       <span id="hd-theme-label">Dark theme</span>
     </a>
   </li>
@@ -142,73 +142,73 @@
       --orange-100:#fef7e0; --orange-700:#e37400;
 
       /* semantic */
-      --fr-text-color:var(--gray-900);
-      --fr-text-light:var(--gray-800);
-      --fr-text-muted:var(--gray-700);
-      --fr-heading-color:var(--gray-900);
-      --fr-border-color:var(--gray-300);
-      --fr-bg-color:var(--gray-50);
-      --fr-fg-color:#ffffff;
-      --fr-control-bg:var(--gray-100);
-      --fr-primary:var(--blue-500);
+      --desk-text-color:var(--gray-900);
+      --desk-text-light:var(--gray-800);
+      --desk-text-muted:var(--gray-700);
+      --desk-heading-color:var(--gray-900);
+      --desk-border-color:var(--gray-300);
+      --desk-bg-color:var(--gray-50);
+      --desk-fg-color:#ffffff;
+      --desk-control-bg:var(--gray-100);
+      --desk-primary:var(--blue-500);
 
       /* typography — Google Sans / Roboto */
-      --fr-font:"Google Sans","Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
-      --fr-text-xs:11px; --fr-text-sm:12px; --fr-text-base:13px;
-      --fr-text-md:14px; --fr-text-lg:16px; --fr-text-xl:20px; --fr-text-2xl:22px;
+      --desk-font:"Google Sans","Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
+      --desk-text-xs:11px; --desk-text-sm:12px; --desk-text-base:13px;
+      --desk-text-md:14px; --desk-text-lg:16px; --desk-text-xl:20px; --desk-text-2xl:22px;
 
       /* radius — Material */
-      --fr-radius-sm:4px; --fr-radius:4px; --fr-radius-md:8px;
-      --fr-radius-lg:8px; --fr-radius-full:999px;
+      --desk-radius-sm:4px; --desk-radius:4px; --desk-radius-md:8px;
+      --desk-radius-lg:8px; --desk-radius-full:999px;
 
       /* shadows — Material elevation (Google gray-tinted) */
-      --fr-shadow-xs:0 1px 2px 0 rgba(60,64,67,.08);
-      --fr-shadow-sm:0 1px 2px 0 rgba(60,64,67,.30), 0 1px 3px 1px rgba(60,64,67,.15);
-      --fr-card-shadow:0 1px 2px 0 rgba(60,64,67,.10), 0 1px 3px 1px rgba(60,64,67,.06);
+      --desk-shadow-xs:0 1px 2px 0 rgba(60,64,67,.08);
+      --desk-shadow-sm:0 1px 2px 0 rgba(60,64,67,.30), 0 1px 3px 1px rgba(60,64,67,.15);
+      --desk-card-shadow:0 1px 2px 0 rgba(60,64,67,.10), 0 1px 3px 1px rgba(60,64,67,.06);
 
       /* sizing */
-      --fr-navbar-height:50px;
-      --fr-input-height:32px;
-      --fr-btn-height:32px;
-      --fr-list-row-height:36px;
-      --fr-sidebar-width:300px;   /* matches Tethys #app-navigation width */
-      --fr-page-max:900px;
+      --desk-navbar-height:50px;
+      --desk-input-height:32px;
+      --desk-btn-height:32px;
+      --desk-list-row-height:36px;
+      --desk-sidebar-width:300px;   /* matches Tethys #app-navigation width */
+      --desk-page-max:900px;
     }
 
     /* =====================================================================
        BASE — page surface + font
        ===================================================================== */
     body, #inner-app-content {
-      font-family:var(--fr-font);
-      color:var(--fr-text-color);
+      font-family:var(--desk-font);
+      color:var(--desk-text-color);
       -webkit-font-smoothing:antialiased;
       -moz-osx-font-smoothing:grayscale;
     }
     #inner-app-content {
-      background:var(--fr-bg-color);
-      font-size:var(--fr-text-base);
+      background:var(--desk-bg-color);
+      font-size:var(--desk-text-base);
       line-height:1.5;
-      padding:0 !important;            /* Frappe pages own their own padding */
+      padding:0 !important;            /* Desk pages own their own padding */
     }
     /* keep the whole content column on the page bg so cards 'float' on it */
-    #app-content-wrapper, #app-content, #inner-app-content { background:var(--fr-bg-color); }
+    #app-content-wrapper, #app-content, #inner-app-content { background:var(--desk-bg-color); }
 
     /* =====================================================================
-       TOP NAVBAR — re-skin the dark Tethys header to the light Frappe navbar
+       TOP NAVBAR — re-skin the dark Tethys header to the light Desk navbar
        ===================================================================== */
     #app-header .tethys-app-header {
-      background:var(--fr-fg-color) !important;
-      height:var(--fr-navbar-height);
+      background:var(--desk-fg-color) !important;
+      height:var(--desk-navbar-height);
       box-shadow:none;
-      border-bottom:1px solid var(--fr-border-color);
+      border-bottom:1px solid var(--desk-border-color);
     }
     #app-header .tethys-app-header #nav-title-wrapper .icon-wrapper img {
       background:transparent;
     }
     #app-header .tethys-app-header .app-title-wrapper .app-title {
-      color:var(--fr-heading-color);
-      font-family:var(--fr-font);
-      font-size:var(--fr-text-xl);
+      color:var(--desk-heading-color);
+      font-family:var(--desk-font);
+      font-size:var(--desk-text-xl);
       font-weight:600;
       letter-spacing:0;
     }
@@ -216,34 +216,34 @@
     #app-header .tethys-app-header .toggle-nav div { background-color:var(--gray-600); }
     #app-header .tethys-app-header .toggle-nav:hover div { background:var(--gray-900); }
     #app-header .tethys-app-header .toggle-nav:active { background:var(--gray-100); }
-    /* header buttons (login / settings / exit) -> light Frappe style */
+    /* header buttons (login / settings / exit) -> light Desk style */
     #app-header .tethys-app-header #header-buttons-wrapper .header-button a {
-      background:var(--fr-control-bg);
-      color:var(--fr-text-muted);
-      border-radius:var(--fr-radius-sm);
+      background:var(--desk-control-bg);
+      color:var(--desk-text-muted);
+      border-radius:var(--desk-radius-sm);
     }
     #app-header .tethys-app-header #header-buttons-wrapper .header-button a:hover {
       background:var(--gray-300);
-      color:var(--fr-text-color);
+      color:var(--desk-text-color);
     }
 
     /* =====================================================================
-       LEFT SIDEBAR — re-skin #app-navigation to a Frappe workspace sidebar
+       LEFT SIDEBAR — re-skin #app-navigation to a Desk workspace sidebar
        ===================================================================== */
     #app-content-wrapper #app-content #app-navigation,
     #app-navigation {
       background:#ffffff;              /* GCP nav drawer */
-      border-right:1px solid var(--fr-border-color);
+      border-right:1px solid var(--desk-border-color);
       padding:14px 8px;
       padding-top:64px;               /* clear the 50px fixed navbar */
     }
     #app-navigation .nav { padding-bottom:40px; }
     /* workspace section heading (the 'Workspace' li.title) */
     #app-content-wrapper #app-content #app-navigation .nav li.title,
-    #app-navigation .nav li.title.frappe-sidebar-section {
+    #app-navigation .nav li.title.desk-sidebar-section {
       padding:6px 10px 4px;
-      font-family:var(--fr-font);
-      font-size:var(--fr-text-sm);
+      font-family:var(--desk-font);
+      font-size:var(--desk-text-sm);
       font-weight:600;
       letter-spacing:.04em;
       text-transform:uppercase;
@@ -257,16 +257,16 @@
       gap:8px;
       padding:6px 10px;
       margin:2px 0;
-      font-family:var(--fr-font);
-      font-size:var(--fr-text-base);
+      font-family:var(--desk-font);
+      font-size:var(--desk-text-base);
       font-weight:500;
-      color:var(--fr-text-light);
-      border-radius:var(--fr-radius-full);   /* Google full-pill nav items */
+      color:var(--desk-text-light);
+      border-radius:var(--desk-radius-full);   /* Google full-pill nav items */
     }
     #app-content-wrapper #app-content #app-navigation .nav li a:hover,
     #app-navigation .nav li a:hover {
       background:var(--gray-100);
-      color:var(--fr-text-color);
+      color:var(--desk-text-color);
       text-decoration:none;
     }
     /* active item = the Google light-blue rounded pill with blue text + icon */
@@ -279,7 +279,7 @@
       box-shadow:none !important;
       font-weight:500;
     }
-    .frappe-sidebar-ico {
+    .desk-sidebar-ico {
       display:inline-flex;
       align-items:center;
       justify-content:center;
@@ -287,31 +287,31 @@
       font-size:11px;
       color:var(--gray-500);
     }
-    .nav-link.active .frappe-sidebar-ico { color:var(--fr-primary); }
+    .nav-link.active .desk-sidebar-ico { color:var(--desk-primary); }
 
     /* =====================================================================
        SHARED LAYOUT — the page wrapper every desk page sits in
        ===================================================================== */
-    .frappe-page {
+    .desk-page {
       max-width:1100px;
       margin:0 auto;
       padding:18px 24px 48px;
     }
-    .frappe-page--narrow { max-width:780px; }
-    .frappe-page--form   { max-width:920px; }
+    .desk-page--narrow { max-width:780px; }
+    .desk-page--form   { max-width:920px; }
 
     /* breadcrumb above the page title */
-    .frappe-breadcrumb {
-      font-size:var(--fr-text-sm);
-      color:var(--fr-text-muted);
+    .desk-breadcrumb {
+      font-size:var(--desk-text-sm);
+      color:var(--desk-text-muted);
       margin-bottom:6px;
     }
-    .frappe-breadcrumb a { color:var(--fr-text-muted); text-decoration:none; }
-    .frappe-breadcrumb a:hover { color:var(--fr-primary); }
-    .frappe-breadcrumb .sep { margin:0 6px; color:var(--gray-400); }
+    .desk-breadcrumb a { color:var(--desk-text-muted); text-decoration:none; }
+    .desk-breadcrumb a:hover { color:var(--desk-primary); }
+    .desk-breadcrumb .sep { margin:0 6px; color:var(--gray-400); }
 
     /* page head: title (left) + actions (right) */
-    .frappe-page-head {
+    .desk-page-head {
       display:flex;
       align-items:center;
       justify-content:space-between;
@@ -320,48 +320,48 @@
       min-height:48px;
       padding-bottom:14px;
       margin-bottom:20px;
-      border-bottom:1px solid var(--fr-border-color);
+      border-bottom:1px solid var(--desk-border-color);
     }
-    .frappe-page-head .frappe-title-area {
+    .desk-page-head .desk-title-area {
       display:flex;
       align-items:center;
       gap:10px;
       min-width:0;
     }
-    .frappe-page-head .frappe-title {
+    .desk-page-head .desk-title {
       margin:0;
-      font-size:var(--fr-text-xl);
+      font-size:var(--desk-text-xl);
       font-weight:600;
       line-height:1.15;
-      color:var(--fr-heading-color);
+      color:var(--desk-heading-color);
     }
-    .frappe-page-head .frappe-sub-heading {
-      font-size:var(--fr-text-sm);
-      color:var(--fr-text-muted);
+    .desk-page-head .desk-sub-heading {
+      font-size:var(--desk-text-sm);
+      color:var(--desk-text-muted);
       margin-top:2px;
     }
-    .frappe-page-actions {
+    .desk-page-actions {
       display:flex;
       align-items:center;
       gap:8px;
     }
 
     /* =====================================================================
-       BUTTONS — Frappe .btn-primary (blue) / .btn-default
+       BUTTONS — Desk .btn-primary (blue) / .btn-default
        Scoped to #inner-app-content so we override Bootstrap inside the app.
        ===================================================================== */
     #inner-app-content .btn {
       display:inline-flex;
       align-items:center;
       gap:6px;
-      height:var(--fr-btn-height);
+      height:var(--desk-btn-height);
       padding:4px 10px;
-      font-family:var(--fr-font);
-      font-size:var(--fr-text-base);
+      font-family:var(--desk-font);
+      font-size:var(--desk-text-base);
       font-weight:500;
       line-height:1;
       border:1px solid transparent;
-      border-radius:var(--fr-radius);
+      border-radius:var(--desk-radius);
       box-shadow:none;
       cursor:pointer;
       white-space:nowrap;
@@ -369,9 +369,9 @@
     }
     #inner-app-content .btn-primary,
     #inner-app-content .btn.btn-primary {
-      background-color:var(--fr-primary);
+      background-color:var(--desk-primary);
       color:#fff;
-      border-color:var(--fr-primary);
+      border-color:var(--desk-primary);
     }
     #inner-app-content .btn-primary:hover,
     #inner-app-content .btn.btn-primary:hover {
@@ -384,9 +384,9 @@
     #inner-app-content .btn-default,
     #inner-app-content .btn-outline-secondary,
     #inner-app-content .btn-outline-primary {
-      background-color:var(--fr-fg-color);
-      color:var(--fr-primary);
-      border-color:var(--fr-border-color);
+      background-color:var(--desk-fg-color);
+      color:var(--desk-primary);
+      border-color:var(--desk-border-color);
       font-weight:500;
     }
     #inner-app-content .btn-default:hover,
@@ -402,25 +402,25 @@
       background:transparent;
       box-shadow:none;
       border:none;
-      color:var(--fr-primary);
+      color:var(--desk-primary);
       padding:4px 6px;
     }
     #inner-app-content .btn-link:hover { color:var(--blue-700); text-decoration:none; }
-    #inner-app-content .btn-sm { height:26px; font-size:var(--fr-text-sm); padding:3px 8px; }
+    #inner-app-content .btn-sm { height:26px; font-size:var(--desk-text-sm); padding:3px 8px; }
 
     /* =====================================================================
-       FORM CONTROLS — filled Frappe inputs
+       FORM CONTROLS — filled Desk inputs
        ===================================================================== */
     #inner-app-content .form-control,
     #inner-app-content .form-select {
-      height:var(--fr-input-height);
+      height:var(--desk-input-height);
       padding:0 8px;
-      font-family:var(--fr-font);
-      font-size:var(--fr-text-base);
-      color:var(--fr-text-color);
-      background-color:var(--fr-fg-color);
-      border:1px solid var(--fr-border-color);
-      border-radius:var(--fr-radius-sm);
+      font-family:var(--desk-font);
+      font-size:var(--desk-text-base);
+      color:var(--desk-text-color);
+      background-color:var(--desk-fg-color);
+      border:1px solid var(--desk-border-color);
+      border-radius:var(--desk-radius-sm);
       box-shadow:none;
       transition:border-color .12s, box-shadow .12s, background-color .12s;
     }
@@ -428,78 +428,78 @@
     #inner-app-content .form-control:focus,
     #inner-app-content .form-select:focus {
       outline:none;
-      background-color:var(--fr-fg-color);
-      border-color:var(--fr-primary);
-      box-shadow:0 0 0 1px var(--fr-primary);
+      background-color:var(--desk-fg-color);
+      border-color:var(--desk-primary);
+      box-shadow:0 0 0 1px var(--desk-primary);
     }
     #inner-app-content .form-control::placeholder { color:var(--gray-500); }
     #inner-app-content .form-control-sm,
-    #inner-app-content .form-select-sm { height:26px; font-size:var(--fr-text-sm); }
+    #inner-app-content .form-select-sm { height:26px; font-size:var(--desk-text-sm); }
 
     /* field label — small, muted, medium weight, ABOVE the control */
-    #inner-app-content .frappe-label,
+    #inner-app-content .desk-label,
     #inner-app-content .control-label {
       display:block;
       margin-bottom:4px;
-      font-size:var(--fr-text-sm);
+      font-size:var(--desk-text-sm);
       font-weight:500;
-      color:var(--fr-text-muted);
+      color:var(--desk-text-muted);
     }
-    #inner-app-content .frappe-label .req,
+    #inner-app-content .desk-label .req,
     #inner-app-content .control-label .req { color:var(--red-600); margin-left:2px; }
-    #inner-app-content .frappe-help {
+    #inner-app-content .desk-help {
       margin-top:4px;
-      font-size:var(--fr-text-sm);
+      font-size:var(--desk-text-sm);
       color:var(--gray-500);
     }
     /* checkbox row */
     #inner-app-content .form-check-input { width:14px; height:14px; }
-    #inner-app-content .form-check-input:checked { background-color:var(--fr-primary); border-color:var(--fr-primary); }
-    #inner-app-content .form-check-label { font-size:var(--fr-text-base); color:var(--fr-text-color); }
+    #inner-app-content .form-check-input:checked { background-color:var(--desk-primary); border-color:var(--desk-primary); }
+    #inner-app-content .form-check-label { font-size:var(--desk-text-base); color:var(--desk-text-color); }
 
     /* =====================================================================
        CARD / PANEL surfaces
        ===================================================================== */
-    .frappe-card {
-      background:var(--fr-fg-color);
-      border:1px solid var(--fr-border-color);
-      border-radius:var(--fr-radius-md);
-      box-shadow:var(--fr-card-shadow);
+    .desk-card {
+      background:var(--desk-fg-color);
+      border:1px solid var(--desk-border-color);
+      border-radius:var(--desk-radius-md);
+      box-shadow:var(--desk-card-shadow);
     }
 
     /* =====================================================================
-       SERIES TABLE — Frappe DataTable look for API series outputs
+       SERIES TABLE — Desk DataTable look for API series outputs
        ===================================================================== */
     .hd-api-field .hd-series-wrap {
-      border:1px solid var(--fr-border-color);
-      border-radius:var(--fr-radius);
+      border:1px solid var(--desk-border-color);
+      border-radius:var(--desk-radius);
       overflow:hidden;
       margin-top:8px;
       max-width:560px;
-      background:var(--fr-fg-color);
+      background:var(--desk-fg-color);
     }
     .hd-api-field .hd-series-scroll { overflow:auto; max-height:340px; }
     .hd-series-table {
       width:100%;
       border-collapse:separate;
       border-spacing:0;
-      font-size:var(--fr-text-sm);
-      color:var(--fr-text-color);
+      font-size:var(--desk-text-sm);
+      color:var(--desk-text-color);
     }
     .hd-series-table thead th {
       position:sticky; top:0; z-index:1;
-      background:var(--fr-bg-color);
+      background:var(--desk-bg-color);
       text-align:left;
       font-weight:600;
-      font-size:var(--fr-text-xs);
+      font-size:var(--desk-text-xs);
       letter-spacing:.03em;
       text-transform:uppercase;
-      color:var(--fr-text-muted);
+      color:var(--desk-text-muted);
       padding:7px 12px;
       white-space:nowrap;
-      border-bottom:1px solid var(--fr-border-color);
+      border-bottom:1px solid var(--desk-border-color);
     }
-    .hd-series-table thead th + th { border-left:1px solid var(--fr-border-color); }
+    .hd-series-table thead th + th { border-left:1px solid var(--desk-border-color); }
     .hd-series-table tbody td {
       padding:6px 12px;
       white-space:nowrap;
@@ -507,35 +507,35 @@
       font-variant-numeric:tabular-nums;
     }
     .hd-series-table tbody td + td { border-left:1px solid var(--gray-100); }
-    .hd-series-table tbody td:first-child { color:var(--fr-text-muted); }
+    .hd-series-table tbody td:first-child { color:var(--desk-text-muted); }
     .hd-series-table tbody tr:last-child td { border-bottom:0; }
-    .hd-series-table tbody tr:hover td { background:var(--fr-bg-color); }
+    .hd-series-table tbody tr:hover td { background:var(--desk-bg-color); }
     .hd-api-field .hd-series-spark { margin:2px 0 6px 0; }
     .hd-api-field .hd-series-scroll { max-height:420px; }
     /* Multi-column chart legend (server multiline + click readout). */
     .hd-chart-legend {
       display:flex; flex-wrap:wrap; gap:4px 14px; margin:4px 0 2px 2px;
-      font-size:var(--fr-text-xs,11px); color:var(--fr-text-muted,#6b7785);
+      font-size:var(--desk-text-xs,11px); color:var(--desk-text-muted,#6b7785);
     }
     .hd-chart-legend .hd-leg-item { display:inline-flex; align-items:center; gap:5px; }
     .hd-chart-legend .hd-leg-item i { width:11px; height:3px; border-radius:2px; display:inline-block; }
     /* Record-page "Fan band" control (pick the uncertainty-band columns, live). */
     .hd-band-controls {
       display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-      margin:2px 0 6px 2px; font-size:var(--fr-text-xs,11px); color:var(--fr-text-muted,#6b7785);
+      margin:2px 0 6px 2px; font-size:var(--desk-text-xs,11px); color:var(--desk-text-muted,#6b7785);
     }
     .hd-band-controls .hd-band-lbl { font-weight:600; text-transform:uppercase; letter-spacing:.03em; }
     .hd-band-controls .hd-band-pair { display:inline-flex; align-items:center; gap:4px; }
     .hd-band-controls .hd-band-sel {
-      font-size:11px; padding:2px 4px; border:1px solid var(--fr-border-color,#d1d8dd);
-      border-radius:4px; background:var(--fr-fg-color,#fff); color:var(--fr-text-color,#333); max-width:170px;
+      font-size:11px; padding:2px 4px; border:1px solid var(--desk-border-color,#d1d8dd);
+      border-radius:4px; background:var(--desk-fg-color,#fff); color:var(--desk-text-color,#333); max-width:170px;
     }
     .hd-api-field .hd-series-foot {
-      font-size:var(--fr-text-xs);
-      color:var(--fr-text-muted);
+      font-size:var(--desk-text-xs);
+      color:var(--desk-text-muted);
       padding:6px 12px;
-      border-top:1px solid var(--fr-border-color);
-      background:var(--fr-bg-color);
+      border-top:1px solid var(--desk-border-color);
+      background:var(--desk-bg-color);
     }
 
     /* =====================================================================
@@ -544,31 +544,31 @@
     /* The .hd-series-* table styling is scoped under .hd-api-field; the click
        readout lives OUTSIDE it, so re-apply the scrollable sticky-header box here. */
     #hd-raster-readout .hd-series-wrap {
-      border:1px solid var(--fr-border-color); border-radius:var(--fr-radius);
-      overflow:hidden; background:var(--fr-fg-color); margin-top:8px; max-width:520px;
+      border:1px solid var(--desk-border-color); border-radius:var(--desk-radius);
+      overflow:hidden; background:var(--desk-fg-color); margin-top:8px; max-width:520px;
     }
     #hd-raster-readout .hd-series-scroll { overflow:auto; max-height:240px; }
     #hd-raster-readout .hd-series-foot {
-      font-size:var(--fr-text-xs); color:var(--fr-text-muted);
-      padding:6px 12px; border-top:1px solid var(--fr-border-color); background:var(--fr-bg-color);
+      font-size:var(--desk-text-xs); color:var(--desk-text-muted);
+      padding:6px 12px; border-top:1px solid var(--desk-border-color); background:var(--desk-bg-color);
     }
-    #hd-raster-readout .hd-series-table thead th { position:sticky; top:0; z-index:1; background:var(--fr-bg-color); }
+    #hd-raster-readout .hd-series-table thead th { position:sticky; top:0; z-index:1; background:var(--desk-bg-color); }
     /* Shared floating map control card (opacity + legend). */
     .hd-map-card {
-      background:#fff; border:1px solid var(--fr-border-color,#e2e6ea); border-radius:8px;
+      background:#fff; border:1px solid var(--desk-border-color,#e2e6ea); border-radius:8px;
       box-shadow:0 1px 3px rgba(15,23,42,.10); padding:8px 10px; font-size:11px; color:#3a4654;
     }
     .hd-sample-dot { filter:drop-shadow(0 0 3px rgba(36,144,239,.55)); }
     /* Honest per-pixel values: don't smooth the sampled raster. */
     .hd-raster-img { image-rendering:pixelated; image-rendering:crisp-edges; }
-    #hd-geom-map.leaflet-container, .leaflet-container { font:12px/1.4 var(--fr-font,system-ui); background:#fbfcfd; }
+    #hd-geom-map.leaflet-container, .leaflet-container { font:12px/1.4 var(--desk-font,system-ui); background:#fbfcfd; }
     #hd-geom-map { box-shadow:0 1px 3px rgba(15,23,42,.06); }
 
     /* Editable child-grid (Table field on the record form) */
     .hd-tablefield { max-width:680px; }
     .hd-tablefield-grid {
-      border:1px solid var(--fr-border-color);
-      border-radius:var(--fr-radius);
+      border:1px solid var(--desk-border-color);
+      border-radius:var(--desk-radius);
       overflow:hidden;
       margin-bottom:6px;
     }
@@ -576,14 +576,14 @@
     .hd-tablefield-grid tbody td input,
     .hd-tablefield-grid tbody td select {
       width:100%; height:30px; border:0; background:transparent;
-      padding:4px 12px; font-size:var(--fr-text-sm);
-      color:var(--fr-text-color); border-radius:0; box-shadow:none;
+      padding:4px 12px; font-size:var(--desk-text-sm);
+      color:var(--desk-text-color); border-radius:0; box-shadow:none;
     }
     .hd-tablefield-grid tbody td select { padding-right:4px; }
     .hd-tablefield-grid tbody td input:focus,
     .hd-tablefield-grid tbody td select:focus {
-      outline:2px solid var(--fr-primary,#2490ef); outline-offset:-2px;
-      background:var(--fr-fg-color);
+      outline:2px solid var(--desk-primary,#2490ef); outline-offset:-2px;
+      background:var(--desk-fg-color);
     }
     .hd-tablefield-grid td.hd-tcell-check { text-align:center; }
     .hd-tablefield-grid td.hd-tcell-del   { width:32px; text-align:center; }
@@ -595,239 +595,239 @@
     .hd-tablefield-grid thead th.hd-tcell-del { width:32px; }
 
     /* =====================================================================
-       FORM CARD — sectioned Frappe form
+       FORM CARD — sectioned Desk form
        ===================================================================== */
-    .frappe-form-card {
-      background:var(--fr-fg-color);
-      border:1px solid var(--fr-border-color);
-      border-radius:var(--fr-radius-md);
-      box-shadow:var(--fr-card-shadow);
+    .desk-form-card {
+      background:var(--desk-fg-color);
+      border:1px solid var(--desk-border-color);
+      border-radius:var(--desk-radius-md);
+      box-shadow:var(--desk-card-shadow);
       overflow:hidden;
     }
-    /* Cards whose content isn't wrapped in a .frappe-form-section still get inner
+    /* Cards whose content isn't wrapped in a .desk-form-section still get inner
        padding, so content never sits flush against the card edge. */
-    .frappe-form-card:not(:has(> .frappe-form-section)) { padding:18px 20px; }
-    .frappe-form-section { padding:18px 24px; }
-    .frappe-form-section + .frappe-form-section { border-top:1px solid var(--fr-border-color); }
+    .desk-form-card:not(:has(> .desk-form-section)) { padding:18px 20px; }
+    .desk-form-section { padding:18px 24px; }
+    .desk-form-section + .desk-form-section { border-top:1px solid var(--desk-border-color); }
     /* Column Break: side-by-side columns within a section (one column = full width) */
-    .frappe-section-cols { display:flex; gap:28px; align-items:flex-start; }
-    .frappe-section-col { flex:1 1 0; min-width:0; }
-    @media (max-width:680px) { .frappe-section-cols { flex-direction:column; gap:0; } }
-    /* Tab Break: a Frappe-style tab bar above the form/detail sections. */
+    .desk-section-cols { display:flex; gap:28px; align-items:flex-start; }
+    .desk-section-col { flex:1 1 0; min-width:0; }
+    @media (max-width:680px) { .desk-section-cols { flex-direction:column; gap:0; } }
+    /* Tab Break: a Desk-style tab bar above the form/detail sections. */
     .hd-tabs-nav { display:flex; gap:2px; flex-wrap:wrap; margin:0 0 16px;
-                   border-bottom:1px solid var(--fr-border-color,#d1d8dd); }
+                   border-bottom:1px solid var(--desk-border-color,#d1d8dd); }
     .hd-tab-btn { background:none; border:none; border-bottom:2px solid transparent;
                   padding:8px 14px; margin-bottom:-1px; font-size:13px; font-weight:600;
-                  color:var(--fr-text-muted,#8d99a6); cursor:pointer; }
-    .hd-tab-btn:hover { color:var(--fr-text,#1f272e); }
-    .hd-tab-btn.active { color:var(--fr-primary,#2490ef);
-                         border-bottom-color:var(--fr-primary,#2490ef); }
-    .frappe-section-head {
-      font-size:var(--fr-text-md);
+                  color:var(--desk-text-muted,#8d99a6); cursor:pointer; }
+    .hd-tab-btn:hover { color:var(--desk-text,#1f272e); }
+    .hd-tab-btn.active { color:var(--desk-primary,#2490ef);
+                         border-bottom-color:var(--desk-primary,#2490ef); }
+    .desk-section-head {
+      font-size:var(--desk-text-md);
       font-weight:600;
-      color:var(--fr-text-color);
+      color:var(--desk-text-color);
       margin:0 0 14px;
     }
-    .frappe-form-group { margin-bottom:16px; }
-    .frappe-form-group:last-child { margin-bottom:0; }
-    .frappe-form-actions {
+    .desk-form-group { margin-bottom:16px; }
+    .desk-form-group:last-child { margin-bottom:0; }
+    .desk-form-actions {
       display:flex;
       gap:8px;
       justify-content:flex-end;
       align-items:center;
       padding:14px 24px;
       background:var(--gray-50);
-      border-top:1px solid var(--fr-border-color);
+      border-top:1px solid var(--desk-border-color);
     }
 
     /* read-style form (detail) definition list */
-    .frappe-dl { margin:0; }
-    .frappe-dl-row {
+    .desk-dl { margin:0; }
+    .desk-dl-row {
       display:flex;
       gap:18px;
       padding:12px 0;
-      border-bottom:1px solid var(--fr-border-color);
+      border-bottom:1px solid var(--desk-border-color);
     }
-    .frappe-dl-row:last-child { border-bottom:0; }
-    .frappe-dl-term {
+    .desk-dl-row:last-child { border-bottom:0; }
+    .desk-dl-term {
       flex:0 0 220px;
       max-width:220px;
-      font-size:var(--fr-text-sm);
+      font-size:var(--desk-text-sm);
       font-weight:500;
-      color:var(--fr-text-muted);
+      color:var(--desk-text-muted);
       padding-top:1px;
     }
-    .frappe-dl-desc {
+    .desk-dl-desc {
       flex:1 1 auto;
-      font-size:var(--fr-text-md);
-      color:var(--fr-text-color);
+      font-size:var(--desk-text-md);
+      color:var(--desk-text-color);
       word-break:break-word;
     }
-    .frappe-dl-desc.empty { color:var(--gray-400); font-style:italic; }
+    .desk-dl-desc.empty { color:var(--gray-400); font-style:italic; }
 
     /* =====================================================================
-       LIST VIEW — Frappe list (header row + rows w/ checkbox + bold link)
+       LIST VIEW — Desk list (header row + rows w/ checkbox + bold link)
        ===================================================================== */
-    .frappe-list {
-      background:var(--fr-fg-color);
-      border:1px solid var(--fr-border-color);
-      border-radius:var(--fr-radius-md);
-      box-shadow:var(--fr-card-shadow);
+    .desk-list {
+      background:var(--desk-fg-color);
+      border:1px solid var(--desk-border-color);
+      border-radius:var(--desk-radius-md);
+      box-shadow:var(--desk-card-shadow);
       overflow:hidden;
     }
-    .frappe-list-head,
-    .frappe-list-row {
+    .desk-list-head,
+    .desk-list-row {
       display:flex;
       align-items:center;
       gap:12px;
       padding:0 15px;
-      min-height:var(--fr-list-row-height);
+      min-height:var(--desk-list-row-height);
     }
-    .frappe-list-head {
+    .desk-list-head {
       background:var(--gray-100);
-      border-bottom:1px solid var(--fr-border-color);
-      font-size:var(--fr-text-sm);
+      border-bottom:1px solid var(--desk-border-color);
+      font-size:var(--desk-text-sm);
       font-weight:600;
       letter-spacing:.02em;
       text-transform:uppercase;
-      color:var(--fr-text-muted);
+      color:var(--desk-text-muted);
       min-height:34px;
     }
-    .frappe-list-row {
-      border-bottom:1px solid var(--fr-border-color);
-      font-size:var(--fr-text-base);
-      color:var(--fr-text-color);
+    .desk-list-row {
+      border-bottom:1px solid var(--desk-border-color);
+      font-size:var(--desk-text-base);
+      color:var(--desk-text-color);
       text-decoration:none;
     }
-    .frappe-list-row:last-child { border-bottom:0; }
-    .frappe-list-row:hover { background:var(--fr-bg-color); }
-    .frappe-list-check {
+    .desk-list-row:last-child { border-bottom:0; }
+    .desk-list-row:hover { background:var(--desk-bg-color); }
+    .desk-list-check {
       flex:0 0 auto;
       width:14px;
       height:14px;
       margin:0;
-      accent-color:var(--fr-primary);
+      accent-color:var(--desk-primary);
     }
-    .frappe-list-subject {
+    .desk-list-subject {
       flex:2 1 0;
       min-width:0;
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
     }
-    .frappe-list-subject a {
-      color:var(--fr-text-color);
+    .desk-list-subject a {
+      color:var(--desk-text-color);
       font-weight:600;
       text-decoration:none;
     }
-    .frappe-list-subject a:hover { color:var(--fr-primary); }
-    .frappe-list-col {
+    .desk-list-subject a:hover { color:var(--desk-primary); }
+    .desk-list-col {
       flex:1 1 0;
       min-width:0;
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
-      color:var(--fr-text-muted);
+      color:var(--desk-text-muted);
     }
-    .frappe-list-col.head, .frappe-list-subject.head { color:var(--fr-text-muted); }
-    .frappe-list-activity {
+    .desk-list-col.head, .desk-list-subject.head { color:var(--desk-text-muted); }
+    .desk-list-activity {
       flex:0 0 auto;
       margin-left:auto;
       color:var(--gray-500);
-      font-size:var(--fr-text-sm);
+      font-size:var(--desk-text-sm);
       white-space:nowrap;
     }
-    .frappe-list-empty {
+    .desk-list-empty {
       padding:48px 16px;
       text-align:center;
-      color:var(--fr-text-muted);
-      font-size:var(--fr-text-md);
+      color:var(--desk-text-muted);
+      font-size:var(--desk-text-md);
     }
-    .frappe-list-empty .ico { display:block; font-size:1.8rem; margin-bottom:10px; color:var(--gray-400); }
+    .desk-list-empty .ico { display:block; font-size:1.8rem; margin-bottom:10px; color:var(--gray-400); }
 
     /* =====================================================================
        SHORTCUT-CARD GRID (workspace home)
        ===================================================================== */
-    .frappe-widget-group { margin-bottom:36px; }
-    .frappe-widget-group:last-child { margin-bottom:0; }
-    .frappe-widget-group-title {
-      font-size:var(--fr-text-md);
+    .desk-widget-group { margin-bottom:36px; }
+    .desk-widget-group:last-child { margin-bottom:0; }
+    .desk-widget-group-title {
+      font-size:var(--desk-text-md);
       font-weight:600;
-      color:var(--fr-heading-color);
+      color:var(--desk-heading-color);
       margin:0 0 14px;
     }
-    .frappe-shortcut-grid {
+    .desk-shortcut-grid {
       display:grid;
       grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
       gap:15px;
     }
-    .frappe-shortcut-card {
+    .desk-shortcut-card {
       display:flex;
       flex-direction:column;
       gap:6px;
       padding:14px 16px;
-      background:var(--fr-fg-color);
-      border:1px solid var(--fr-border-color);
-      border-radius:var(--fr-radius-lg);
+      background:var(--desk-fg-color);
+      border:1px solid var(--desk-border-color);
+      border-radius:var(--desk-radius-lg);
       box-shadow:none;
       text-decoration:none;
       cursor:pointer;
       transition:border-color .12s, box-shadow .12s;
     }
-    .frappe-shortcut-card:hover {
+    .desk-shortcut-card:hover {
       border-color:var(--gray-900);
-      box-shadow:var(--fr-card-shadow);
+      box-shadow:var(--desk-card-shadow);
       text-decoration:none;
     }
-    .frappe-shortcut-top {
+    .desk-shortcut-top {
       display:flex;
       align-items:center;
       justify-content:space-between;
       gap:8px;
     }
-    .frappe-shortcut-label {
-      font-size:var(--fr-text-md);
+    .desk-shortcut-label {
+      font-size:var(--desk-text-md);
       font-weight:600;
-      color:var(--fr-heading-color);
+      color:var(--desk-heading-color);
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
     }
-    .frappe-shortcut-meta {
+    .desk-shortcut-meta {
       display:flex;
       align-items:center;
       gap:8px;
-      font-size:var(--fr-text-sm);
-      color:var(--fr-text-muted);
+      font-size:var(--desk-text-sm);
+      color:var(--desk-text-muted);
     }
-    .frappe-shortcut-slug code {
+    .desk-shortcut-slug code {
       background:var(--gray-100);
       color:var(--gray-700);
       padding:1px 6px;
-      border-radius:var(--fr-radius-sm);
-      font-size:var(--fr-text-xs);
+      border-radius:var(--desk-radius-sm);
+      font-size:var(--desk-text-xs);
     }
-    .frappe-shortcut-actions {
+    .desk-shortcut-actions {
       display:flex;
       gap:8px;
       margin-top:4px;
     }
 
     /* a prominent "create" tile */
-    .frappe-shortcut-card.create {
+    .desk-shortcut-card.create {
       align-items:center;
       justify-content:center;
       text-align:center;
       border-style:dashed;
       border-color:var(--gray-400);
-      color:var(--fr-primary);
+      color:var(--desk-primary);
       font-weight:600;
     }
-    .frappe-shortcut-card.create:hover {
-      border-color:var(--fr-primary);
+    .desk-shortcut-card.create:hover {
+      border-color:var(--desk-primary);
       background:var(--blue-100);
     }
-    .frappe-shortcut-card.create .plus { font-size:1.4rem; line-height:1; }
+    .desk-shortcut-card.create .plus { font-size:1.4rem; line-height:1; }
 
     /* =====================================================================
        INDICATOR PILLS / BADGES / MUTED HELPERS
@@ -838,9 +838,9 @@
       gap:5px;
       height:20px;
       padding:0 8px;
-      font-size:var(--fr-text-sm);
+      font-size:var(--desk-text-sm);
       font-weight:500;
-      border-radius:var(--fr-radius-full);
+      border-radius:var(--desk-radius-full);
     }
     .indicator-pill.gray  { background:var(--gray-100);  color:var(--gray-700); }
     .indicator-pill.blue  { background:var(--blue-100);  color:var(--blue-700); }
@@ -848,30 +848,30 @@
     .indicator-pill.red   { background:var(--red-100);   color:var(--red-700); }
     .indicator-pill.orange{ background:var(--orange-100);color:var(--orange-700); }
 
-    .frappe-geo-tag {
-      font-size:var(--fr-text-xs);
+    .desk-geo-tag {
+      font-size:var(--desk-text-xs);
       font-weight:600;
       letter-spacing:.04em;
       text-transform:uppercase;
       color:var(--blue-600);
     }
-    .frappe-muted { color:var(--fr-text-muted); }
-    .frappe-text-sm { font-size:var(--fr-text-sm); }
-    .frappe-divider {
+    .desk-muted { color:var(--desk-text-muted); }
+    .desk-text-sm { font-size:var(--desk-text-sm); }
+    .desk-divider {
       margin:22px 0 14px;
       padding-top:16px;
-      border-top:1px solid var(--fr-border-color);
-      font-size:var(--fr-text-sm);
+      border-top:1px solid var(--desk-border-color);
+      font-size:var(--desk-text-sm);
       font-weight:600;
       letter-spacing:.03em;
       text-transform:uppercase;
-      color:var(--fr-text-muted);
+      color:var(--desk-text-muted);
     }
 
     /* alerts kept on-theme */
     #inner-app-content .alert {
-      border-radius:var(--fr-radius-md);
-      font-size:var(--fr-text-base);
+      border-radius:var(--desk-radius-md);
+      font-size:var(--desk-text-base);
       border:1px solid transparent;
     }
     #inner-app-content .alert-warning {
@@ -888,29 +888,29 @@
       background:var(--gray-100);
       color:var(--gray-700);
       padding:1px 5px;
-      border-radius:var(--fr-radius-sm);
+      border-radius:var(--desk-radius-sm);
       font-size:0.92em;
     }
 
-    /* Frappe builder grid (DocType builder rows) */
-    .frappe-rows-head, .frappe-row {
+    /* Desk builder grid (DocType builder rows) */
+    .desk-rows-head, .desk-row {
       display:grid;
       grid-template-columns:2fr 1.4fr 90px 2.2fr;
       gap:12px;
       align-items:center;
     }
-    .frappe-rows-head {
-      font-size:var(--fr-text-sm);
+    .desk-rows-head {
+      font-size:var(--desk-text-sm);
       font-weight:600;
       letter-spacing:.02em;
       text-transform:uppercase;
-      color:var(--fr-text-muted);
+      color:var(--desk-text-muted);
       padding:0 2px 8px;
-      border-bottom:1px solid var(--fr-border-color);
+      border-bottom:1px solid var(--desk-border-color);
       margin-bottom:10px;
     }
-    .frappe-row { padding:6px 0; }
-    .frappe-row .form-check { margin:0; display:flex; justify-content:center; }
+    .desk-row { padding:6px 0; }
+    .desk-row .form-check { margin:0; display:flex; justify-content:center; }
 
     /* =====================================================================
        DARK THEME — Google Cloud Console dark mode. Inverts the gray scale and
@@ -931,19 +931,19 @@
       --green-500:#81c995; --green-600:#81c995; --green-700:#a8dab5;
       --orange-700:#fdd663;
 
-      --fr-fg-color:#292a2d;          /* cards (hardcoded #fff in :root -> override) */
-      --fr-border-color:#3c4043;
-      --fr-control-bg:#303134;
-      --fr-card-shadow:0 1px 2px rgba(0,0,0,.45), 0 1px 3px 1px rgba(0,0,0,.25);
-      --fr-shadow-sm:0 1px 3px rgba(0,0,0,.5);
+      --desk-fg-color:#292a2d;          /* cards (hardcoded #fff in :root -> override) */
+      --desk-border-color:#3c4043;
+      --desk-control-bg:#303134;
+      --desk-card-shadow:0 1px 2px rgba(0,0,0,.45), 0 1px 3px 1px rgba(0,0,0,.25);
+      --desk-shadow-sm:0 1px 3px rgba(0,0,0,.5);
       color-scheme:dark;
     }
     /* hardcoded-light surfaces that aren't token-driven */
     html[data-theme="dark"] #app-content-wrapper #app-content #app-navigation,
-    html[data-theme="dark"] #app-navigation { background:var(--fr-bg-color); }
+    html[data-theme="dark"] #app-navigation { background:var(--desk-bg-color); }
     html[data-theme="dark"] #hd-guide-panel,
-    html[data-theme="dark"] .hd-w { background:var(--fr-fg-color); border-color:var(--fr-border-color); }
-    html[data-theme="dark"] #app-header .tethys-app-header { background:var(--fr-fg-color) !important; }
+    html[data-theme="dark"] .hd-w { background:var(--desk-fg-color); border-color:var(--desk-border-color); }
+    html[data-theme="dark"] #app-header .tethys-app-header { background:var(--desk-fg-color) !important; }
   </style>
 {% endblock %}
 
@@ -959,7 +959,7 @@
       background:rgba(26,115,232,.14); }
     #hd-nav-loader.on { opacity:1; }
     #hd-nav-loader .bar { position:absolute; top:0; height:100%; width:35%; border-radius:0 3px 3px 0;
-      background:var(--fr-primary, #1a73e8); animation:hd-nav-slide 1s ease-in-out infinite; }
+      background:var(--desk-primary, #1a73e8); animation:hd-nav-slide 1s ease-in-out infinite; }
     @keyframes hd-nav-slide { 0%{left:-35%;} 50%{left:45%;} 100%{left:100%;} }
   </style>
   <script>
@@ -1195,5 +1195,5 @@
   {% endif %}
 {% endblock %}
 
-{# HydroDesk pages are full-bleed Frappe pages; the bottom action bar is unused. #}
+{# HydroDesk pages are full-bleed Desk pages; the bottom action bar is unused. #}
 {% block app_actions %}{% endblock %}

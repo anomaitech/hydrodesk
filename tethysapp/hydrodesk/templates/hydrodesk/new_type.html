@@ -1,7 +1,7 @@
 {% extends "hydrodesk/base_desk.html" %}
 {% comment %}
   DocType Builder — "+ New HydroType". Define a reusable record type's fields in
-  a Frappe-style form. On submit, controllers.new_hydrotype assembles a
+  a Desk-style form. On submit, controllers.new_hydrotype assembles a
   JSON-Schema field_schema + spec and INSERTs ONE hydrotype row via
   registry.import_hydrotype, then redirects to the new type's List view. No DDL.
 
@@ -19,30 +19,30 @@
 {% block nav_active_newtype %} active{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page frappe-page--form">
+<div class="desk-page desk-page--form">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
     <span class="sep">/</span>New HydroType
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">{{ page_title|default:"New HydroType" }}</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">{{ page_title|default:"New HydroType" }}</h1>
       {% if mode == "edit" %}
         <span class="indicator-pill blue">Editing</span>
       {% else %}
         <span class="indicator-pill orange">Draft</span>
       {% endif %}
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{% url 'hydrodesk:home' %}">
         <i class="bi bi-arrow-left"></i> Back to Home
       </a>
     </div>
   </div>
 
-  <p class="frappe-muted frappe-text-sm" style="margin:-10px 0 18px;">
+  <p class="desk-muted desk-text-sm" style="margin:-10px 0 18px;">
     Define a reusable record type. Fields become a JSON-Schema stored on one row &mdash;
     no database migration. The new type gets its own List, Form, and Detail views instantly.
   </p>
@@ -56,63 +56,63 @@
     </div>
   {% endif %}
 
-  <form method="post" action="{{ form_action }}" class="frappe-form-card" novalidate>
+  <form method="post" action="{{ form_action }}" class="desk-form-card" novalidate>
     {% csrf_token %}
 
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Type</div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Type</div>
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_type_name">Type Name<span class="req">*</span></label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_type_name">Type Name<span class="req">*</span></label>
         <input class="form-control" type="text" id="id_type_name" name="type_name"
                value="{{ type_name|default:'' }}" placeholder="e.g. River Gauge" required>
         {% if mode == "edit" %}
-          <div class="frappe-help">Slug <code>{{ edit_slug }}</code> is fixed (existing records reference it). Renaming a <em>field label</em> changes that field's key.</div>
+          <div class="desk-help">Slug <code>{{ edit_slug }}</code> is fixed (existing records reference it). Renaming a <em>field label</em> changes that field's key.</div>
         {% else %}
-          <div class="frappe-help">Slug is derived automatically (e.g. <code>river_gauge</code>).</div>
+          <div class="desk-help">Slug is derived automatically (e.g. <code>river_gauge</code>).</div>
         {% endif %}
       </div>
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_geometry">Geometry</label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_geometry">Geometry</label>
         <select class="form-select" id="id_geometry" name="geometry">
           <option value="none"    {% if geometry == 'none' %}selected{% endif %}>None</option>
           <option value="point"   {% if geometry == 'point' %}selected{% endif %}>Point</option>
           <option value="line"    {% if geometry == 'line' %}selected{% endif %}>Line</option>
           <option value="polygon" {% if geometry == 'polygon' %}selected{% endif %}>Polygon</option>
         </select>
-        <div class="frappe-help">Point types offer Longitude/Latitude inputs on the record form.</div>
+        <div class="desk-help">Point types offer Longitude/Latitude inputs on the record form.</div>
       </div>
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_title_field">Record title</label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_title_field">Record title</label>
         <select class="form-select" id="id_title_field" name="title_field" data-current="{{ title_field }}">
           <option value="">(auto &mdash; first field)</option>
         </select>
-        <div class="frappe-help">Which field names each record (shown as the record's heading and in links). Options come from the fields below.</div>
+        <div class="desk-help">Which field names each record (shown as the record's heading and in links). Options come from the fields below.</div>
       </div>
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_naming_series">Naming series <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_naming_series">Naming series <span class="desk-muted desk-text-sm">(optional)</span></label>
         <input class="form-control" type="text" id="id_naming_series" name="naming_series"
                value="{{ naming_series }}" placeholder="e.g. INV-#####">
-        <div class="frappe-help">Auto-number new records into the <strong>title field</strong>: the <code>#</code> run is a zero-padded counter, so <code>INV-#####</code> &rarr; <code>INV-00001</code>, <code>INV-00002</code>, … Leave blank for no auto-numbering. (Needs a Record title field set above.)</div>
+        <div class="desk-help">Auto-number new records into the <strong>title field</strong>: the <code>#</code> run is a zero-padded counter, so <code>INV-#####</code> &rarr; <code>INV-00001</code>, <code>INV-00002</code>, … Leave blank for no auto-numbering. (Needs a Record title field set above.)</div>
       </div>
 
-      <div class="frappe-form-group">
-        <label class="frappe-label" for="id_model">Model <span class="frappe-muted frappe-text-sm">(optional)</span></label>
+      <div class="desk-form-group">
+        <label class="desk-label" for="id_model">Model <span class="desk-muted desk-text-sm">(optional)</span></label>
         <select class="form-select" id="id_model" name="model"
                 data-current="{{ model }}" data-url="{{ models_json_url }}">
           <option value="">(none)</option>
         </select>
-        <div class="frappe-help">Bind a <a href="{% url 'hydrodesk:models' %}">Model</a> so each record gets a <strong>Run</strong> button — it runs the model as a Tethys job and writes the model's outputs back into fields.</div>
+        <div class="desk-help">Bind a <a href="{% url 'hydrodesk:models' %}">Model</a> so each record gets a <strong>Run</strong> button — it runs the model as a Tethys job and writes the model's outputs back into fields.</div>
       </div>
     </div>
 
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Fields</div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Fields</div>
 
-      <div class="frappe-rows-head">
+      <div class="desk-rows-head">
         <div>Label</div>
         <div>Type</div>
         <div>Required</div>
@@ -122,20 +122,20 @@
       <div id="hd-rows">
         {% for r in rows %}
         {% if r.computed %}
-        <div class="frappe-row-wrap hd-computed-wrap" data-row-idx="{{ forloop.counter0 }}" data-field-key="{{ r.key }}">
-          <div class="frappe-row hd-computed-row">
+        <div class="desk-row-wrap hd-computed-wrap" data-row-idx="{{ forloop.counter0 }}" data-field-key="{{ r.key }}">
+          <div class="desk-row hd-computed-row">
             <div class="hd-computed-name">
               <code>{{ r.key }}</code>
               <span class="hd-computed-badge" title="Filled by its script — remove it by deleting that field">&#8627; computed by {{ r.computed_by }}</span>
             </div>
-            <div class="frappe-muted frappe-text-sm">{{ r.type_label }}</div>
+            <div class="desk-muted desk-text-sm">{{ r.type_label }}</div>
             <div></div>
-            <div class="hd-config-cell"><span class="frappe-muted frappe-text-sm">read-only output</span></div>
+            <div class="hd-config-cell"><span class="desk-muted desk-text-sm">read-only output</span></div>
           </div>
         </div>
         {% else %}
-        <div class="frappe-row-wrap{% if r.model_input %} hd-model-input-row{% endif %}" data-row-idx="{{ forloop.counter0 }}" data-field-key="{{ r.key|default:'' }}">
-          <div class="frappe-row">
+        <div class="desk-row-wrap{% if r.model_input %} hd-model-input-row{% endif %}" data-row-idx="{{ forloop.counter0 }}" data-field-key="{{ r.key|default:'' }}">
+          <div class="desk-row">
             <input class="form-control form-control-sm{% if r.model_input %} hd-locked-label{% endif %}" type="text"
                    name="field_label_{{ forloop.counter0 }}"
                    value="{{ r.label|default:'' }}" placeholder="Field label"
@@ -189,7 +189,7 @@
                       title="Configure this field">
                 <i class="bi bi-gear"></i> Configure
               </button>
-              <span class="hd-config-summary frappe-text-sm"></span>
+              <span class="hd-config-summary desk-text-sm"></span>
               <button type="button" class="btn btn-sm hd-row-del{% if r.has_data %} hd-row-del-locked{% endif %}"
                       {% if r.has_data %}disabled aria-disabled="true" title="Holds data in {{ r.value_count }} record{{ r.value_count|pluralize }} — clear the data before deleting this field"{% else %}title="Delete this field"{% endif %}>
                 <i class="bi bi-trash"></i>
@@ -217,8 +217,8 @@
       <input type="hidden" name="hd_field_order" id="hd-field-order">
 
       <template id="hd-row-tpl">
-        <div class="frappe-row-wrap" data-row-idx="IDX">
-          <div class="frappe-row">
+        <div class="desk-row-wrap" data-row-idx="IDX">
+          <div class="desk-row">
             <input class="form-control form-control-sm" type="text" name="field_label_IDX" placeholder="Field label">
             <select class="form-select form-select-sm" name="field_type_IDX">
               <option value="text">Text</option>
@@ -256,7 +256,7 @@
                       title="Configure this field">
                 <i class="bi bi-gear"></i> Configure
               </button>
-              <span class="hd-config-summary frappe-text-sm"></span>
+              <span class="hd-config-summary desk-text-sm"></span>
               <button type="button" class="btn btn-sm hd-row-del" title="Delete this field">
                 <i class="bi bi-trash"></i>
               </button>
@@ -270,30 +270,30 @@
       </button>
     </div>
 
-    <div class="frappe-form-section">
-      <div class="frappe-section-head">Permissions <span class="frappe-muted frappe-text-sm">(by role)</span></div>
+    <div class="desk-form-section">
+      <div class="desk-section-head">Permissions <span class="desk-muted desk-text-sm">(by role)</span></div>
       {% if perm_groups %}
-        <div class="frappe-help" style="margin-bottom:8px;">
+        <div class="desk-help" style="margin-bottom:8px;">
           Tick which roles may <strong>view</strong> or <strong>edit</strong>
           (create / edit / delete) records of this type. Leave a column empty to
           allow <em>everyone</em>. Admins (superuser/staff) always have access.
         </div>
-        <div style="display:grid;grid-template-columns:2fr 0.6fr 0.6fr;gap:8px;font-size:11px;font-weight:600;color:var(--fr-text-muted,#8d99a6);text-transform:uppercase;margin-bottom:4px;">
+        <div style="display:grid;grid-template-columns:2fr 0.6fr 0.6fr;gap:8px;font-size:11px;font-weight:600;color:var(--desk-text-muted,#8d99a6);text-transform:uppercase;margin-bottom:4px;">
           <div>Role</div><div>View</div><div>Edit</div>
         </div>
         {% for g in perm_groups %}
-        <div style="display:grid;grid-template-columns:2fr 0.6fr 0.6fr;gap:8px;align-items:center;padding:3px 0;border-top:1px solid var(--fr-border-color,#ebeef0);">
+        <div style="display:grid;grid-template-columns:2fr 0.6fr 0.6fr;gap:8px;align-items:center;padding:3px 0;border-top:1px solid var(--desk-border-color,#ebeef0);">
           <div>{{ g.name }}</div>
           <div><input type="checkbox" name="perm_read" value="{{ g.name }}"{% if g.read %} checked{% endif %}></div>
           <div><input type="checkbox" name="perm_write" value="{{ g.name }}"{% if g.write %} checked{% endif %}></div>
         </div>
         {% endfor %}
       {% else %}
-        <div class="frappe-help">No roles (groups) exist in this portal yet, so records are open to all signed-in users. Create groups in the Tethys admin to restrict access.</div>
+        <div class="desk-help">No roles (groups) exist in this portal yet, so records are open to all signed-in users. Create groups in the Tethys admin to restrict access.</div>
       {% endif %}
     </div>
 
-    <div class="frappe-form-actions">
+    <div class="desk-form-actions">
       {% if mode == "edit" %}
         <a class="btn btn-link" style="color:var(--red-600,#e24c4c);margin-right:auto;"
            href="{% url 'hydrodesk:delete_type' slug=edit_slug %}">
@@ -310,10 +310,10 @@
   <div id="hd-cfg-backdrop" class="hd-cfg-backdrop" hidden></div>
   <div id="hd-cfg-modal" class="hd-cfg-modal" role="dialog" aria-modal="true"
        aria-labelledby="hd-cfg-title" hidden>
-    <div class="hd-cfg-dialog frappe-card">
+    <div class="hd-cfg-dialog desk-card">
       <div class="hd-cfg-head">
         <div>
-          <div class="hd-cfg-eyebrow frappe-text-sm">Configure field</div>
+          <div class="hd-cfg-eyebrow desk-text-sm">Configure field</div>
           <h2 id="hd-cfg-title" class="hd-cfg-title">Field</h2>
         </div>
         <button type="button" class="hd-cfg-close" id="hd-cfg-x" aria-label="Close">&times;</button>
@@ -334,7 +334,7 @@
 
 <style>
   /* ---- Drag-to-reorder handle (rearrange fields, incl. computed rows) ---- */
-  #inner-app-content .frappe-row-wrap { position:relative; }
+  #inner-app-content .desk-row-wrap { position:relative; }
   #inner-app-content .hd-drag {
     position:absolute; left:-16px; top:50%; transform:translateY(-50%);
     cursor:grab; color:#b3bcc6; font-size:13px; line-height:1; padding:3px 3px;
@@ -342,8 +342,8 @@
   }
   #inner-app-content .hd-drag:hover { color:#2490ef; }
   #inner-app-content .hd-drag:active { cursor:grabbing; }
-  #inner-app-content .frappe-row-wrap.hd-dragging {
-    opacity:.55; background:var(--fr-bg-subtle,#f4f6f8); border-radius:6px;
+  #inner-app-content .desk-row-wrap.hd-dragging {
+    opacity:.55; background:var(--desk-bg-subtle,#f4f6f8); border-radius:6px;
   }
   #inner-app-content #hd-rows { padding-left:4px; }
   /* ---- Configure cell (the 4th builder column) ---- */
@@ -377,12 +377,12 @@
     flex:0 0 auto; font-size:11px; color:#1a7f37; background:#eaf7ed; border-radius:4px; padding:1px 7px;
   }
   #inner-app-content .hd-config-summary {
-    color:var(--fr-text-muted); white-space:nowrap; overflow:hidden;
+    color:var(--desk-text-muted); white-space:nowrap; overflow:hidden;
     text-overflow:ellipsis; min-width:0;
   }
   #inner-app-content .hd-config-summary code {
     background:var(--gray-100); color:var(--gray-700);
-    padding:1px 6px; border-radius:var(--fr-radius-sm); font-size:var(--fr-text-xs);
+    padding:1px 6px; border-radius:var(--desk-radius-sm); font-size:var(--desk-text-xs);
   }
   #inner-app-content .hd-config-summary.muted { color:var(--gray-400); font-style:italic; }
 
@@ -400,38 +400,38 @@
   }
   .hd-cfg-modal[hidden], .hd-cfg-backdrop[hidden] { display:none; }
   .hd-cfg-dialog {
-    width:100%; max-width:520px; background:var(--fr-fg-color);
-    border-radius:var(--fr-radius-lg); box-shadow:0 10px 40px rgba(0,0,0,0.25);
+    width:100%; max-width:520px; background:var(--desk-fg-color);
+    border-radius:var(--desk-radius-lg); box-shadow:0 10px 40px rgba(0,0,0,0.25);
     overflow:hidden; display:flex; flex-direction:column;
   }
   .hd-cfg-head {
     display:flex; align-items:flex-start; justify-content:space-between;
-    gap:12px; padding:16px 20px 12px; border-bottom:1px solid var(--fr-border-color);
+    gap:12px; padding:16px 20px 12px; border-bottom:1px solid var(--desk-border-color);
   }
   .hd-cfg-eyebrow {
-    color:var(--fr-text-muted); text-transform:uppercase;
+    color:var(--desk-text-muted); text-transform:uppercase;
     letter-spacing:.04em; font-weight:600;
   }
   .hd-cfg-title {
-    margin:2px 0 0; font-size:var(--fr-text-lg); font-weight:600;
-    color:var(--fr-heading-color);
+    margin:2px 0 0; font-size:var(--desk-text-lg); font-weight:600;
+    color:var(--desk-heading-color);
   }
   .hd-cfg-close {
     background:transparent; border:none; font-size:22px; line-height:1;
     color:var(--gray-500); cursor:pointer; padding:0 4px;
   }
-  .hd-cfg-close:hover { color:var(--fr-text-color); }
+  .hd-cfg-close:hover { color:var(--desk-text-color); }
   .hd-cfg-body { padding:16px 20px; max-height:60vh; overflow:auto; }
   .hd-cfg-foot {
     display:flex; gap:8px; justify-content:flex-end; align-items:center;
     padding:12px 20px; background:var(--gray-50);
-    border-top:1px solid var(--fr-border-color);
+    border-top:1px solid var(--desk-border-color);
   }
 
   /* ---- Modal body sub-UIs ---- */
   .hd-empty-state {
-    text-align:center; padding:24px 8px; color:var(--fr-text-muted);
-    font-size:var(--fr-text-md);
+    text-align:center; padding:24px 8px; color:var(--desk-text-muted);
+    font-size:var(--desk-text-md);
   }
   .hd-empty-state .ico { display:block; font-size:1.6rem; margin-bottom:8px; color:var(--gray-400); }
 
@@ -452,7 +452,7 @@
   .hd-in-row > code { font-size:12px; overflow:hidden; text-overflow:ellipsis; }
   .hd-in-head {
     font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
-    color:var(--fr-text-muted,#8d99a6); margin-bottom:2px;
+    color:var(--desk-text-muted,#8d99a6); margin-bottom:2px;
   }
 
   /* Table child-column editor: label | type | options | remove */
@@ -462,21 +462,21 @@
   }
   .hd-tcol-head {
     font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
-    color:var(--fr-text-muted,#8d99a6); margin-bottom:4px;
+    color:var(--desk-text-muted,#8d99a6); margin-bottom:4px;
   }
   .hd-tcol-list { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
 
   .hd-map-list { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
   .hd-map-item { display:flex; align-items:center; gap:10px; }
   .hd-map-item .lbl {
-    flex:0 0 160px; max-width:160px; color:var(--fr-text-muted);
-    font-size:var(--fr-text-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    flex:0 0 160px; max-width:160px; color:var(--desk-text-muted);
+    font-size:var(--desk-text-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
   .hd-map-item .form-select { flex:1 1 auto; }
   .hd-cfg-note {
-    margin-top:10px; font-size:var(--fr-text-sm); color:var(--gray-500);
+    margin-top:10px; font-size:var(--desk-text-sm); color:var(--gray-500);
   }
-  .hd-cfg-note a { color:var(--fr-primary); }
+  .hd-cfg-note a { color:var(--desk-primary); }
   .hd-cfg-warn { color:var(--red-600); }
 </style>
 
@@ -531,7 +531,7 @@
     // Read LIVE from the DOM at open time (not a cached snapshot).
     function currentFieldChoices(exceptIdx) {
       var out = [];
-      box.querySelectorAll('.frappe-row-wrap').forEach(function (wrap) {
+      box.querySelectorAll('.desk-row-wrap').forEach(function (wrap) {
         var idx = wrap.getAttribute('data-row-idx');
         if (idx === String(exceptIdx)) return;
         // Computed rows (a MODEL output, or another script/formula's output) render read-only
@@ -702,7 +702,7 @@
         if (tparsed && !Array.isArray(tparsed) && tparsed.child_type) {
           html = '&rarr; records of <code>' + escapeHtml(tparsed.child_type) + '</code>';
           if (tparsed.child_link) {
-            html += ' <span class="frappe-muted">linked by <code>'
+            html += ' <span class="desk-muted">linked by <code>'
               + escapeHtml(tparsed.child_link) + '</code></span>';
           }
         } else {
@@ -860,13 +860,13 @@
       var p = rowParts(wrap);
       var t = p.type ? p.type.value : 'text';
       var wrapEl = document.createElement('div');
-      wrapEl.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--fr-border-color,#e2e8f0);';
+      wrapEl.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--desk-border-color,#e2e8f0);';
 
       // Default value (skip for api/table — those have no stored scalar default).
       var defIn = null;
       if (t !== 'api' && t !== 'table') {
         var dlab = document.createElement('label');
-        dlab.className = 'frappe-label'; dlab.textContent = 'Default value';
+        dlab.className = 'desk-label'; dlab.textContent = 'Default value';
         defIn = document.createElement('input');
         defIn.className = 'form-control form-control-sm';
         defIn.placeholder = (t === 'checkbox') ? 'true / false' : 'optional default';
@@ -876,7 +876,7 @@
 
       // Show only if <field> [= <value>] — a structured (safe) depends-on.
       var slab = document.createElement('label');
-      slab.className = 'frappe-label'; slab.style.marginTop = '10px';
+      slab.className = 'desk-label'; slab.style.marginTop = '10px';
       slab.textContent = 'Show only if';
       var row = document.createElement('div');
       row.style.cssText = 'display:flex;gap:8px;align-items:center;';
@@ -888,7 +888,7 @@
       // populate the controlling-field dropdown from OTHER data fields
       var cur = {}; try { cur = JSON.parse((p.showif && p.showif.value) || '{}') || {}; } catch (e) { cur = {}; }
       var opts = ['<option value="">(always show)</option>'];
-      document.querySelectorAll('.frappe-row-wrap').forEach(function (w2) {
+      document.querySelectorAll('.desk-row-wrap').forEach(function (w2) {
         if (w2 === wrap) return;                 // not itself
         var l2 = w2.querySelector('input[name^="field_label_"]');
         var t2 = w2.querySelector('select[name^="field_type_"]');
@@ -903,7 +903,7 @@
       valIn.value = (cur.value != null) ? cur.value : '';
       row.appendChild(fieldSel); row.appendChild(valIn);
       var hint = document.createElement('div');
-      hint.className = 'frappe-help';
+      hint.className = 'desk-help';
       hint.textContent = 'Hide this field on the form unless the chosen field matches.';
       wrapEl.appendChild(slab); wrapEl.appendChild(row); wrapEl.appendChild(hint);
       modalBody.appendChild(wrapEl);
@@ -925,7 +925,7 @@
       if (!existing.length) existing = [''];
 
       var note = document.createElement('div');
-      note.className = 'frappe-help';
+      note.className = 'desk-help';
       note.textContent = 'These values become the dropdown choices for this field.';
       var list = document.createElement('div');
       list.className = 'hd-opt-list';
@@ -996,9 +996,9 @@
       modeWrap.style.cssText = 'display:flex;gap:16px;margin-bottom:12px;';
       modeWrap.innerHTML =
         '<label class="hd-tbl-mode-lbl"><input type="radio" name="hd-tbl-mode" value="columns"> '
-        + '<strong>Define columns</strong> <span class="frappe-muted">(rows on this record)</span></label>'
+        + '<strong>Define columns</strong> <span class="desk-muted">(rows on this record)</span></label>'
         + '<label class="hd-tbl-mode-lbl"><input type="radio" name="hd-tbl-mode" value="link"> '
-        + '<strong>Records of a type</strong> <span class="frappe-muted">(linked one-to-many)</span></label>';
+        + '<strong>Records of a type</strong> <span class="desk-muted">(linked one-to-many)</span></label>';
       var colPanel = document.createElement('div');
       var linkPanel = document.createElement('div');
       modalBody.appendChild(modeWrap);
@@ -1011,7 +1011,7 @@
       var linkNote = document.createElement('div');
       linkNote.className = 'hd-cfg-note';
       var linkLbl = document.createElement('label');
-      linkLbl.className = 'frappe-label'; linkLbl.textContent = 'Child HydroType';
+      linkLbl.className = 'desk-label'; linkLbl.textContent = 'Child HydroType';
       linkPanel.appendChild(linkLbl); linkPanel.appendChild(linkSel); linkPanel.appendChild(linkNote);
       linkNote.innerHTML = 'Each row becomes a real record of this type, with its own '
         + 'detail page &amp; list/map. Manage them on the saved record’s page.';
@@ -1021,7 +1021,7 @@
       // field references this record (reverse of a many-to-one), instead of
       // the hidden-_parent attach mode.
       var byLbl = document.createElement('label');
-      byLbl.className = 'frappe-label'; byLbl.style.marginTop = '12px';
+      byLbl.className = 'desk-label'; byLbl.style.marginTop = '12px';
       byLbl.textContent = 'Linked by field (optional)';
       var byInput = document.createElement('input');
       byInput.className = 'form-control hd-tbl-link-by';
@@ -1057,7 +1057,7 @@
 
       // ----- COLUMNS panel (the inline child-grid editor) -----
       var note = document.createElement('div');
-      note.className = 'frappe-help';
+      note.className = 'desk-help';
       note.style.marginBottom = '8px';
       note.textContent = 'Define the columns of this child table. Each row of the '
         + 'field will have these columns. Rows are stored on the record itself.';
@@ -1149,11 +1149,11 @@
     function buildLinkUI(wrap) {
       var p = rowParts(wrap);
       var current = (p.opt && p.opt.value || '').trim();
-      modalBody.innerHTML = '<div class="frappe-help" style="margin-bottom:8px;">Loading types…</div>';
+      modalBody.innerHTML = '<div class="desk-help" style="margin-bottom:8px;">Loading types…</div>';
       loadTypes().then(function (types) {
         modalBody.innerHTML = '';
         var lbl = document.createElement('label');
-        lbl.className = 'frappe-label'; lbl.textContent = 'Target HydroType';
+        lbl.className = 'desk-label'; lbl.textContent = 'Target HydroType';
         var sel = document.createElement('select');
         sel.className = 'form-select';
         var blank = document.createElement('option');
@@ -1198,7 +1198,7 @@
     function buildFormulaUI(wrap) {
       var p = rowParts(wrap);
       var lbl = document.createElement('label');
-      lbl.className = 'frappe-label'; lbl.textContent = 'Formula';
+      lbl.className = 'desk-label'; lbl.textContent = 'Formula';
       var inp = document.createElement('input');
       inp.className = 'form-control';
       inp.placeholder = 'e.g. quantity * rate';
@@ -1236,7 +1236,7 @@
       }
 
       var lbl = document.createElement('label');
-      lbl.className = 'frappe-label'; lbl.textContent = 'Python script';
+      lbl.className = 'desk-label'; lbl.textContent = 'Python script';
       var ed = document.createElement('textarea');
       ed.className = 'form-control'; ed.rows = 12;
       ed.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre;';
@@ -1256,15 +1256,15 @@
       testBtn.type = 'button'; testBtn.className = 'btn btn-default btn-sm';
       testBtn.innerHTML = '<i class="bi bi-play"></i> Test run';
       var status = document.createElement('span');
-      status.className = 'frappe-text-sm';
+      status.className = 'desk-text-sm';
       bar.appendChild(testBtn); bar.appendChild(status);
 
       var inHead = document.createElement('div');
-      inHead.className = 'frappe-help'; inHead.style.margin = '8px 0 4px';
+      inHead.className = 'desk-help'; inHead.style.margin = '8px 0 4px';
       inHead.textContent = 'Inputs — the fields the script reads:';
       var inBox = document.createElement('div');
       var outHead = document.createElement('div');
-      outHead.className = 'frappe-help'; outHead.style.margin = '12px 0 4px';
+      outHead.className = 'desk-help'; outHead.style.margin = '12px 0 4px';
       outHead.textContent = 'Outputs — tick to store as a typed field:';
       var outBox = document.createElement('div');
 
@@ -1295,7 +1295,7 @@
         Object.keys(inputMap).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
         if (!names.length) {
           var none = document.createElement('div');
-          none.className = 'frappe-text-sm frappe-muted';
+          none.className = 'desk-text-sm desk-muted';
           none.textContent = 'No inputs yet — Test run to detect the variables the script reads.';
           inBox.appendChild(none); return;
         }
@@ -1367,7 +1367,7 @@
         }
         if (!names.length) {
           var none = document.createElement('div');
-          none.className = 'frappe-text-sm frappe-muted';
+          none.className = 'desk-text-sm desk-muted';
           none.textContent = errored ? 'Fix the error above, then Test run to list outputs.'
                                       : 'Run the script to list its variables.';
           outBox.appendChild(none); return;
@@ -1404,7 +1404,7 @@
           item.appendChild(cb); item.appendChild(lab); item.appendChild(labelIn); item.appendChild(ft);
           if (v.preview != null) {
             var prev = document.createElement('span');
-            prev.className = 'frappe-help'; prev.style.cssText = 'flex-basis:100%;margin-left:26px;';
+            prev.className = 'desk-help'; prev.style.cssText = 'flex-basis:100%;margin-left:26px;';
             prev.textContent = '= ' + v.preview; item.appendChild(prev);
           }
           outBox.appendChild(item);
@@ -1413,14 +1413,14 @@
 
       function doTest() {
         var src = (ed.value || '').trim();
-        if (!src) { status.innerHTML = '<span class="frappe-muted">write a script first</span>'; return; }
+        if (!src) { status.innerHTML = '<span class="desk-muted">write a script first</span>'; return; }
         var inputs = {};
         Object.keys(samples).forEach(function (k) {
           var raw = (samples[k] || '').trim();
           if (raw === '') return;
           try { inputs[k] = JSON.parse(raw); } catch (e) { inputs[k] = raw; }
         });
-        status.innerHTML = '<span class="frappe-muted">Running…</span>'; testBtn.disabled = true;
+        status.innerHTML = '<span class="desk-muted">Running…</span>'; testBtn.disabled = true;
         fetch(SCRIPT_TEST_URL, {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
@@ -1473,11 +1473,11 @@
       var currentConn = (p.opt && p.opt.value || '').trim();
       var seed = rowMapSeed(wrap);
 
-      modalBody.innerHTML = '<div class="frappe-help" style="margin-bottom:8px;">Loading connectors…</div>';
+      modalBody.innerHTML = '<div class="desk-help" style="margin-bottom:8px;">Loading connectors…</div>';
       loadConnectors().then(function (conns) {
         modalBody.innerHTML = '';
         var lbl = document.createElement('label');
-        lbl.className = 'frappe-label'; lbl.textContent = 'Connector';
+        lbl.className = 'desk-label'; lbl.textContent = 'Connector';
         var sel = document.createElement('select');
         sel.className = 'form-select';
         var blank = document.createElement('option');
@@ -1556,8 +1556,8 @@
           if (!wantShp && !wantTime) return;
           var seed = ncSeed();
           var head = document.createElement('div');
-          head.className = 'frappe-help';
-          head.style.cssText = 'margin:8px 0 4px;font-weight:600;color:var(--fr-text,#1f272e);';
+          head.className = 'desk-help';
+          head.style.cssText = 'margin:8px 0 4px;font-weight:600;color:var(--desk-text,#1f272e);';
           head.textContent = 'NetCDF query parameters';
           ncBox.appendChild(head);
           function addRow(text, key, types) {
@@ -1571,7 +1571,7 @@
           if (wantShp) addRow('Shapefile field', 'shapefile', ['shapefile']);
           if (wantTime) { addRow('Start date field', 'start', ['date']); addRow('End date field', 'end', ['date']); }
           var hint = document.createElement('div');
-          hint.className = 'frappe-help';
+          hint.className = 'desk-help';
           hint.textContent = 'Each record’s chosen field feeds the connector: the shapefile is the region, the dates are the time window.';
           ncBox.appendChild(hint);
         }
@@ -1600,7 +1600,7 @@
           outputs = outputs || [];
           if (!outputs.length) return;
           var head = document.createElement('div');
-          head.className = 'frappe-help';
+          head.className = 'desk-help';
           head.style.margin = '8px 0 4px';
           head.textContent = 'Choose which outputs to show on the record (a series is one checkbox):';
           outBox.appendChild(head);
@@ -1645,7 +1645,7 @@
               if (cols && cols.length) {
                 lab.title = name + ' · series columns: ' + cols.join(', ');
                 colHint = document.createElement('span');
-                colHint.className = 'frappe-help';
+                colHint.className = 'desk-help';
                 colHint.style.cssText = 'flex-basis:100%;margin-left:26px;';
                 colHint.textContent = 'table columns: ' + cols.join(', ');
               }
@@ -1679,7 +1679,7 @@
           connName = (connName || '').trim();
           if (!connName) return;
           var loading = document.createElement('div');
-          loading.className = 'frappe-help'; loading.textContent = 'Loading connector inputs…';
+          loading.className = 'desk-help'; loading.textContent = 'Loading connector inputs…';
           mapBox.appendChild(loading);
           fetch(INPUTS_URL.replace('__NAME__', encodeURIComponent(connName)))
             .then(function (r) { return r.json(); })
@@ -1700,7 +1700,7 @@
                 mapBox.appendChild(none);
               } else {
                 var head = document.createElement('div');
-                head.className = 'frappe-help';
+                head.className = 'desk-help';
                 head.style.margin = '4px 0 2px';
                 head.textContent = 'Map each connector input to one of this type’s fields:';
                 mapBox.appendChild(head);
@@ -1786,7 +1786,7 @@
     // =====================================================================
     // BOOT: wire existing rows + the Add-field clone loop.
     // =====================================================================
-    box.querySelectorAll('.frappe-row-wrap').forEach(wireRow);
+    box.querySelectorAll('.desk-row-wrap').forEach(wireRow);
 
     // Per-field delete (delegated): the server disables the button for a field that holds
     // data, so an enabled click never loses data. For an ALREADY-SAVED field (edit mode,
@@ -1795,7 +1795,7 @@
     box.addEventListener('click', function (ev) {
       var del = ev.target.closest('.hd-row-del');
       if (!del || del.disabled) return;
-      var wrap = del.closest('.frappe-row-wrap');
+      var wrap = del.closest('.desk-row-wrap');
       if (!wrap) return;
       var labelEl = wrap.querySelector('[name^="field_label_"]');
       var label = labelEl ? (labelEl.value || '').trim() : '';
@@ -1816,7 +1816,7 @@
           // drop every returned key's row, not just the one clicked.
           var removed = d.removed; if (!Array.isArray(removed)) removed = removed ? [removed] : [key];
           removed.forEach(function (k) {
-            var w = box.querySelector('.frappe-row-wrap[data-field-key="' + k + '"]');
+            var w = box.querySelector('.desk-row-wrap[data-field-key="' + k + '"]');
             if (w) w.remove();
           });
           wrap.remove();
@@ -1824,7 +1824,7 @@
       }).catch(function () { del.disabled = false; alert('Delete request failed.'); });
     });
 
-    var next = box.querySelectorAll('.frappe-row-wrap').length;  // continue numbering
+    var next = box.querySelectorAll('.desk-row-wrap').length;  // continue numbering
     btn.addEventListener('click', function () {
       var html = tpl.innerHTML.replace(/IDX/g, next);
       var holder = document.createElement('div');
@@ -1854,14 +1854,14 @@
     function updateOrder() {
       if (!orderInput) return;
       var keys = [];
-      box.querySelectorAll('.frappe-row-wrap').forEach(function (w) {
+      box.querySelectorAll('.desk-row-wrap').forEach(function (w) {
         var k = rowKey(w); if (k) keys.push(k);
       });
       orderInput.value = keys.join(',');
     }
     function rowAfter(y) {
       var els = Array.prototype.slice.call(
-        box.querySelectorAll('.frappe-row-wrap:not(.hd-dragging)'));
+        box.querySelectorAll('.desk-row-wrap:not(.hd-dragging)'));
       var best = null, bestOff = -Infinity;
       els.forEach(function (r) {
         var b = r.getBoundingClientRect();
@@ -1896,10 +1896,10 @@
     box.addEventListener('input', function (e) {
       if (e.target && /^field_label_/.test(e.target.name || '')) updateOrder();
     });
-    box.querySelectorAll('.frappe-row-wrap').forEach(wireDrag);
+    box.querySelectorAll('.desk-row-wrap').forEach(wireDrag);
     // re-wire drag on rows added/removed (Add field, delete, JS clones) + refresh order
     new MutationObserver(function () {
-      box.querySelectorAll('.frappe-row-wrap').forEach(wireDrag);
+      box.querySelectorAll('.desk-row-wrap').forEach(wireDrag);
       updateOrder();
     }).observe(box, { childList: true });
     updateOrder();
@@ -1922,22 +1922,22 @@
   function typeLabel(ft){ return ({Number:'Number',Text:'Text','Time-Series':'Table',Date:'Date',JSON:'JSON'})[ft] || ft; }
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
   function addPreviewRow(key, cls, typeLab, badge, note){
-    if (!key || box.querySelector('.frappe-row-wrap[data-field-key="'+key+'"]')) return;
+    if (!key || box.querySelector('.desk-row-wrap[data-field-key="'+key+'"]')) return;
     var wrap = document.createElement('div');
-    wrap.className = 'frappe-row-wrap hd-computed-wrap ' + cls;
+    wrap.className = 'desk-row-wrap hd-computed-wrap ' + cls;
     wrap.setAttribute('data-field-key', key);
-    wrap.innerHTML = '<div class="frappe-row hd-computed-row">'
+    wrap.innerHTML = '<div class="desk-row hd-computed-row">'
       + '<div class="hd-computed-name"><code>'+esc(key)+'</code>'
       + '<span class="hd-computed-badge">↳ '+esc(badge)+'</span></div>'
-      + '<div class="frappe-muted frappe-text-sm">'+esc(typeLab)+'</div>'
+      + '<div class="desk-muted desk-text-sm">'+esc(typeLab)+'</div>'
       + '<div></div>'
-      + '<div class="hd-config-cell"><span class="frappe-muted frappe-text-sm">'+esc(note)+'</span></div>'
+      + '<div class="hd-config-cell"><span class="desk-muted desk-text-sm">'+esc(note)+'</span></div>'
       + '</div>';
     box.appendChild(wrap);
   }
   function previewFields(modelName){
     if (!box) return;
-    box.querySelectorAll('.frappe-row-wrap.hd-model-input, .frappe-row-wrap.hd-model-output').forEach(function(n){ n.remove(); });
+    box.querySelectorAll('.desk-row-wrap.hd-model-input, .desk-row-wrap.hd-model-output').forEach(function(n){ n.remove(); });
     var spec = MODELS[modelName] || {inputs:[], outputs:[]};
     (spec.inputs || []).forEach(function(key){
       addPreviewRow(key, 'hd-model-input', 'Text', 'input read by '+modelName, 'model input · editable · added on save');
@@ -1969,7 +1969,7 @@
   function refresh() {
     var current = sel.value || sel.getAttribute('data-current') || '';
     var opts = ['<option value="">(auto — first field)</option>'];
-    document.querySelectorAll('.frappe-row-wrap').forEach(function (wrap) {
+    document.querySelectorAll('.desk-row-wrap').forEach(function (wrap) {
       var labEl = wrap.querySelector('input[name^="field_label_"]');
       var typEl = wrap.querySelector('select[name^="field_type_"]');
       var lab = labEl ? (labEl.value || '').trim() : '';

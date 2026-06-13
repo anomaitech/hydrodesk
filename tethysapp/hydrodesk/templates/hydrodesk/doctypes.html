@@ -10,26 +10,26 @@
 {% block nav_active_doctypes %} active{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page">
+<div class="desk-page">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
     <span class="sep">/</span>DocTypes
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">DocTypes</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">DocTypes</h1>
       <span class="indicator-pill gray">{{ total }} type{{ total|pluralize }}</span>
       {% if hidden_count %}
         {% if show_hidden %}
-          <a class="frappe-text-sm" href="{% url 'hydrodesk:doctypes' %}" style="margin-left:8px;">hide {{ hidden_count }} hidden</a>
+          <a class="desk-text-sm" href="{% url 'hydrodesk:doctypes' %}" style="margin-left:8px;">hide {{ hidden_count }} hidden</a>
         {% else %}
-          <a class="frappe-text-sm" href="?show_hidden=1" style="margin-left:8px;">show {{ hidden_count }} hidden</a>
+          <a class="desk-text-sm" href="?show_hidden=1" style="margin-left:8px;">show {{ hidden_count }} hidden</a>
         {% endif %}
       {% endif %}
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-primary btn-sm" href="{% url 'hydrodesk:new_type' %}">
         <i class="bi bi-plus-lg"></i> New HydroType
       </a>
@@ -50,7 +50,7 @@
       <button type="button" id="hd-bulk-clear" class="btn btn-link btn-sm">Clear selection</button>
     </div>
 
-    <div class="frappe-card" style="overflow:auto;">
+    <div class="desk-card" style="overflow:auto;">
       <table class="hd-series-table hd-doctypes-table">
         <thead>
           <tr>
@@ -87,8 +87,8 @@
   {% endfor %}
 
   {% else %}
-  <div class="frappe-list">
-    <div class="frappe-list-empty">
+  <div class="desk-list">
+    <div class="desk-list-empty">
       <span class="ico"><i class="bi bi-inbox"></i></span>
       No DocTypes yet. <a href="{% url 'hydrodesk:new_type' %}">Create your first one</a>.
     </div>
@@ -105,8 +105,8 @@
   .hd-dt-actions .btn { padding:2px 6px; margin:0; }
   .hd-bulk-bar {
     display:flex; align-items:center; gap:12px; padding:8px 14px; margin-bottom:10px;
-    background:var(--fr-bg-color,#f4f5f6); border:1px solid var(--fr-border-color,#e2e8f0);
-    border-radius:var(--fr-radius,6px); font-size:var(--fr-text-sm,12px);
+    background:var(--desk-bg-color,#f4f5f6); border:1px solid var(--desk-border-color,#e2e8f0);
+    border-radius:var(--desk-radius,6px); font-size:var(--desk-text-sm,12px);
   }
   .hd-bulk-bar .btn { margin:0; }
 </style>

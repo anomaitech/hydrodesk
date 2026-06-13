@@ -73,7 +73,7 @@ except Exception:  # pragma: no cover - exercised only if fastjsonschema absent
 
 @controller(name="home", url="", title="Home")
 def desk_home(request):
-    """Frappe-style Desk home (the app index): every DocType (HydroType) as a
+    """Desk-style Desk home (the app index): every DocType (HydroType) as a
     card + the '+ New HydroType' builder. Replaces the old ReactPy map landing."""
     engine = App.get_persistent_store_database("hydro_db")
     types = []
@@ -5479,7 +5479,7 @@ class HydroDeskMap(MapLayout):
 
 
 # ---------------------------------------------------------------------------
-# Generic Frappe-style auto List View. Driven ENTIRELY by metadata: the
+# Generic Desk-style auto List View. Driven ENTIRELY by metadata: the
 # HydroType row's display_name + field_schema. Works for ANY type by slug.
 # No per-type code; columns derive from field_schema.properties at request time.
 # ---------------------------------------------------------------------------
@@ -5488,7 +5488,7 @@ class HydroDeskMap(MapLayout):
 # hydrotype table — it only lives in the source JSON spec), we still want a
 # sensible, stable column order. We surface up to this many derived columns so
 # the table stays readable for wide schemas; the rest remain in the record but
-# off the list (classic Frappe behavior).
+# off the list (classic Desk behavior).
 _MAX_LIST_COLUMNS = 6
 
 
@@ -6339,7 +6339,7 @@ def hydrotype_list(request, slug="monitoring_station"):
 
     Loads the HydroType metadata row (display_name + field_schema) and every
     hydro_record of that slug from the generic store, derives table columns from
-    field_schema.properties, and renders a Frappe-Desk-like list page inside the
+    field_schema.properties, and renders a Desk-like list page inside the
     Tethys app chrome. Entirely metadata-driven — not specific to any one type.
     """
     engine = App.get_persistent_store_database("hydro_db")
@@ -6438,7 +6438,7 @@ def hydrotype_list(request, slug="monitoring_station"):
 
 
 # ---------------------------------------------------------------------------
-# Generic Frappe-style auto Form View + Detail View. Both are driven ENTIRELY
+# Generic Desk-style auto Form View + Detail View. Both are driven ENTIRELY
 # by the HydroType row's field_schema + geometry_kind — no per-type code.
 # ---------------------------------------------------------------------------
 
@@ -6506,7 +6506,7 @@ def _label_for(target_field_schema, attrs):
     header.
 
     Order: (1) the type's designated TITLE FIELD (``x-title-field``) when set and
-    non-empty; (2) a Frappe-style ``name`` attribute; (3) the first non-empty real
+    non-empty; (2) a Desk-style ``name`` attribute; (3) the first non-empty real
     field in declaration order (skipping layout/api/child-table fields, which have
     no scalar value); (4) any non-empty non-reserved attribute. Always a plain
     string for safe linkification.
@@ -9675,7 +9675,7 @@ def _format_typed_cell(prop, value, session=None):
         return _fmt_rating(value, prop.get("maximum") or 5)
     if xfield == "shapefile":
         n = _geojson_feature_count(value)
-        return format_html('<span class="frappe-muted"><i class="bi bi-bounding-box"></i> '
+        return format_html('<span class="desk-muted"><i class="bi bi-bounding-box"></i> '
                            'shapefile &mdash; {} polygon{}</span>',
                            n, "" if n == 1 else "s")
     return _format_cell(value)
@@ -9731,7 +9731,7 @@ def _fmt_rating(value, maximum=5):
 
 
 def _render_table_field(prop, value):
-    """Render a Table (child-grid) field's rows as a read-only Frappe DataTable.
+    """Render a Table (child-grid) field's rows as a read-only Desk DataTable.
 
     Columns come from the item schema (in declaration order); rows from the stored
     list of objects. Reuses the .hd-series-table look. Booleans show a check/dash,
@@ -9763,7 +9763,7 @@ def _render_table_field(prop, value):
     if not cols:
         return _format_cell(value)
     if not rows:
-        return mark_safe("<span class='frappe-muted frappe-text-sm'>no rows</span>")
+        return mark_safe("<span class='desk-muted desk-text-sm'>no rows</span>")
 
     th = "".join(str(format_html("<th>{}</th>", h)) for _, h, _ in cols)
     body = ""
@@ -9829,7 +9829,7 @@ def _child_records_by_link(session, child_slug, link_field, parent_id):
 
 def _render_linked_table(session, child_slug, parent_slug, parent_id, field,
                          child_link=None):
-    """Render a LINKED Table field as a Frappe table of child records (columns = the
+    """Render a LINKED Table field as a Desk table of child records (columns = the
     child type's fields, first cell links to each child's detail).
 
     Two relationship modes:
@@ -9840,7 +9840,7 @@ def _render_linked_table(session, child_slug, parent_slug, parent_id, field,
         ``_parent`` back-reference (a true private one-to-many)."""
     meta = _load_hydrotype(session, child_slug) if session else None
     if meta is None:
-        return format_html("<span class='frappe-muted frappe-text-sm'>Linked type "
+        return format_html("<span class='desk-muted desk-text-sm'>Linked type "
                            "&ldquo;{}&rdquo; not found.</span>", child_slug or "")
     child_name, child_schema, _gk = meta
 
@@ -9870,7 +9870,7 @@ def _render_linked_table(session, child_slug, parent_slug, parent_id, field,
     if not children:
         return mark_safe(
             "<div class='hd-series-wrap' style='padding:9px 12px;'>"
-            + str(format_html("<span class='frappe-muted frappe-text-sm'>"
+            + str(format_html("<span class='desk-muted desk-text-sm'>"
                               "No {} records yet.</span>", child_name))
             + "</div>" + add_btn)
 
@@ -10047,12 +10047,12 @@ def _render_series_block(xs, ys):
     rows_html = ""
     for x, y in list(zip(xs, ys))[-n:]:
         rows_html += format_html(
-            "<tr><td style='padding:1px 10px 1px 0;color:var(--fr-text-muted);'>{}</td>"
+            "<tr><td style='padding:1px 10px 1px 0;color:var(--desk-text-muted);'>{}</td>"
             "<td style='padding:1px 0;'>{}</td></tr>", str(x), str(y))
     table = mark_safe(
-        "<table class='frappe-text-sm' style='border-collapse:collapse;margin-top:6px;'>"
+        "<table class='desk-text-sm' style='border-collapse:collapse;margin-top:6px;'>"
         + rows_html + "</table>") if rows_html else mark_safe(
-        "<span class='frappe-muted frappe-text-sm'>no series data</span>")
+        "<span class='desk-muted desk-text-sm'>no series data</span>")
     return spark + "<div>" + str(table) + "</div>"
 
 
@@ -10093,7 +10093,7 @@ def _render_columns_table(result, cap=None):
                    {"name": "value", "values": result.get("y") or []}]
     n = max((len(c.get("values") or []) for c in columns), default=0)
     if not columns or n == 0:
-        return mark_safe("<span class='frappe-muted frappe-text-sm'>no series data</span>")
+        return mark_safe("<span class='desk-muted desk-text-sm'>no series data</span>")
 
     # X-labels = the role-x column (else the time/date/step-named one); chart every
     # OTHER numeric column. One numeric column -> the single-line area chart; several
@@ -10198,7 +10198,7 @@ def _render_value_block(val, field_type="Text"):
     verbatim. The value is always escaped via format_html (external content)."""
     if val in (None, ""):
         return str(format_html(
-            "<span class='frappe-muted frappe-text-sm'>no value</span>"))
+            "<span class='desk-muted desk-text-sm'>no value</span>"))
     shown = val
     if (field_type or "").lower() == "number":
         try:
@@ -10216,15 +10216,15 @@ def _render_stored_image(val, label="map"):
     s = (val.get("url") if isinstance(val, dict) else val) or ""
     s = s if isinstance(s, str) else ""
     if not s.strip():
-        return mark_safe("<span class='frappe-muted frappe-text-sm'>"
+        return mark_safe("<span class='desk-muted desk-text-sm'>"
                          "no map yet &mdash; run the model</span>")
     if not (s.startswith("data:image/") or s.startswith("http://")
             or s.startswith("https://") or s.startswith("/")):
-        return mark_safe("<span class='frappe-muted frappe-text-sm'>no map</span>")
+        return mark_safe("<span class='desk-muted desk-text-sm'>no map</span>")
     return format_html(
         "<div class='hd-model-image'><a href='{}' target='_blank' rel='noopener'>"
         "<img src='{}' alt='{}' loading='lazy' style='max-width:100%;height:auto;"
-        "display:block;border:1px solid var(--fr-border-color,#d1d8dd);"
+        "display:block;border:1px solid var(--desk-border-color,#d1d8dd);"
         "border-radius:6px;'></a></div>", s, s, label or "map")
 
 
@@ -10244,29 +10244,29 @@ def _render_file_field(val):
     """Render a model FILE output ({name,url,size}) as a download link with its size."""
     if not isinstance(val, dict) or not (val.get("url")):
         if isinstance(val, str) and val.strip():
-            return format_html("<span class='frappe-text-sm'>{}</span>", val)
-        return mark_safe("<span class='frappe-muted frappe-text-sm'>no file yet &mdash; run the model</span>")
+            return format_html("<span class='desk-text-sm'>{}</span>", val)
+        return mark_safe("<span class='desk-muted desk-text-sm'>no file yet &mdash; run the model</span>")
     name = val.get("name") or "download"
     size = _human_size(val.get("size"))
     return format_html(
         "<a class='hd-file-dl' href='{}' download style='display:inline-flex;align-items:center;"
         "gap:6px;'><i class='bi bi-download'></i> {}{}</a>", val["url"], name,
-        format_html(" <span class='frappe-muted frappe-text-sm'>({})</span>", size) if size else "")
+        format_html(" <span class='desk-muted desk-text-sm'>({})</span>", size) if size else "")
 
 
 def _render_geometry_field(val, name="geom"):
     """Render a model GEOMETRY output (GeoJSON) as a small Leaflet map (reuses the detail
     geom-map machinery via a class the page script can pick up)."""
     if not isinstance(val, dict) or not val.get("type"):
-        return mark_safe("<span class='frappe-muted frappe-text-sm'>no geometry yet</span>")
+        return mark_safe("<span class='desk-muted desk-text-sm'>no geometry yet</span>")
     try:
         payload = json.dumps(val).replace("</", "<\\/")
     except (TypeError, ValueError):
-        return mark_safe("<span class='frappe-muted frappe-text-sm'>invalid geometry</span>")
+        return mark_safe("<span class='desk-muted desk-text-sm'>invalid geometry</span>")
     holder = "hd-geomout-" + re.sub(r"[^A-Za-z0-9_-]", "", str(name))[:32]
     return mark_safe(
         "<div class='hd-geom-out' id='" + holder + "' "
-        "style='height:220px;border-radius:8px;border:1px solid var(--fr-border-color,#e2e6ea);'></div>"
+        "style='height:220px;border-radius:8px;border:1px solid var(--desk-border-color,#e2e6ea);'></div>"
         "<script type='application/json' class='hd-geom-out-data' data-holder='" + holder + "'>"
         + payload + "</script>")
 
@@ -10283,13 +10283,13 @@ def _render_image_block(result, label="map", sample_ctx=None):
     url = (result or {}).get("url") or ""
     if not url:
         return mark_safe(
-            "<span class='frappe-muted frappe-text-sm'>no map (set a point / layer)</span>")
+            "<span class='desk-muted desk-text-sm'>no map (set a point / layer)</span>")
     img = format_html(
         "<div class='hd-api-image'>"
         "<a href='{}' target='_blank' rel='noopener'>"
         "<img src='{}' alt='{}' loading='lazy' "
         "style='max-width:100%;height:auto;display:block;"
-        "border:1px solid var(--fr-border-color,#d1d8dd);border-radius:6px;'>"
+        "border:1px solid var(--desk-border-color,#d1d8dd);border-radius:6px;'>"
         "</a></div>",
         url, url, label or "map")
     bounds = (result or {}).get("bounds")
@@ -10397,7 +10397,7 @@ def _nc_params_bar(slug, record_id, field, nc_map, attrs):
         '<div class="hd-ncparams" data-url="{}" data-start="{}" data-end="{}" '
         'data-haveshp="{}" data-havedate="{}" '
         'style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px;">'
-        '<span class="frappe-muted">{}</span>'
+        '<span class="desk-muted">{}</span>'
         '<button type="button" class="btn btn-link btn-sm hd-ncparams-btn" '
         'style="padding:0 4px;">Adjust &amp; refresh</button></div>',
         url, start_v, end_v, "1" if shp_f else "", "1" if (start_f or end_f) else "",
@@ -10447,14 +10447,14 @@ def _json_to_table_html(payload, cap=200):
     shown = rows[:cap]
     thead = "".join(
         "<th style='text-align:left;padding:4px 12px;border-bottom:2px solid "
-        "var(--fr-border-color,#e6e9ee);font-weight:600;'>%s</th>" % escape(str(h))
+        "var(--desk-border-color,#e6e9ee);font-weight:600;'>%s</th>" % escape(str(h))
         for h in headers)
     tbody = "".join(
         "<tr>" + "".join(
             "<td style='padding:3px 12px;border-bottom:1px solid "
-            "var(--fr-border-color,#f0f0f0);'>%s</td>" % escape(str(c)) for c in r)
+            "var(--desk-border-color,#f0f0f0);'>%s</td>" % escape(str(c)) for c in r)
         + "</tr>" for r in shown)
-    more = ("<div class='frappe-help' style='margin-top:2px;'>+%d more rows</div>"
+    more = ("<div class='desk-help' style='margin-top:2px;'>+%d more rows</div>"
             % (len(rows) - len(shown))) if len(rows) > len(shown) else ""
     return mark_safe(
         "<table class='hd-api-json-table' style='border-collapse:collapse;font-size:13px;"
@@ -10482,7 +10482,7 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
     secret is never shown (fetch_api redacts the URL)."""
     if connector is None:
         return format_html(
-            '<span class="frappe-muted frappe-text-sm">'
+            '<span class="desk-muted desk-text-sm">'
             'No connector named &ldquo;{}&rdquo; found.</span>', connector_name or "")
 
     # Honor the netcdf per-record parameter mapping (x-nc-map): the record's mapped
@@ -10531,8 +10531,8 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
             blocks.append(
                 "<div class='hd-api-output' style='margin-bottom:8px;'>"
                 + str(format_html(
-                    "<div class='frappe-text-sm' "
-                    "style='color:var(--fr-text-muted);font-weight:600;'>{}</div>",
+                    "<div class='desk-text-sm' "
+                    "style='color:var(--desk-text-muted);font-weight:600;'>{}</div>",
                     label))
                 + "<div>" + str(body) + "</div></div>")
         note = (_api_source_note(last_result, connector) if last_result else "")
@@ -10576,7 +10576,7 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
                 pretty = str(payload)
             raw = format_html(
                 "<details class='hd-api-json' style='margin-top:4px;'>"
-                "<summary class='frappe-help'>raw JSON</summary>"
+                "<summary class='desk-help'>raw JSON</summary>"
                 "<pre style='background:var(--gray-100);padding:10px;border-radius:6px;"
                 "overflow:auto;max-height:320px;'>{}</pre></details>", pretty)
             body = mark_safe(
@@ -10588,7 +10588,7 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
         except (TypeError, ValueError):
             pretty = str(payload)
         body = format_html(
-            "<details class='hd-api-json'><summary class='frappe-text-sm'>"
+            "<details class='hd-api-json'><summary class='desk-text-sm'>"
             "View JSON {}{}</summary><pre style='background:var(--gray-100);"
             "padding:10px;border-radius:6px;overflow:auto;max-height:320px;'>"
             "{}</pre></details>", mark_safe(pill), refresh, pretty)
@@ -10598,7 +10598,7 @@ def _render_api_field(connector_name, connector, value, attrs, refresh_url=None,
     val = result.get("value")
     if val in (None, ""):
         shown = format_html(
-            "<span class='frappe-muted frappe-text-sm'>no value {}{}</span>",
+            "<span class='desk-muted desk-text-sm'>no value {}{}</span>",
             mark_safe(pill), refresh)
     else:
         shown = format_html(
@@ -10617,12 +10617,12 @@ def _api_source_note(result, connector):
     # dump that into the footnote; only show a real, reasonably short source URL.
     show_url = url if (url and not url.startswith("data:") and len(url) <= 300) else ""
     base = format_html(
-        "<div class='frappe-help' style='margin-top:3px;'>via connector "
+        "<div class='desk-help' style='margin-top:3px;'>via connector "
         "<code>{}</code>{}</div>",
         connector.name,
         format_html(" &middot; <span style='word-break:break-all;'>{}</span>", show_url) if show_url else "")
     if note:
-        base = format_html("{}<div class='frappe-help' style='margin-top:2px;color:#b35900;'>"
+        base = format_html("{}<div class='desk-help' style='margin-top:2px;color:#b35900;'>"
                            "<i class='bi bi-info-circle'></i> {}</div>", base, note)
     return str(base)
 
@@ -10640,7 +10640,7 @@ def _sparkline_svg(values):
         except (TypeError, ValueError):
             continue
     if len(nums) < 2:
-        return "<span class='frappe-muted frappe-text-sm'>&mdash;</span>"
+        return "<span class='desk-muted desk-text-sm'>&mdash;</span>"
     w, h, pad = 160, 32, 2
     lo, hi = min(nums), max(nums)
     span = (hi - lo) or 1.0
@@ -10711,7 +10711,7 @@ def _fmt_cell(v):
 
 
 def _line_chart_svg(values, labels=None, width=520, height=180, unit=""):
-    """A clean Frappe-style inline-SVG line+area chart from a numeric series.
+    """A clean Desk-style inline-SVG line+area chart from a numeric series.
 
     Gap-aware (USGS -999999 / non-finite values BREAK the line instead of spiking),
     nice 1/2/5x10^k y-gridlines, a few x labels, restrained min/max rings, and a
@@ -10732,7 +10732,7 @@ def _line_chart_svg(values, labels=None, width=520, height=180, unit=""):
         pts.append(f)
     finite = [p for p in pts if p is not None]
     if len(finite) < 2:
-        return "<span class='frappe-muted frappe-text-sm'>&mdash;</span>"
+        return "<span class='desk-muted desk-text-sm'>&mdash;</span>"
     lo, hi = min(finite), max(finite)
     if hi == lo:
         lo -= 0.5
@@ -10884,7 +10884,7 @@ def _multiline_chart_svg(series, labels=None, width=520, height=190, band=None,
         allf.extend(v for v in band_hi if v is not None)
     drawable = [c for c in cols if sum(1 for p in c[1] if p is not None) >= 2]
     if not allf or not drawable:
-        return "<span class='frappe-muted frappe-text-sm'>&mdash;</span>"
+        return "<span class='desk-muted desk-text-sm'>&mdash;</span>"
     lo, hi = min(allf), max(allf)
     if hi == lo:
         lo -= 0.5

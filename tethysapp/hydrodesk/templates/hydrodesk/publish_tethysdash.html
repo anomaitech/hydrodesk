@@ -2,26 +2,26 @@
 {% block title %}Publish to TethysDash - {{ block.super }}{% endblock %}
 {% block nav_active_publish %} active{% endblock %}
 {% block desk_content %}
-<div class="frappe-page">
-  <div class="frappe-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Publish to TethysDash</div>
-  <div class="frappe-page-head"><div class="frappe-title-area">
-    <h1 class="frappe-title">Publish to TethysDash</h1>
-    <p class="frappe-muted">No-code mapper &mdash; pick a doctype, see what its <strong>Data API</strong> returns,
+<div class="desk-page">
+  <div class="desk-breadcrumb"><a href="{% url 'hydrodesk:home' %}">HydroDesk</a><span class="sep">/</span>Publish to TethysDash</div>
+  <div class="desk-page-head"><div class="desk-title-area">
+    <h1 class="desk-title">Publish to TethysDash</h1>
+    <p class="desk-muted">No-code mapper &mdash; pick a doctype, see what its <strong>Data API</strong> returns,
       then choose per field what each becomes (KPI, chart, map, table&hellip;). HydroDesk wires a TethysDash
       dashboard you just download &amp; import.</p>
   </div></div>
 
   {% if not has_token %}
-  <div class="frappe-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:14px;padding:10px 14px;color:#b42318;">
+  <div class="desk-form-card" style="border-color:#f5c2c7;background:#fff5f5;margin-bottom:14px;padding:10px 14px;color:#b42318;">
     No <code>api_read_token</code> is set, so the generated tiles will have an empty token. Add one in
     <a href="{% url 'hydrodesk:credentials' %}">Credentials</a> (name it <code>api_read_token</code>) so TethysDash can read the Data API.
   </div>
   {% endif %}
 
   {# --- Form 1: doctype selector (its own form so switching resets picks to defaults) --- #}
-  <form method="get" class="frappe-form-card" style="padding:14px 18px;margin-bottom:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap;">
-    <div class="frappe-form-group" style="margin:0;min-width:280px;">
-      <label class="frappe-label" for="id_slug">Doctype</label>
+  <form method="get" class="desk-form-card" style="padding:14px 18px;margin-bottom:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap;">
+    <div class="desk-form-group" style="margin:0;min-width:280px;">
+      <label class="desk-label" for="id_slug">Doctype</label>
       <select class="form-select" id="id_slug" name="slug" onchange="this.form.submit()">
         {% for t in types %}<option value="{{ t.slug }}"{% if t.slug == selected %} selected{% endif %}>{{ t.name }} ({{ t.slug }} &middot; {{ t.count }} record{{ t.count|pluralize }})</option>{% endfor %}
       </select>
@@ -31,10 +31,10 @@
 
   {% if preview %}
   {# --- Form 2: the per-field visualization picker (live; each change re-previews) --- #}
-  <form method="get" class="frappe-form-card" style="padding:16px 20px;margin-bottom:16px;">
+  <form method="get" class="desk-form-card" style="padding:16px 20px;margin-bottom:16px;">
     <input type="hidden" name="slug" value="{{ preview.slug }}">
-    <div class="frappe-section-head" style="margin:0 0 4px;">Data API &rarr; visualizations</div>
-    <div class="frappe-muted frappe-text-sm" style="margin-bottom:10px;">
+    <div class="desk-section-head" style="margin:0 0 4px;">Data API &rarr; visualizations</div>
+    <div class="desk-muted desk-text-sm" style="margin-bottom:10px;">
       <code>GET {{ api_url }}/api/{{ preview.slug }}/records/</code>
       {% if preview.has_sample %}&middot; sample values below are live from the first record{% else %}&middot; <em>no records yet &mdash; sample column empty</em>{% endif %}.
       Change any dropdown to re-wire the dashboard.
@@ -51,7 +51,7 @@
         {% if preview.geom_row %}
         <tr>
           <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;">{{ preview.geom_row.label }}</td>
-          <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;"><span class="frappe-muted">{{ preview.geom_row.kind }}</span></td>
+          <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;"><span class="desk-muted">{{ preview.geom_row.kind }}</span></td>
           <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;"></td>
           <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;">
             <select class="form-select form-select-sm" name="viz_{{ preview.geom_row.key }}" onchange="this.form.submit()" style="min-width:230px;">
@@ -62,8 +62,8 @@
         {% endif %}
         {% for f in preview.fields %}
         <tr>
-          <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;"><strong>{{ f.label }}</strong> <span class="frappe-muted">{{ f.key }}</span></td>
-          <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;"><span class="frappe-muted">{{ f.kind }}</span></td>
+          <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;"><strong>{{ f.label }}</strong> <span class="desk-muted">{{ f.key }}</span></td>
+          <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;"><span class="desk-muted">{{ f.kind }}</span></td>
           <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;font-family:monospace;color:#475467;">{{ f.sample }}</td>
           <td style="padding:4px 12px;border-bottom:1px solid #f0f0f0;">
             {% if f.options|length > 1 %}
@@ -71,7 +71,7 @@
               {% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>{% endfor %}
             </select>
             {% else %}
-            <span class="frappe-muted">{{ f.options.0.label }}</span>
+            <span class="desk-muted">{{ f.options.0.label }}</span>
             {% endif %}
           </td>
         </tr>
@@ -79,7 +79,7 @@
       </tbody>
     </table>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-top:14px;border-top:1px solid #eef1f4;padding-top:12px;">
-      <div class="frappe-muted frappe-text-sm">{{ preview.ntiles }} tile{{ preview.ntiles|pluralize }} wired &middot; geometry: {{ preview.geometry }}</div>
+      <div class="desk-muted desk-text-sm">{{ preview.ntiles }} tile{{ preview.ntiles|pluralize }} wired &middot; geometry: {{ preview.geometry }}</div>
       <div style="display:flex;gap:8px;align-items:center;">
         <noscript><button class="btn btn-default" type="submit">Update preview</button></noscript>
         <a class="btn btn-primary" href="{% url 'hydrodesk:tethysdash_dashboard_json' slug=preview.slug %}{% if preview.picks_qs %}?{{ preview.picks_qs }}{% endif %}">
@@ -89,7 +89,7 @@
     </div>
   </form>
   {% else %}
-  <div class="frappe-muted">No doctypes yet. <a href="{% url 'hydrodesk:new_type' %}">Create one</a> first.</div>
+  <div class="desk-muted">No doctypes yet. <a href="{% url 'hydrodesk:new_type' %}">Create one</a> first.</div>
   {% endif %}
 </div>
 {% endblock %}

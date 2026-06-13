@@ -1,10 +1,10 @@
 {% extends "hydrodesk/base_desk.html" %}
 {% comment %}
-  Generic Frappe-Desk auto FORM VIEW for creating a HydroRecord of ANY
+  Generic Desk auto FORM VIEW for creating a HydroRecord of ANY
   HydroType. Context (controllers.hydrotype_new): slug, display_name,
   type_found, widgets:[{name,label,widget,required,help,value,options,step,
   checked,is_geom}], form_errors, list_url. POSTs to the 'new' URL; {% csrf_token %}
-  stays INSIDE the <form>. Rendered as a Frappe form card with sections + small
+  stays INSIDE the <form>. Rendered as a Desk form card with sections + small
   muted labels above filled controls. Zero CDN.
 {% endcomment %}
 {% load static %}
@@ -12,27 +12,27 @@
 {% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
-<div class="frappe-page frappe-page--form">
+<div class="desk-page desk-page--form">
 
-  <div class="frappe-breadcrumb">
+  <div class="desk-breadcrumb">
     <a href="{% url 'hydrodesk:home' %}">HydroDesk</a>
     <span class="sep">/</span><a href="{{ list_url }}">{{ display_name }}</a>
     <span class="sep">/</span>{{ mode|capfirst }}
   </div>
 
-  <div class="frappe-page-head">
-    <div class="frappe-title-area">
-      <h1 class="frappe-title">{{ page_title }}</h1>
+  <div class="desk-page-head">
+    <div class="desk-title-area">
+      <h1 class="desk-title">{{ page_title }}</h1>
       <span class="indicator-pill {{ indicator_class }}">{{ indicator_label }}</span>
     </div>
-    <div class="frappe-page-actions">
+    <div class="desk-page-actions">
       <a class="btn btn-default btn-sm" href="{{ cancel_url }}">
         <i class="bi bi-arrow-left"></i> {% if mode == "edit" %}Cancel{% else %}Back to list{% endif %}
       </a>
     </div>
   </div>
 
-  <div class="frappe-breadcrumb" style="margin:-10px 0 16px;">Hydrotype: <code>{{ slug }}</code></div>
+  <div class="desk-breadcrumb" style="margin:-10px 0 16px;">Hydrotype: <code>{{ slug }}</code></div>
 
   {% if not type_found %}
     <div class="alert alert-warning" role="alert">
@@ -50,7 +50,7 @@
     </div>
   {% endif %}
 
-  <form method="post" action="{{ form_action }}" class="frappe-form-card" enctype="multipart/form-data" novalidate>
+  <form method="post" action="{{ form_action }}" class="desk-form-card" enctype="multipart/form-data" novalidate>
     {% csrf_token %}
     {% if parent_id %}
       {# Linked child: carry the parent context so the new record links back to it. #}
@@ -60,47 +60,47 @@
       <input type="hidden" name="parent_link_field" value="{{ parent_link_field }}">
     {% endif %}
 
-    <div class="frappe-form-section"{% if widgets.0.widget == "tab" %} data-tab-break="1" data-tab-label="{{ widgets.0.label }}"{% endif %}>
-      {% if widgets.0.widget == "section" %}{% if widgets.0.label %}<div class="frappe-section-head">{{ widgets.0.label }}</div>{% endif %}
+    <div class="desk-form-section"{% if widgets.0.widget == "tab" %} data-tab-break="1" data-tab-label="{{ widgets.0.label }}"{% endif %}>
+      {% if widgets.0.widget == "section" %}{% if widgets.0.label %}<div class="desk-section-head">{{ widgets.0.label }}</div>{% endif %}
       {% elif widgets.0.widget == "tab" %}{# leading tab: its label shows in the tab bar, not as a section head #}
-      {% else %}<div class="frappe-section-head">Details</div>{% endif %}
-      <div class="frappe-section-cols"><div class="frappe-section-col">
+      {% else %}<div class="desk-section-head">Details</div>{% endif %}
+      <div class="desk-section-cols"><div class="desk-section-col">
 
       {% for w in widgets %}
         {% if forloop.first and w.widget == "tab" %}{# leading tab already opened the first (tab-tagged) section above #}
         {% elif forloop.first and w.widget == "section" %}{# leading section already used as the first heading above #}
         {% elif w.widget == "tab" %}
           {# Tab Break: close col+cols+section, open a new TAB-tagged section (JS builds the bar). #}
-          </div></div></div><div class="frappe-form-section" data-tab-break="1" data-tab-label="{{ w.label }}">
-          <div class="frappe-section-cols"><div class="frappe-section-col">
+          </div></div></div><div class="desk-form-section" data-tab-break="1" data-tab-label="{{ w.label }}">
+          <div class="desk-section-cols"><div class="desk-section-col">
         {% elif w.widget == "section" %}
           {# Section Break: close col+cols+section, open a new titled section. #}
-          </div></div></div><div class="frappe-form-section">
-          {% if w.label %}<div class="frappe-section-head">{{ w.label }}</div>{% endif %}
-          <div class="frappe-section-cols"><div class="frappe-section-col">
+          </div></div></div><div class="desk-form-section">
+          {% if w.label %}<div class="desk-section-head">{{ w.label }}</div>{% endif %}
+          <div class="desk-section-cols"><div class="desk-section-col">
         {% elif w.widget == "column" %}
           {# Column Break: close the current column, open a new one in this section. #}
-          </div><div class="frappe-section-col">
-          {% if w.label %}<div class="frappe-help" style="font-weight:600;margin:0 0 6px;">{{ w.label }}</div>{% endif %}
+          </div><div class="desk-section-col">
+          {% if w.label %}<div class="desk-help" style="font-weight:600;margin:0 0 6px;">{{ w.label }}</div>{% endif %}
         {% else %}
         {% if w.is_geom %}{% ifchanged %}
-          </div></div></div><div class="frappe-form-section">
-          <div class="frappe-section-head">Location <span class="frappe-muted frappe-text-sm">({{ w.geometry_kind|default:"point" }} geometry &mdash; {% if w.geometry_kind == "polygon" %}draw or import a shapefile{% else %}draw on the map{% endif %})</span></div>
-          <div class="frappe-section-cols"><div class="frappe-section-col">
+          </div></div></div><div class="desk-form-section">
+          <div class="desk-section-head">Location <span class="desk-muted desk-text-sm">({{ w.geometry_kind|default:"point" }} geometry &mdash; {% if w.geometry_kind == "polygon" %}draw or import a shapefile{% else %}draw on the map{% endif %})</span></div>
+          <div class="desk-section-cols"><div class="desk-section-col">
         {% endifchanged %}{% endif %}
 
-        <div class="frappe-form-group"{% if w.show_if %} data-showif-field="{{ w.show_if.field }}" data-showif-value="{{ w.show_if.value }}"{% endif %}>
+        <div class="desk-form-group"{% if w.show_if %} data-showif-field="{{ w.show_if.field }}" data-showif-value="{{ w.show_if.value }}"{% endif %}>
           {% if w.widget == "geommap" %}
             <div id="hd-geom-map" class="hd-geom-map"
                  data-kind="{{ w.geometry_kind }}" data-geojson="{{ w.geojson }}"
                  data-lon="{{ w.lon }}" data-lat="{{ w.lat }}"></div>
             <input type="hidden" name="_geom_geojson" id="id__geom_geojson" value="{{ w.geojson }}">
-            <div class="frappe-help">Use the toolbar (top-right of the map) to draw the {{ w.geometry_kind }}. Drawing a new shape replaces the old one.{% if w.geometry_kind == "point" %} You can also type or edit the coordinates below.{% endif %}</div>
+            <div class="desk-help">Use the toolbar (top-right of the map) to draw the {{ w.geometry_kind }}. Drawing a new shape replaces the old one.{% if w.geometry_kind == "point" %} You can also type or edit the coordinates below.{% endif %}</div>
             {% if w.geometry_kind == "polygon" %}
             <div style="margin-top:12px;">
-              <label class="frappe-label">&hellip; or import a shapefile</label>
+              <label class="desk-label">&hellip; or import a shapefile</label>
               <input class="form-control" type="file" name="_geom_shapefile" accept=".zip,.shp,application/zip">
-              <div class="frappe-help">Upload a zipped shapefile (<code>.shp</code>+<code>.shx</code>+<code>.dbf</code>) or a bare <code>.shp</code> &mdash; its polygons become this record's geometry on save (overrides a drawn shape). Multi-polygon files are merged into one geometry.</div>
+              <div class="desk-help">Upload a zipped shapefile (<code>.shp</code>+<code>.shx</code>+<code>.dbf</code>) or a bare <code>.shp</code> &mdash; its polygons become this record's geometry on save (overrides a drawn shape). Multi-polygon files are merged into one geometry.</div>
             </div>
             {% endif %}
             <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -115,7 +115,7 @@
               <label class="form-check-label" for="id_{{ w.name }}">{{ w.label }}</label>
             </div>
           {% else %}
-            <label class="frappe-label" for="id_{{ w.name }}">
+            <label class="desk-label" for="id_{{ w.name }}">
               {{ w.label }}{% if w.required %}<span class="req">*</span>{% endif %}
             </label>
 
@@ -166,40 +166,40 @@
             {% elif w.widget == "shapefile" %}
               <input class="form-control" type="file" accept=".zip,.shp,application/zip"
                      id="id_{{ w.name }}" name="{{ w.name }}"{% if w.required and not w.has_value %} required{% endif %}>
-              <div class="frappe-help">
+              <div class="desk-help">
                 Upload a zipped shapefile (<code>.shp</code>+<code>.shx</code>+<code>.dbf</code>) or a bare <code>.shp</code> — stored as inline GeoJSON for this record.
                 {% if w.has_value %}<strong>{{ w.zone_count }}</strong> polygon{{ w.zone_count|pluralize }} stored; upload a new file to replace.{% endif %}
               </div>
             {% elif w.widget == "file" %}
               <input class="form-control" type="file"
                      id="id_{{ w.name }}" name="{{ w.name }}"{% if w.required and not w.current_file %} required{% endif %}>
-              <div class="frappe-help">
+              <div class="desk-help">
                 Attach any file (stored for this record, downloadable on the detail view; available to a model via <code>data.upload('{{ w.name }}')</code>).
                 {% if w.current_file %}Stored: <a href="{{ w.current_file.url }}"><strong>{{ w.current_file.name }}</strong></a> — upload a new file to replace.{% endif %}
               </div>
             {% elif w.widget == "image-upload" %}
               <input class="form-control" type="file" accept="image/*"
                      id="id_{{ w.name }}" name="{{ w.name }}"{% if w.required and not w.current_image %} required{% endif %}>
-              {% if w.current_image %}<img src="{{ w.current_image }}" alt="{{ w.label }}" style="margin-top:6px;max-width:160px;height:auto;border:1px solid var(--fr-border-color,#d1d8dd);border-radius:6px;display:block;">{% endif %}
-              <div class="frappe-help">Upload an image (PNG/JPG/…) — shown inline on the detail view; upload a new file to replace.</div>
+              {% if w.current_image %}<img src="{{ w.current_image }}" alt="{{ w.label }}" style="margin-top:6px;max-width:160px;height:auto;border:1px solid var(--desk-border-color,#d1d8dd);border-radius:6px;display:block;">{% endif %}
+              <div class="desk-help">Upload an image (PNG/JPG/…) — shown inline on the detail view; upload a new file to replace.</div>
             {% elif w.widget == "formula" %}
               {# Computed: READ-ONLY. Filled on save from the other fields. #}
-              <div class="frappe-muted frappe-text-sm"
-                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+              <div class="desk-muted desk-text-sm"
+                   style="padding:6px 8px;background:var(--desk-control-bg);border-radius:var(--desk-radius-sm);">
                 <i class="bi bi-calculator"></i>
                 Computed: <code>{{ w.formula }}</code> &mdash; filled when you save.
               </div>
             {% elif w.widget == "script" %}
               {# Python-script field: READ-ONLY. Its outputs are computed on save. #}
-              <div class="frappe-muted frappe-text-sm"
-                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+              <div class="desk-muted desk-text-sm"
+                   style="padding:6px 8px;background:var(--desk-control-bg);border-radius:var(--desk-radius-sm);">
                 <i class="bi bi-code-slash"></i>
                 Python script &mdash; {{ w.script_outputs|length }} output{{ w.script_outputs|length|pluralize }} computed when you save.
               </div>
             {% elif w.widget == "computed" %}
               {# Model OUTPUT: READ-ONLY. Not hand-entered — populated by RUNNING the bound model. #}
-              <div class="frappe-muted frappe-text-sm"
-                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+              <div class="desk-muted desk-text-sm"
+                   style="padding:6px 8px;background:var(--desk-control-bg);border-radius:var(--desk-radius-sm);">
                 <i class="bi bi-cpu"></i>
                 {% if w.output_type %}<strong>{{ w.output_type }}</strong> {% endif %}output{% if w.computed_by %} of model <code>{{ w.computed_by }}</code>{% endif %} &mdash;
                 {% if w.has_value %}already computed (shown on the record){% else %}populated when the model runs{% endif %}.
@@ -207,8 +207,8 @@
               </div>
             {% elif w.widget == "api" %}
               {# API field: read-only; the live value is fetched from the connector when the record is viewed. #}
-              <div class="frappe-muted frappe-text-sm"
-                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+              <div class="desk-muted desk-text-sm"
+                   style="padding:6px 8px;background:var(--desk-control-bg);border-radius:var(--desk-radius-sm);">
                 <i class="bi bi-cloud-arrow-down"></i>
                 Live value &mdash; fetched from connector
                 <code>{{ w.connector }}</code> when viewed. This field stores no input.
@@ -223,8 +223,8 @@
               </div>
             {% elif w.widget == "linked-table" %}
               {# Linked table: rows are real records of another type, managed from the saved record's detail. #}
-              <div class="frappe-muted frappe-text-sm"
-                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+              <div class="desk-muted desk-text-sm"
+                   style="padding:6px 8px;background:var(--desk-control-bg);border-radius:var(--desk-radius-sm);">
                 <i class="bi bi-link-45deg"></i>
                 Linked <code>{{ w.child_type }}</code> records &mdash; save this
                 record first, then add &amp; manage them from its page.
@@ -246,14 +246,14 @@
             {% endif %}
           {% endif %}
 
-          {% if w.help %}<div class="frappe-help">{{ w.help }}</div>{% endif %}
+          {% if w.help %}<div class="desk-help">{{ w.help }}</div>{% endif %}
         </div>
         {% endif %}{# /section-vs-field #}
       {% endfor %}
       </div></div>{# /col /cols #}
     </div>
 
-    <div class="frappe-form-actions">
+    <div class="desk-form-actions">
       <a class="btn btn-default" href="{{ cancel_url }}">Cancel</a>
       <button type="submit" class="btn btn-primary">
         <i class="bi bi-check-lg"></i> Save
@@ -366,9 +366,9 @@
 // fields are DISABLED so they don't post stale values; missing controller =
 // fail-open (always show).
 (function () {
-  var form = document.querySelector('.frappe-form-card');
+  var form = document.querySelector('.desk-form-card');
   if (!form) return;
-  var groups = form.querySelectorAll('.frappe-form-group[data-showif-field]');
+  var groups = form.querySelectorAll('.desk-form-group[data-showif-field]');
   if (!groups.length) return;
   function currentValue(name) {
     var el = form.querySelector('[name="' + name + '"]');
@@ -401,10 +401,10 @@
 <script>
 // ---- Tab Break: partition the form's top-level sections into tabs + a tab bar. ----
 (function () {
-  var card = document.querySelector('form.frappe-form-card');
+  var card = document.querySelector('form.desk-form-card');
   if (!card) return;
   var sections = Array.prototype.slice.call(card.children).filter(function (el) {
-    return el.classList && el.classList.contains('frappe-form-section');
+    return el.classList && el.classList.contains('desk-form-section');
   });
   if (!sections.length) return;
   var tabs = [], cur = null;
