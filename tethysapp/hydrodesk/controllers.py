@@ -1348,6 +1348,61 @@ def _parse_add_field(text):
     return {"label": label, "type": _alias.get(typ, typ)}
 
 
+_TYPE_RX = ("text|number|integer|float|decimal|date|checkbox|boolean|bool|email|url|link|"
+            "currency|percent|rating|long ?text|textarea|select|tags?")
+
+
+def _alias_type(typ):
+    """Normalise a spoken type word to a builder field-type token."""
+    if not typ:
+        return None
+    typ = typ.lower().replace(" ", "")
+    return {"integer": "number", "float": "number", "decimal": "number", "bool": "checkbox",
+            "boolean": "checkbox", "longtext": "textarea", "tag": "tags"}.get(typ, typ)
+
+
+def _split_fields(seg):
+    """A field-list segment ('rainfall (number), station name as text, and date') -> a list of
+    {label, type}."""
+    out = []
+    for p in re.split(r"\s*,\s*|\s+and\s+|\s*;\s*", (seg or "").strip()):
+        p = re.sub(r"^(?:and|&|also|plus)\s+", "", p.strip().strip(".").strip(), flags=re.I).strip()
+        if not p:
+            continue
+        typ = None
+        mm = re.search(r"^(.*?)\s*(?:\(\s*(%s)\s*\)|(?:as|of type|type|-|:)\s+(?:an?\s+)?(%s))\s*$"
+                       % (_TYPE_RX, _TYPE_RX), p, re.I)
+        if mm:
+            p, typ = mm.group(1), (mm.group(2) or mm.group(3))
+        label = re.sub(r"^(?:a|an|the)\s+", "", p.strip().strip("\"'"), flags=re.I).strip()
+        if label and len(label) <= 60:
+            out.append({"label": label, "type": _alias_type(typ)})
+    return out
+
+
+def _parse_builder_request(text):
+    """For the DocType builder: parse 'create a doctype named X with fields a (number), b (text)'
+    into {name?, fields:[{label,type}]}. Either part may be absent; {} if neither is found.
+    Gated on an add/create/with intent so it never fires on 'set the field type to number'."""
+    t = (text or "").strip()
+    out = {}
+    nm = re.search(r"\b(?:doc\s?type|data\s?type|record type|type|table)\b\s*"
+                   r"(?:called|named|titled|:)\s*([A-Za-z0-9][A-Za-z0-9 _-]*?)"
+                   r"(?:\s+(?:with|that|having|and|,|fields?|columns?)\b|$)", t, re.I)
+    if nm:
+        name = nm.group(1).strip().strip("\"'")
+        if name and len(name) <= 60:
+            out["name"] = name
+    fm = re.search(r"\b(?:add|create|new|insert|with|having|include)\b[^.]*?"
+                   r"\b(?:fields?|columns?|attributes?)\b\s*"
+                   r"(?:called|named|titled|:|are|of|like)?\s*(.+)$", t, re.I)
+    if fm:
+        flds = _split_fields(fm.group(1))
+        if flds:
+            out["fields"] = flds
+    return out
+
+
 @controller(name="ai_copilot", url="ai/copilot", title="AI Copilot")
 def ai_copilot(request):
     """Mode (1) COPILOT. POST {request, targets:[{id,kind,label,options,value}], form?} ->
@@ -1366,6 +1421,35 @@ def ai_copilot(request):
     req = (data.get("request") or data.get("question") or "").strip()
     if not req:
         return JsonResponse({"ok": False, "error": "tell me what to fill or where to go"}, status=400)
+    # DATA mode: on a LIST or RECORD page the client sends data_slug — answer the user's question
+    # grounded in that doctype's records (the Chat-with-data engine), right here in the panel.
+    data_slug = (data.get("data_slug") or "").strip()
+    if data_slug:
+        models = _ai_models()
+        try:
+            model = _resolve_model(data, models, prefer=_FAST_PREFER)
+        except _AIError as exc:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            meta = _load_hydrotype(session, data_slug)
+            if meta is None or not _user_can(request, meta[1], "read"):
+                return JsonResponse({"ok": True, "actions": [], "answer": "I can't read that data."})
+            dn2, fs, _gk = meta
+            records = [dict(a or {}) for a in session.execute(
+                select(m.HydroRecord.attributes)
+                .where(m.HydroRecord.hydrotype_slug == data_slug)).scalars().all()]
+        ctx = _ai_data_context(data_slug, dn2, fs, records)
+        rid = (data.get("record_id") or "").strip()
+        if rid:
+            ctx = ("The user is viewing ONE record (id %s); when they say \"this record\" answer about it.\n"
+                   % rid[:8]) + ctx
+        try:
+            answer = _ollama_chat(model, [{"role": "system", "content": _AI_SYSTEM % ctx},
+                                          {"role": "user", "content": req[:2000]}], num_predict=400)
+        except _AIError as exc:
+            return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+        return JsonResponse({"ok": True, "actions": [], "answer": answer or "(no answer)"})
     slug = (data.get("slug") or "").strip()
     dn = (data.get("form") or "").strip()
     # The CLIENT sends the interactive TARGETS it sees on the page: form fields AND safe controls
@@ -1381,29 +1465,43 @@ def ai_copilot(request):
                         "label": (str(t.get("label") or "")).strip()[:80],
                         "options": [str(o) for o in (t.get("options") or [])][:40],
                         "value": t.get("value")})
-    # Fast path: an explicit "add a field called X (as TYPE)" -> deterministically fill the next
-    # empty Fields row, bypassing the model (which is unreliable at picking rows + pairing).
-    add = _parse_add_field(req)
+    # Fast path (builder): "create a doctype named X with fields a (number), b (text)…" -> set the
+    # name and add EACH field to consecutive empty rows in one shot (several steps, deterministic —
+    # the small model is unreliable at row-picking + pairing).
     label_rows = sorted(int(re.match(r"^field_label_(\d+)$", str(t["id"])).group(1))
                         for t in targets if re.match(r"^field_label_\d+$", str(t["id"])))
-    if add and label_rows:
-        by_id0 = {str(t["id"]): t for t in targets}
-        idx = next((i for i in label_rows
-                    if not str((by_id0.get("field_label_%d" % i) or {}).get("value") or "").strip()),
-                   label_rows[0])
-        acts = [{"op": "set", "id": "field_label_%d" % idx, "value": add["label"]}]
-        note = ""
-        if add["type"]:
-            tt = by_id0.get("field_type_%d" % idx)
-            if tt and tt["options"]:
-                want = add["type"]
-                opt = (next((o for o in tt["options"] if str(o).lower() == want), None)
-                       or next((o for o in tt["options"] if want in str(o).lower()), None))
-                if opt is not None:
-                    acts.append({"op": "set", "id": "field_type_%d" % idx, "value": opt})
-                    note = " as " + str(opt)
-        return JsonResponse({"ok": True, "actions": acts,
-                             "answer": "Added field “%s”%s." % (add["label"], note)})
+    if label_rows:
+        bld = _parse_builder_request(req)
+        if bld.get("name") or bld.get("fields"):
+            by_id0 = {str(t["id"]): t for t in targets}
+            acts, done = [], []
+            if bld.get("name") and "type_name" in by_id0:
+                acts.append({"op": "set", "id": "type_name", "value": bld["name"]})
+            empties = [i for i in label_rows
+                       if not str((by_id0.get("field_label_%d" % i) or {}).get("value") or "").strip()]
+            for k, f in enumerate(bld.get("fields") or []):
+                if k >= len(empties):
+                    break
+                idx = empties[k]
+                acts.append({"op": "set", "id": "field_label_%d" % idx, "value": f["label"]})
+                if f["type"]:
+                    tt = by_id0.get("field_type_%d" % idx)
+                    if tt and tt["options"]:
+                        opt = (next((o for o in tt["options"] if str(o).lower() == f["type"]), None)
+                               or next((o for o in tt["options"] if f["type"] in str(o).lower()), None))
+                        if opt is not None:
+                            acts.append({"op": "set", "id": "field_type_%d" % idx, "value": opt})
+                done.append(f["label"])
+            if acts:
+                bits = []
+                if bld.get("name"):
+                    bits.append("named “%s”" % bld["name"])
+                if done:
+                    bits.append("added %d field%s: %s" % (len(done), "" if len(done) == 1 else "s",
+                                                          ", ".join(done)))
+                return JsonResponse({"ok": True, "actions": acts,
+                                     "answer": ("Set " + " + ".join(bits) + " — review before saving.")
+                                     if bits else "Nothing to add."})
     models = _ai_models()
     try:
         model = _resolve_model(data, models, prefer=_FAST_PREFER)

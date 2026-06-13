@@ -1232,12 +1232,18 @@
     }
     function copilotRun(text){
       if(!text.trim()) return; coQ.value="";
-      coBody.textContent="…reading the page"; coAsk.disabled=true;
+      coAsk.disabled=true;
+      // DATA mode on a list/record page (HD_DATA_SLUG) -> ask about the data; else ACTION mode.
+      var dataSlug=window.HD_DATA_SLUG||"";
       var ttlEl=document.querySelector(".desk-title");
-      postJSON("{% url 'hydrodesk:ai_copilot' %}", {request:text, slug:(window.HD_FORM_SLUG||""),
-               targets:collectTargets(), form:(ttlEl?ttlEl.textContent.trim():"")})
+      var payload = dataSlug
+        ? {request:text, data_slug:dataSlug, record_id:(window.HD_RECORD_ID||"")}
+        : {request:text, slug:(window.HD_FORM_SLUG||""), targets:collectTargets(), form:(ttlEl?ttlEl.textContent.trim():"")};
+      coBody.textContent = dataSlug ? "…looking at your data" : "…reading the page";
+      postJSON("{% url 'hydrodesk:ai_copilot' %}", payload)
         .then(function(j){
           if(!j.ok){ coBody.textContent="⚠ "+(j.error||"error"); return; }
+          if(dataSlug){ coBody.textContent=(j.answer||"").trim()||"(no answer)"; return; }
           var r=applyActions(j.actions);
           if(r.groups.length){
             coBody.textContent="";

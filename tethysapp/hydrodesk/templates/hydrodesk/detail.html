@@ -11,6 +11,7 @@
 {% block title %}{{ display_name }} Record - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
+<script>window.HD_DATA_SLUG = "{{ slug|escapejs }}"; window.HD_RECORD_ID = "{{ record_id|escapejs }}";</script>
 <div class="desk-page desk-page--form">
 
   <div class="desk-breadcrumb">

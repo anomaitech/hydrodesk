@@ -13,6 +13,7 @@
 {% block title %}{{ display_name }} List - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
+<script>window.HD_DATA_SLUG = "{{ slug|escapejs }}";</script>
 <div class="desk-page">
 
   <div class="desk-breadcrumb">
