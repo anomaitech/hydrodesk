@@ -1327,10 +1327,11 @@ def _ai_form_manifest(field_schema):
 
 @controller(name="ai_copilot", url="ai/copilot", title="AI Copilot")
 def ai_copilot(request):
-    """Mode (1) COPILOT. POST {request, slug?, model?} -> {ok, answer, fills:[{field,value}],
-    navigate, selector}. Reads the named form's fields + the user's request and returns values
-    to FILL (and/or a nav target). It NEVER creates/edits/saves — the user reviews and commits.
-    Fills are sanitised server-side against the real field list + enum options."""
+    """Mode (1) COPILOT. POST {request, targets:[{id,kind,label,options,value}], form?} ->
+    {ok, answer, actions:[{op,id,value}]}. The client sends the interactive targets it SEES on the
+    current page; the copilot returns ACTIONS over them (set a field, open/focus a control, click a
+    safe tab/section) so it drives the LIVE page. It stays on THIS page (no navigation) and never
+    saves/deletes — actions are sanitised server-side against the real target ids/options."""
     if request.method != "POST":
         return JsonResponse({"ok": False, "error": "POST only"}, status=405)
     if not getattr(request.user, "is_authenticated", False):
@@ -1343,67 +1344,85 @@ def ai_copilot(request):
     if not req:
         return JsonResponse({"ok": False, "error": "tell me what to fill or where to go"}, status=400)
     slug = (data.get("slug") or "").strip()
+    dn = (data.get("form") or "").strip()
+    # The CLIENT sends the interactive TARGETS it sees on the page: form fields AND safe controls
+    # (dropdowns, tabs, collapsible sections, "add field" — never Save/Delete), each with a stable
+    # id. The copilot returns ACTIONS over those ids (set a value / open|focus / click a control),
+    # so it drives the LIVE page — fill a field, set a dropdown, open the geometry control — without
+    # ever committing.
+    targets = []
+    for t in (data.get("targets") if isinstance(data.get("targets"), list) else [])[:90]:
+        if not isinstance(t, dict) or t.get("id") is None:
+            continue
+        targets.append({"id": t.get("id"), "kind": str(t.get("kind") or "text"),
+                        "label": (str(t.get("label") or "")).strip()[:80],
+                        "options": [str(o) for o in (t.get("options") or [])][:40],
+                        "value": t.get("value")})
     models = _ai_models()
     try:
         model = _resolve_model(data, models, prefer=_FAST_PREFER)
     except _AIError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
-    manifest, dn = [], ""
-    if slug:
-        engine = App.get_persistent_store_database("hydro_db")
-        with Session(engine) as session:
-            meta = _load_hydrotype(session, slug)
-            if meta is not None:
-                dn, fs, _gk = meta
-                manifest = _ai_form_manifest(fs)
-    if manifest:
-        fields_txt = "\n".join(
-            "- %s [%s]%s%s" % (
-                f["name"], f["kind"],
-                (" options: " + ", ".join(map(str, f["options"]))) if f["options"] else "",
-                (" — " + f["help"]) if f["help"] else "")
-            for f in manifest)
+    _FIELD_KINDS = ("text", "number", "date", "textarea", "select", "checkbox", "email", "url")
+    if targets:
+        def _tdesc(t):
+            tail = ""
+            if t["kind"] == "select" and t["options"]:
+                tail += " options: " + ", ".join(t["options"])
+            if t.get("value") not in (None, "", False):
+                tail += " (now=%r)" % t["value"]
+            return "%s. [%s] %s%s" % (t["id"], t["kind"], t["label"] or "(unlabeled)", tail)
         system = (
-            "You are HydroDesk's form COPILOT. The user is filling a '%s' record form. Map their "
-            "request to concrete field values. RULES: only use field names from the list; for a "
-            "[select] use EXACTLY one of its options; [number] -> a bare number; [checkbox] -> "
-            "true/false; [date] -> YYYY-MM-DD. Omit any field you can't determine — never invent "
-            "data. You do NOT save; the user reviews and saves.\n\nFIELDS:\n%s\n\nReply with ONLY "
-            "JSON: {\"answer\":\"<1 short sentence>\",\"fills\":[{\"field\":\"<name>\",\"value\":<value>}]}."
-            % (dn or slug, fields_txt))
+            "You are HydroDesk's live-page COPILOT%s. Below are the interactive TARGETS on the page, "
+            "each with an id, a [kind] and a label. Turn the user's request into ACTIONS:\n"
+            "- 'set' (with value): a field (text/number/date/textarea/select/checkbox). For [select] "
+            "the value MUST be one of its options; [checkbox] -> true/false.\n"
+            "- 'open': scroll to + focus + highlight a control so the user sees it — use for "
+            "\"open/show me/go to X\" (e.g. open the geometry dropdown).\n"
+            "- 'click': a [button]/[toggle]/[tab] (open a section/tab, add a row). NEVER save or delete.\n"
+            "Use ONLY listed ids; omit anything not asked for; never invent data. You do NOT save.\n\n"
+            "TARGETS:\n%s\n\nReply with ONLY JSON: {\"answer\":\"<1 short sentence>\","
+            "\"actions\":[{\"op\":\"set|open|click\",\"id\":<id>,\"value\":<value if set>}]}."
+            % ((" for the %s form" % dn) if dn else "", "\n".join(_tdesc(t) for t in targets)))
     else:
-        kb = "\n".join("- %s — %s (%s)" % (t["key"], t["label"], t["help"]) for t in _GUIDE_TARGETS)
-        system = (
-            "You are HydroDesk's COPILOT for non-coding hydrologists. The sidebar nav (key — label — "
-            "purpose):\n" + kb + "\n" + _GUIDE_STEPS +
-            "\nAnswer the request in 1-3 short sentences and set \"navigate\" to the single nav KEY to "
-            "open next (or null). Reply with ONLY JSON: "
-            "{\"answer\":\"...\",\"navigate\":\"<key or null>\",\"fills\":[]}.")
+        # No fillable/clickable targets on this page (e.g. a read-only view). The copilot acts ONLY
+        # on the current page — it never navigates elsewhere — so just say so.
+        return JsonResponse({"ok": True, "actions": [],
+                             "answer": "There's nothing to fill or open on this page — open a form "
+                                       "(or a record's Edit) and I'll help right here."})
     try:
         obj = _ollama_json(model, [{"role": "system", "content": system},
-                                   {"role": "user", "content": req[:2000]}], num_predict=256)
+                                   {"role": "user", "content": req[:2000]}], num_predict=300)
     except _AIError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     obj = obj if isinstance(obj, dict) else {}
-    # Sanitise fills against the REAL manifest so a hallucinated field/value can't reach the
-    # form: unknown names dropped; a [select] value must be one of its options.
-    valid = {f["name"]: f for f in manifest}
-    fills = []
-    for it in (obj.get("fills") or []):
-        if not isinstance(it, dict):
+    # Sanitise actions against the REAL targets: known id only; 'set' only on a field (a [select]
+    # value must be a listed option); 'click' only on a control; safe ops only — a hallucinated
+    # id/value/op can never act on the page. NO navigation: the copilot stays on THIS page.
+    by_id = {str(t["id"]): t for t in targets}
+    field_kinds = set(_FIELD_KINDS)
+    actions = []
+    for a in (obj.get("actions") or []):
+        if not isinstance(a, dict):
             continue
-        nm = str(it.get("field") or "").strip()
-        f = valid.get(nm)
-        if not f:
+        op = str(a.get("op") or "").lower()
+        t = by_id.get(str(a.get("id")))
+        if t is None or op not in ("set", "open", "click"):
             continue
-        v = it.get("value")
-        if f["kind"] == "select" and f["options"] and str(v) not in [str(o) for o in f["options"]]:
-            continue
-        fills.append({"field": nm, "value": v})
-    nav = obj.get("navigate")
-    sel = next((t["sel"] for t in _GUIDE_TARGETS if t["key"] == nav), None)
-    return JsonResponse({"ok": True, "answer": (obj.get("answer") or "").strip() or "(done)",
-                         "fills": fills, "navigate": nav if sel else None, "selector": sel})
+        if op == "set":
+            if t["kind"] not in field_kinds:
+                continue
+            v = a.get("value")
+            if t["kind"] == "select" and t["options"] and str(v) not in [str(o) for o in t["options"]]:
+                continue
+            actions.append({"op": "set", "id": t["id"], "value": v})
+        elif op == "click":           # clicking a text/select field is meaningless -> reveal it
+            actions.append({"op": "open" if (t["kind"] in field_kinds and t["kind"] != "checkbox")
+                            else "click", "id": t["id"]})
+        else:
+            actions.append({"op": "open", "id": t["id"]})
+    return JsonResponse({"ok": True, "actions": actions,
+                         "answer": (obj.get("answer") or "").strip() or "(done)"})
 
 
 # --- Mode (3) ORACLE: a read-only "how is this app built" assistant. It greps the app's own
@@ -1512,6 +1531,23 @@ def ai_oracle(request):
     return JsonResponse({"ok": True, "answer": answer or "(no answer)"})
 
 
+def _match_doctype(text, slugs):
+    """Best-effort: which existing doctype a free-text request refers to, by its slug or
+    display NAME appearing in the text. Lets the agent recover when a small model guesses a
+    wrong slug (e.g. puts the record's name where the doctype goes). Returns a slug or None."""
+    low = " " + (text or "").lower() + " "
+    low_us = low.replace(" ", "_")
+    by_name = None
+    for s in (slugs or []):
+        sl = (s.get("slug") or "").lower()
+        nm = (s.get("name") or "").lower().strip()
+        if sl and sl in low_us:
+            return s["slug"]
+        if nm and (" " + nm + " ") in low:
+            by_name = by_name or s["slug"]
+    return by_name
+
+
 def _ai_create_record(request, slug, attrs):
     """Create a HydroRecord of ``slug`` from an AI-designed {field: value} dict: keep only the
     known fillable fields, coerce + validate them, apply the naming series + formulas, persist,
@@ -1605,9 +1641,14 @@ def ai_agent(request):
         return JsonResponse({"ok": True, "action": action, "route": "connector",
                              "request": req, "answer": answer or "Configuring the connector…"})
     if action == "create_record":
-        slug = (params.get("slug") or data.get("slug") or "").strip()
-        if not slug:
-            return JsonResponse({"ok": False, "error": "which doctype should the record go in?"}, status=400)
+        known = {s["slug"] for s in slugs}
+        slug = (params.get("slug") or "").strip()
+        if slug not in known:                # the model guessed a non-existent slug (often the
+            slug = _match_doctype(req, slugs) or (data.get("slug") or "").strip()  # record name)
+        if slug not in known:
+            avail = ", ".join(sorted(known)) or "(none yet)"
+            return JsonResponse({"ok": False, "error": "I couldn't tell which doctype — name it. "
+                                 "Available: %s." % avail}, status=400)
         rid, errs = _ai_create_record(request, slug, params.get("attributes") or {})
         if errs:
             return JsonResponse({"ok": False, "error": "; ".join(errs)}, status=400)
@@ -1616,6 +1657,75 @@ def ai_agent(request):
                              "answer": answer or ("Created a %s record." % slug)})
     return JsonResponse({"ok": True, "action": "answer",
                          "answer": answer or "I can create records, doctypes, and connectors — tell me which."})
+
+
+# --- Voice input: a LOCAL Whisper (faster-whisper) turns a spoken clip into text so the user
+#     can TALK to any of the three assistants. Audio never leaves the box (decoded with the
+#     local ffmpeg, transcribed by a small on-disk model). Lazy-loaded + cached. ---
+_WHISPER_MODEL = None
+
+
+def _whisper_model():
+    """The cached faster-whisper model (loaded once). Size from HYDRODESK_WHISPER_MODEL
+    (default 'tiny.en' — small + fast for short commands; set 'base.en'/'small.en' for more
+    accuracy). CPU + int8 to stay light on RAM."""
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is None:
+        from faster_whisper import WhisperModel
+        name = (os.environ.get("HYDRODESK_WHISPER_MODEL") or "tiny.en").strip()
+        _WHISPER_MODEL = WhisperModel(name, device="cpu", compute_type="int8")
+    return _WHISPER_MODEL
+
+
+def _ffmpeg_bin():
+    import shutil
+    return shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+
+
+def _decode_audio_16k(data):
+    """Decode arbitrary recorded audio bytes (webm/opus, wav, m4a…) to a 16 kHz mono float32
+    numpy array via the local ffmpeg — what Whisper expects. Raises on failure."""
+    import subprocess
+    import numpy as np
+    proc = subprocess.run(
+        [_ffmpeg_bin(), "-nostdin", "-i", "pipe:0", "-f", "f32le", "-ac", "1",
+         "-ar", "16000", "-loglevel", "error", "pipe:1"],
+        input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError("ffmpeg decode failed: %s" % (proc.stderr[:200].decode("utf-8", "replace")))
+    return np.frombuffer(proc.stdout, dtype=np.float32)
+
+
+@controller(name="ai_transcribe", url="ai/transcribe", title="AI Transcribe")
+def ai_transcribe(request):
+    """Speech-to-text for the AI panels (POST multipart ``audio`` -> {ok, text}). A spoken clip
+    is decoded by the local ffmpeg and transcribed by a local Whisper model — the audio never
+    leaves the machine. Login-gated."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not getattr(request.user, "is_authenticated", False):
+        return JsonResponse({"ok": False, "error": "login required"}, status=403)
+    up = request.FILES.get("audio")
+    if up is None:
+        return JsonResponse({"ok": False, "error": "no audio"}, status=400)
+    data = up.read()
+    if not data:
+        return JsonResponse({"ok": False, "error": "empty recording"}, status=400)
+    try:
+        pcm = _decode_audio_16k(data)
+        if pcm.size < 1600:                      # < 0.1 s — nothing said
+            return JsonResponse({"ok": True, "text": ""})
+        segments, _info = _whisper_model().transcribe(pcm, language="en", beam_size=1,
+                                                      vad_filter=True)
+        text = " ".join((s.text or "").strip() for s in segments).strip()
+    except ImportError:
+        return JsonResponse({"ok": False, "error": "voice transcription isn't installed "
+                             "(pip install faster-whisper)"}, status=501)
+    except Exception as exc:
+        logger.exception("HydroDesk transcription failed")
+        return JsonResponse({"ok": False, "error": "transcription failed (%s)"
+                             % type(exc).__name__}, status=500)
+    return JsonResponse({"ok": True, "text": text})
 
 
 def _records_geojson(slug):

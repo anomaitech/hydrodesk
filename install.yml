@@ -14,3 +14,4 @@ requirements:
 
   pip:
     - reactpy-django
+    - faster-whisper   # local speech-to-text for the AI panels (voice input); CPU/int8, no torch

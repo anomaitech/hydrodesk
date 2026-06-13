@@ -1041,6 +1041,8 @@
     .hd-ai-input { display:flex; gap:6px; padding:10px; border-top:1px solid #eef1f4; }
     .hd-ai-input input { flex:1; border:1px solid #d7dce3; border-radius:8px; padding:7px 10px; font-size:13px; }
     .hd-ai-input button { color:#fff; border:none; border-radius:8px; padding:7px 12px; cursor:pointer; }
+    .hd-ai-mic { background:#eef1f4 !important; color:#445 !important; border:1px solid #d7dce3 !important; padding:7px 9px !important; font-size:14px; }
+    .hd-ai-mic.rec { background:#e03131 !important; color:#fff !important; border-color:#e03131 !important; animation:hdAiPulse 1.1s ease-out infinite; }
     .hd-ai-foot { padding:0 12px 10px; color:#8a93a2; font-size:11px; }
     .hd-ai-go { margin-top:8px; background:#0a9d6e; color:#fff; border:none; border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
     .hd-ai-eg { color:#2490ef; cursor:pointer; }
@@ -1060,7 +1062,7 @@
     <div class="hd-ai-head copilot">Copilot <span class="pill">fills &middot; no save</span><button type="button" data-close>&times;</button></div>
     <div class="hd-ai-body" id="hd-ai-copilot-body">I read the page and fill the form for you &mdash; you review &amp; click Save. Try:
       <span class="hd-ai-eg">name it Provo Gage Inspection</span></div>
-    <div class="hd-ai-input"><input id="hd-ai-copilot-q" placeholder="What should I fill / where to go?" autocomplete="off"><button type="button" style="background:#2490ef;" id="hd-ai-copilot-ask">Fill</button></div>
+    <div class="hd-ai-input"><input id="hd-ai-copilot-q" placeholder="What should I fill / where to go?" autocomplete="off"><button type="button" class="hd-ai-mic" id="hd-ai-copilot-mic" title="Hold a moment and speak">&#127908;</button><button type="button" style="background:#2490ef;" id="hd-ai-copilot-ask">Fill</button></div>
     <div class="hd-ai-foot">Fills the current form or points you to the right page. It never saves.</div>
   </div>
 
@@ -1069,7 +1071,7 @@
     <div class="hd-ai-body" id="hd-ai-agent-body">I design and CREATE things for you. Try:
       <span class="hd-ai-eg">create a doctype for rain gauges with name and rainfall_mm</span>,
       <span class="hd-ai-eg">connect a USGS streamflow feed</span></div>
-    <div class="hd-ai-input"><input id="hd-ai-agent-q" placeholder="What should I build or save?" autocomplete="off"><button type="button" style="background:#0a9d6e;" id="hd-ai-agent-ask">Do it</button></div>
+    <div class="hd-ai-input"><input id="hd-ai-agent-q" placeholder="What should I build or save?" autocomplete="off"><button type="button" class="hd-ai-mic" id="hd-ai-agent-mic" title="Hold a moment and speak">&#127908;</button><button type="button" style="background:#0a9d6e;" id="hd-ai-agent-ask">Do it</button></div>
     <div class="hd-ai-foot">Creates records, doctypes, and connectors &mdash; and saves them.</div>
   </div>
 
@@ -1079,7 +1081,7 @@
     <div class="hd-ai-body" id="hd-ai-oracle-body">Ask how HydroDesk is built &mdash; architecture, a function, a flow. Try:
       <span class="hd-ai-eg">how are model outputs persisted?</span>,
       <span class="hd-ai-eg">how does the connector envelope work?</span></div>
-    <div class="hd-ai-input"><input id="hd-ai-oracle-q" placeholder="How does &hellip; work?" autocomplete="off"><button type="button" style="background:#5b3fd1;" id="hd-ai-oracle-ask">Ask</button></div>
+    <div class="hd-ai-input"><input id="hd-ai-oracle-q" placeholder="How does &hellip; work?" autocomplete="off"><button type="button" class="hd-ai-mic" id="hd-ai-oracle-mic" title="Hold a moment and speak">&#127908;</button><button type="button" style="background:#5b3fd1;" id="hd-ai-oracle-ask">Ask</button></div>
     <div class="hd-ai-foot">Explains the real source &mdash; read-only, it never edits code.</div>
   </div>
   {% endif %}
@@ -1106,37 +1108,127 @@
       headers:{"Content-Type":"application/json","X-CSRFToken":csrf()}, body:JSON.stringify(body)}).then(function(r){return r.json();}); }
     function goBtn(body, url, label){ var g=document.createElement("button"); g.className="hd-ai-go"; g.type="button"; g.textContent=label;
       g.addEventListener("click", function(){ location.href=url; }); body.appendChild(document.createElement("br")); body.appendChild(g); }
+    // Voice input: tap the mic to record, tap again to stop -> the clip is sent to a LOCAL
+    // Whisper endpoint, the transcript drops into the input and the panel runs automatically.
+    function wireMic(btn, input, runFn){
+      if(!btn) return;
+      if(!(navigator.mediaDevices && window.MediaRecorder)){ btn.style.display="none"; return; }
+      var rec=null, chunks=[], ph="";
+      btn.addEventListener("click", function(){
+        if(rec && rec.state==="recording"){ rec.stop(); return; }
+        navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+          chunks=[]; rec=new MediaRecorder(stream);
+          rec.ondataavailable=function(e){ if(e.data && e.data.size) chunks.push(e.data); };
+          rec.onstop=function(){
+            stream.getTracks().forEach(function(t){ t.stop(); });
+            btn.classList.remove("rec"); btn.textContent="🎤";
+            var blob=new Blob(chunks, {type:(rec.mimeType||"audio/webm")});
+            var fd=new FormData(); fd.append("audio", blob, "speech.webm");
+            ph=input.placeholder; input.placeholder="…transcribing"; input.disabled=true;
+            fetch("{% url 'hydrodesk:ai_transcribe' %}", {method:"POST", credentials:"same-origin",
+              headers:{"X-CSRFToken":csrf()}, body:fd})
+              .then(function(r){ return r.json(); }).then(function(j){
+                input.disabled=false; input.placeholder=ph;
+                if(!j.ok){ input.placeholder=(j.error||"voice failed"); return; }
+                input.value=(j.text||"").trim();
+                if(input.value){ runFn(input.value); }
+                else { input.placeholder="(didn't catch that)"; setTimeout(function(){ input.placeholder=ph; }, 2500); }
+              }).catch(function(){ input.disabled=false; input.placeholder=ph; });
+          };
+          rec.start(); btn.classList.add("rec"); btn.textContent="⏹";
+        }).catch(function(){ btn.classList.remove("rec"); alert("Microphone unavailable or permission denied."); });
+      });
+    }
 
     // -------- (1) COPILOT: fills the current form (or points you somewhere). Never saves. --------
     var coBtn=$("hd-ai-copilot-btn"), coPanel=$("hd-ai-copilot-panel"), coBody=$("hd-ai-copilot-body"),
         coQ=$("hd-ai-copilot-q"), coAsk=$("hd-ai-copilot-ask");
     coBtn.addEventListener("click", function(){ toggle(coPanel); });
-    function applyFills(fills){
-      var done=0;
-      (fills||[]).forEach(function(f){
-        var el=document.querySelector("[name='"+f.field+"']"); if(!el) return;
-        if(el.type==="checkbox"){ el.checked=!!f.value; } else { el.value=f.value; }
-        el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true}));
-        el.classList.add("hd-ai-pointed"); setTimeout(function(){ el.classList.remove("hd-ai-pointed"); },4000);
-        done++;
+    // Read the LIVE form on the page so the copilot fills whatever is actually rendered (record
+    // form, DocType builder, connector, model…) — not a reconstructed schema.
+    function fieldLabel(el){
+      if(el.id){ var sel="label[for='"+el.id.replace(/'/g,"\\'")+"']"; var l=document.querySelector(sel); if(l&&l.textContent.trim()) return l.textContent.trim(); }
+      var grp=el.closest(".desk-form-group,.form-check,td,li,div");
+      if(grp){ var ll=grp.querySelector("label"); if(ll&&ll.textContent.trim()) return ll.textContent.trim(); }
+      return el.getAttribute("aria-label")||el.getAttribute("placeholder")||"";
+    }
+    function collectTargets(){
+      var out=[], n=0, seen={};
+      document.querySelectorAll("[data-hd-ai-id]").forEach(function(e){ e.removeAttribute("data-hd-ai-id"); });
+      // Form fields on the CURRENT page (any open modal lives in this same DOM, so it's included).
+      Array.prototype.forEach.call(document.querySelectorAll("input,select,textarea"), function(el){
+        if(el.closest(".hd-ai-panel")) return;
+        var tag=el.tagName.toLowerCase(), type=(el.type||"text").toLowerCase();
+        if(["hidden","submit","button","reset","file","search","image"].indexOf(type)>=0) return;
+        if(type!=="checkbox" && type!=="radio" && el.offsetParent===null) return;   // not visible
+        if(el.disabled || el.readOnly) return;
+        var kind="text", opts=[];
+        if(tag==="select"){ kind="select"; opts=Array.prototype.map.call(el.options,function(o){return o.value;}).filter(function(v){return v!==""&&v!=null;}); }
+        else if(type==="checkbox"){ kind="checkbox"; } else if(type==="number"){ kind="number"; }
+        else if(type==="date"){ kind="date"; } else if(tag==="textarea"){ kind="textarea"; }
+        var key=el.getAttribute("name")||el.id||("field"+n); if(seen[key]) return; seen[key]=1;
+        el.setAttribute("data-hd-ai-id", key);
+        out.push({id:key, kind:kind, label:(fieldLabel(el)||key).slice(0,80),
+                  options:opts.slice(0,40), value:(type==="checkbox"?el.checked:el.value)}); n++;
       });
-      return done;
+      // Safe controls: section toggles, tabs, non-destructive buttons. NOT the sidebar nav (the
+      // copilot stays on THIS page) and NOT Save/Create/Delete/Submit.
+      var UNSAFE=/\b(save|create|delete|remove|submit|run|reset|cancel|close)\b/i;
+      Array.prototype.forEach.call(document.querySelectorAll("button,summary,[role=tab]"), function(el){
+        if(el.closest(".hd-ai-panel")) return;
+        if(el.closest("nav,#app-navigation,.desk-sidebar")) return;        // never the sidebar nav
+        if(el.offsetParent===null) return;
+        if(el.tagName==="BUTTON" && el.type==="submit") return;
+        var txt=(el.textContent||el.getAttribute("aria-label")||"").replace(/\s+/g," ").trim();
+        if(!txt || txt.length>45 || UNSAFE.test(txt)) return;
+        var kind=el.tagName==="SUMMARY"?"toggle":(el.getAttribute("role")==="tab"?"tab":"button");
+        var ck="ctl"+n;
+        el.setAttribute("data-hd-ai-id", ck);
+        out.push({id:ck, kind:kind, label:txt.slice(0,45)}); n++;
+      });
+      return out.slice(0,90);
+    }
+    function actTarget(id){ try{ return document.querySelector('[data-hd-ai-id="'+String(id).replace(/"/g,'\\"')+'"]'); }catch(e){ return null; } }
+    function flash(el){ if(!el) return; el.scrollIntoView({block:"center",behavior:"smooth"});
+      el.classList.add("hd-ai-pointed"); setTimeout(function(){ el.classList.remove("hd-ai-pointed"); },4500); }
+    function applyActions(actions){
+      var n=0;
+      (actions||[]).forEach(function(a){
+        var el=actTarget(a.id); if(!el) return;
+        if(a.op==="set"){
+          if(el.type==="checkbox"){ el.checked=(a.value===true||a.value==="true"||a.value===1); } else { el.value=a.value; }
+          el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true}));
+          flash(el); n++;
+        } else if(a.op==="click"){ flash(el); try{ el.click(); }catch(e){} n++; }
+        else if(a.op==="open"){
+          flash(el); try{ el.focus({preventScroll:true}); }catch(e){}
+          if(el.tagName==="SELECT" && el.options.length>1){      // visually pop a dropdown open inline
+            var prev=el.size; el.size=Math.min(el.options.length,8);
+            var close=function(){ try{ el.size=prev||0; }catch(e){} el.removeEventListener("change",close); el.removeEventListener("blur",close); };
+            el.addEventListener("change",close); el.addEventListener("blur",close); setTimeout(close,6000);
+          }
+          n++;
+        }
+      });
+      return n;
     }
     function copilotRun(text){
       if(!text.trim()) return; coQ.value="";
-      coBody.textContent="…reading the form"; coAsk.disabled=true;
-      postJSON("{% url 'hydrodesk:ai_copilot' %}", {request:text, slug:(window.HD_FORM_SLUG||"")})
+      coBody.textContent="…reading the page"; coAsk.disabled=true;
+      var ttlEl=document.querySelector(".desk-title");
+      postJSON("{% url 'hydrodesk:ai_copilot' %}", {request:text, slug:(window.HD_FORM_SLUG||""),
+               targets:collectTargets(), form:(ttlEl?ttlEl.textContent.trim():"")})
         .then(function(j){
           if(!j.ok){ coBody.textContent="⚠ "+(j.error||"error"); return; }
-          coBody.textContent=j.answer||"";
-          var n=applyFills(j.fills);
-          if(n){ coBody.textContent+="\n✓ filled "+n+" field"+(n===1?"":"s")+" — review and click Save."; }
-          if(j.selector){ pointAt(j.selector); if(navEl(j.selector)) goBtn(coBody, navEl(j.selector).href, "Take me there →"); }
+          var n=applyActions(j.actions);
+          coBody.textContent = n ? ("✓ applied "+n+" change"+(n===1?"":"s")+" on this page — review before saving.")
+                                  : ((j.answer||"").trim() || "I couldn't find that on this page.");
         }).catch(function(e){ coBody.textContent="⚠ "+e; }).finally(function(){ coAsk.disabled=false; coQ.focus(); });
     }
     coAsk.addEventListener("click", function(){ copilotRun(coQ.value); });
     coQ.addEventListener("keydown", function(e){ if(e.key==="Enter") copilotRun(coQ.value); });
     coPanel.querySelectorAll(".hd-ai-eg").forEach(function(s){ s.addEventListener("click", function(){ copilotRun(s.textContent); }); });
+    wireMic($("hd-ai-copilot-mic"), coQ, copilotRun);
 
     // -------- (2) AGENT: builds + saves (records / doctypes / connectors). --------
     var agBtn=$("hd-ai-agent-btn"), agPanel=$("hd-ai-agent-panel"), agBody=$("hd-ai-agent-body"),
@@ -1173,6 +1265,7 @@
     agAsk.addEventListener("click", function(){ agentRun(agQ.value); });
     agQ.addEventListener("keydown", function(e){ if(e.key==="Enter") agentRun(agQ.value); });
     agPanel.querySelectorAll(".hd-ai-eg").forEach(function(s){ s.addEventListener("click", function(){ agentRun(s.textContent); }); });
+    wireMic($("hd-ai-agent-mic"), agQ, agentRun);
 
     // -------- (3) ORACLE: read-only code Q&A (admins only). --------
     var orBtn=$("hd-ai-oracle-btn");
@@ -1193,6 +1286,7 @@
       orAsk.addEventListener("click", function(){ oracleRun(orQ.value); });
       orQ.addEventListener("keydown", function(e){ if(e.key==="Enter") oracleRun(orQ.value); });
       orPanel.querySelectorAll(".hd-ai-eg").forEach(function(s){ s.addEventListener("click", function(){ oracleRun(s.textContent); }); });
+      wireMic($("hd-ai-oracle-mic"), orQ, oracleRun);
     }
   })();
   </script>
