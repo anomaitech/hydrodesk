@@ -1147,10 +1147,15 @@
     // Read the LIVE form on the page so the copilot fills whatever is actually rendered (record
     // form, DocType builder, connector, model…) — not a reconstructed schema.
     function fieldLabel(el){
-      if(el.id){ var sel="label[for='"+el.id.replace(/'/g,"\\'")+"']"; var l=document.querySelector(sel); if(l&&l.textContent.trim()) return l.textContent.trim(); }
-      var grp=el.closest(".desk-form-group,.form-check,td,li,div");
-      if(grp){ var ll=grp.querySelector("label"); if(ll&&ll.textContent.trim()) return ll.textContent.trim(); }
-      return el.getAttribute("aria-label")||el.getAttribute("placeholder")||"";
+      var base="";
+      if(el.id){ var l=document.querySelector("label[for='"+el.id.replace(/'/g,"\\'")+"']"); if(l&&l.textContent.trim()) base=l.textContent.trim(); }
+      if(!base){ var grp=el.closest(".desk-form-group,.form-check,td,li,div"); if(grp){ var ll=grp.querySelector("label"); if(ll&&ll.textContent.trim()) base=ll.textContent.trim(); } }
+      if(!base) base=el.getAttribute("aria-label")||el.getAttribute("placeholder")||"";
+      // Repeating-row inputs (name like field_label_0, field_type_1) all share one label — tag the
+      // ROW NUMBER so the AI can tell rows apart and target the next empty one.
+      var nm=el.getAttribute("name")||"", m=nm.match(/^(.*?)_(\d+)$/);
+      if(m){ if(!base) base=m[1].replace(/_/g," "); base=base.replace(/\s*#\d+$/,"")+" #"+(parseInt(m[2],10)+1); }
+      return base;
     }
     function collectTargets(){
       var out=[], n=0, seen={};
@@ -1191,8 +1196,21 @@
     function actTarget(id){ try{ return document.querySelector('[data-hd-ai-id="'+String(id).replace(/"/g,'\\"')+'"]'); }catch(e){ return null; } }
     function flash(el){ if(!el) return; el.scrollIntoView({block:"center",behavior:"smooth"});
       el.classList.add("hd-ai-pointed"); setTimeout(function(){ el.classList.remove("hd-ai-pointed"); },4500); }
+    // A native <select> can't be popped open by JS, so force it to render OPEN as a listbox —
+    // overriding the framework's fixed height + clipping that was hiding the options.
+    function expandSelect(el){
+      el.setAttribute("size", Math.min(el.options.length, 8));
+      el.style.height="auto"; el.style.maxHeight="260px"; el.style.overflowY="auto";
+      el.style.position="relative"; el.style.zIndex="6"; el.style.background="#fff";
+      // Collapse only when the user PICKS one or after a while — NOT on blur (the copilot input
+      // refocuses right after, which would otherwise snap it shut instantly).
+      var reset=function(){ el.removeAttribute("size");
+        ["height","maxHeight","overflowY","position","zIndex","background"].forEach(function(p){ el.style[p]=""; });
+        el.removeEventListener("change",reset); };
+      el.addEventListener("change",reset); setTimeout(reset,15000);
+    }
     function applyActions(actions){
-      var r={n:0, notes:[]};
+      var r={n:0, groups:[]};
       (actions||[]).forEach(function(a){
         var el=actTarget(a.id); if(!el) return;
         if(a.op==="set"){
@@ -1203,12 +1221,9 @@
         else if(a.op==="open"){
           flash(el); try{ el.focus({preventScroll:true}); }catch(e){}
           if(el.tagName==="SELECT" && el.options.length){
-            var prev=el.size; el.size=Math.min(el.options.length,8);   // pop the dropdown open inline
-            var close=function(){ try{ el.size=prev||0; }catch(e){} el.removeEventListener("change",close); el.removeEventListener("blur",close); };
-            el.addEventListener("change",close); el.addEventListener("blur",close); setTimeout(close,8000);
-            // …and list the REAL options so the user sees them exactly as they are
-            var labels=Array.prototype.map.call(el.options,function(o){return (o.textContent||o.value||"").trim();}).filter(Boolean);
-            if(labels.length) r.notes.push((fieldLabel(el)||el.name||"Options")+": "+labels.join(", "));
+            expandSelect(el);                                  // actually open the dropdown on the page
+            r.groups.push({el:el, label:(fieldLabel(el)||el.name||"Options"),   // + pickable chips in the panel
+              options:Array.prototype.map.call(el.options,function(o){return {v:o.value, t:(o.textContent||o.value||"").trim()};}).filter(function(o){return o.t;})});
           }
           r.n++;
         }
@@ -1224,8 +1239,22 @@
         .then(function(j){
           if(!j.ok){ coBody.textContent="⚠ "+(j.error||"error"); return; }
           var r=applyActions(j.actions);
-          if(r.notes.length){ coBody.textContent=r.notes.join("\n"); }
-          else if(r.n){ coBody.textContent="✓ applied "+r.n+" change"+(r.n===1?"":"s")+" on this page — review before saving."; }
+          if(r.groups.length){
+            coBody.textContent="";
+            r.groups.forEach(function(g){
+              var lab=document.createElement("div"); lab.textContent=g.label+" — click to choose:";
+              lab.style.cssText="font-weight:600;margin:2px 0 4px;"; coBody.appendChild(lab);
+              var box=document.createElement("div"); box.style.cssText="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;";
+              g.options.forEach(function(o){
+                var chip=document.createElement("button"); chip.type="button"; chip.textContent=o.t;
+                chip.style.cssText="background:#eef3fb;border:1px solid #cfe0f5;color:#1c4f8a;border-radius:6px;padding:2px 9px;font-size:12px;cursor:pointer;";
+                chip.addEventListener("click", function(){ g.el.value=o.v;
+                  g.el.dispatchEvent(new Event("input",{bubbles:true})); g.el.dispatchEvent(new Event("change",{bubbles:true})); flash(g.el); });
+                box.appendChild(chip);
+              });
+              coBody.appendChild(box);
+            });
+          } else if(r.n){ coBody.textContent="✓ applied "+r.n+" change"+(r.n===1?"":"s")+" on this page — review before saving."; }
           else { coBody.textContent=(j.answer||"").trim() || "I couldn't find that on this page."; }
         }).catch(function(e){ coBody.textContent="⚠ "+e; }).finally(function(){ coAsk.disabled=false; coQ.focus(); });
     }

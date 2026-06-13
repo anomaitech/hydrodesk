@@ -1325,6 +1325,29 @@ def _ai_form_manifest(field_schema):
     return out
 
 
+def _parse_add_field(text):
+    """Parse an explicit "add a field/column called X (as a number/text/date)" request into
+    {label, type}, or None. A direct parse beats the small model for this very common phrasing."""
+    t = (text or "").strip()
+    m = re.search(r"\b(?:add|create|new|make|insert)\b.*?\b(?:field|column|attribute|label)\b\s*"
+                  r"(?:called|named|name[d]?|titled|:|=)?\s*(.+)$", t, re.I)
+    if not m:
+        return None
+    rest = m.group(1).strip().strip("\"'").strip()
+    typ = None
+    tm = re.search(r"^(.*?)\s+(?:as|of type|type|,)\s+(?:an?\s+)?"
+                   r"(text|number|integer|float|decimal|date|checkbox|boolean|bool|email|url|link|"
+                   r"currency|percent|rating|long\s*text|textarea|select|tags?)\b.*$", rest, re.I)
+    if tm:
+        rest, typ = tm.group(1).strip().strip("\"'"), tm.group(2).strip().lower().replace(" ", "")
+    label = rest.strip().strip("\"'").strip()
+    if not label or len(label) > 60:
+        return None
+    _alias = {"integer": "number", "float": "number", "decimal": "number", "bool": "checkbox",
+              "boolean": "checkbox", "longtext": "textarea", "tag": "tags"}
+    return {"label": label, "type": _alias.get(typ, typ)}
+
+
 @controller(name="ai_copilot", url="ai/copilot", title="AI Copilot")
 def ai_copilot(request):
     """Mode (1) COPILOT. POST {request, targets:[{id,kind,label,options,value}], form?} ->
@@ -1358,6 +1381,29 @@ def ai_copilot(request):
                         "label": (str(t.get("label") or "")).strip()[:80],
                         "options": [str(o) for o in (t.get("options") or [])][:40],
                         "value": t.get("value")})
+    # Fast path: an explicit "add a field called X (as TYPE)" -> deterministically fill the next
+    # empty Fields row, bypassing the model (which is unreliable at picking rows + pairing).
+    add = _parse_add_field(req)
+    label_rows = sorted(int(re.match(r"^field_label_(\d+)$", str(t["id"])).group(1))
+                        for t in targets if re.match(r"^field_label_\d+$", str(t["id"])))
+    if add and label_rows:
+        by_id0 = {str(t["id"]): t for t in targets}
+        idx = next((i for i in label_rows
+                    if not str((by_id0.get("field_label_%d" % i) or {}).get("value") or "").strip()),
+                   label_rows[0])
+        acts = [{"op": "set", "id": "field_label_%d" % idx, "value": add["label"]}]
+        note = ""
+        if add["type"]:
+            tt = by_id0.get("field_type_%d" % idx)
+            if tt and tt["options"]:
+                want = add["type"]
+                opt = (next((o for o in tt["options"] if str(o).lower() == want), None)
+                       or next((o for o in tt["options"] if want in str(o).lower()), None))
+                if opt is not None:
+                    acts.append({"op": "set", "id": "field_type_%d" % idx, "value": opt})
+                    note = " as " + str(opt)
+        return JsonResponse({"ok": True, "actions": acts,
+                             "answer": "Added field “%s”%s." % (add["label"], note)})
     models = _ai_models()
     try:
         model = _resolve_model(data, models, prefer=_FAST_PREFER)
@@ -1379,10 +1425,15 @@ def ai_copilot(request):
             "the value MUST be one of its options; [checkbox] -> true/false.\n"
             "- 'open': scroll to + focus + highlight a control so the user sees it — use for "
             "\"open/show me/go to X\" (e.g. open the geometry dropdown).\n"
-            "- 'click': a [button]/[toggle]/[tab] (open a section/tab, add a row). NEVER save or delete.\n"
+            "- 'add_field' {label, type?}: add a NEW field/column to a builder's Fields list — use for "
+            "\"add/create a field|column|label called X (as a number/text/date)\". Do NOT put a field's "
+            "name into an id like 'type_name' (that is the DOCTYPE's OWN name, a different thing).\n"
+            "- 'open' {id}: scroll to + focus + highlight a control (use for \"open/show me X\").\n"
+            "- 'click' {id}: a [button]/[toggle]/[tab] (open a section/tab). NEVER save or delete.\n"
             "Use ONLY listed ids; omit anything not asked for; never invent data. You do NOT save.\n\n"
-            "TARGETS:\n%s\n\nReply with ONLY JSON: {\"answer\":\"<1 short sentence>\","
-            "\"actions\":[{\"op\":\"set|open|click\",\"id\":<id>,\"value\":<value if set>}]}."
+            "TARGETS:\n%s\n\nReply with ONLY JSON: {\"answer\":\"<1 short sentence>\",\"actions\":["
+            "{\"op\":\"set\",\"id\":<id>,\"value\":<v>}, {\"op\":\"add_field\",\"label\":\"<x>\",\"type\":\"<text|number|date>\"}, "
+            "or {\"op\":\"open|click\",\"id\":<id>}]}."
             % ((" for the %s form" % dn) if dn else "", "\n".join(_tdesc(t) for t in targets)))
     else:
         # No fillable/clickable targets on this page (e.g. a read-only view). The copilot acts ONLY
@@ -1401,11 +1452,41 @@ def ai_copilot(request):
     # id/value/op can never act on the page. NO navigation: the copilot stays on THIS page.
     by_id = {str(t["id"]): t for t in targets}
     field_kinds = set(_FIELD_KINDS)
+
+    def _next_empty_row(base):
+        """Lowest-index repeating row (e.g. field_label_N) whose value is blank, else the first."""
+        rows = []
+        for t in targets:
+            mm = re.match(r"^" + re.escape(base) + r"_(\d+)$", str(t["id"]))
+            if mm:
+                rows.append((int(mm.group(1)), t))
+        rows.sort()
+        for idx, t in rows:
+            if not str(t.get("value") or "").strip():
+                return idx
+        return rows[0][0] if rows else None
+
     actions = []
     for a in (obj.get("actions") or []):
         if not isinstance(a, dict):
             continue
         op = str(a.get("op") or "").lower()
+        if op == "add_field":
+            # Deterministic: the model gives {label,type}; the server finds the next empty Fields
+            # row and fills its label + (matched) type together — robust where the small model isn't.
+            label = str(a.get("label") or "").strip()
+            idx = _next_empty_row("field_label") if label else None
+            if idx is None:
+                continue
+            actions.append({"op": "set", "id": "field_label_%d" % idx, "value": label})
+            want = str(a.get("type") or "").strip().lower()
+            tt = by_id.get("field_type_%d" % idx)
+            if want and tt and tt["options"]:
+                opt = (next((o for o in tt["options"] if str(o).lower() == want), None)
+                       or next((o for o in tt["options"] if want in str(o).lower()), None))
+                if opt is not None:
+                    actions.append({"op": "set", "id": "field_type_%d" % idx, "value": opt})
+            continue
         t = by_id.get(str(a.get("id")))
         if t is None or op not in ("set", "open", "click"):
             continue
