@@ -449,6 +449,12 @@ def _extract_json(text):
     return None
 
 
+# Interactive AI (copilot fill, agent classify, guide, code Q&A) prefers a SMALL, fast local
+# model: a 6 GB+ model on a RAM-tight box swaps to disk and stalls (100 s+), while a 2-3 B
+# instruct model answers in ~1-2 s. Bigger models stay as a fallback only.
+_FAST_PREFER = ("llama3.2", "llama3.1", "llama3", "qwen2.5:3b", "qwen2.5", "phi3", "gemma2:2b")
+
+
 _AI_SYSTEM = (
     "You are HydroDesk's data assistant, helping a hydrologist understand their data. "
     "Answer ONLY from the DATA provided below — use its exact numbers and units. Be concise "
@@ -466,14 +472,19 @@ def _ai_models():
         return []
 
 
-def _ollama_chat(model, messages, timeout=120, fmt=None):
+def _ollama_chat(model, messages, timeout=120, fmt=None, num_predict=None, keep_alive="30m"):
     """One non-streaming Ollama chat completion -> the assistant text. ``fmt='json'``
-    forces a JSON object. Strips any <think>…</think> block (deepseek-r1) for clean text.
+    forces a JSON object. ``num_predict`` caps the generated tokens (big speed win for the
+    short-JSON modes); ``keep_alive`` holds the model in memory between calls so it isn't
+    reloaded each time. Strips any <think>…</think> block (deepseek-r1) for clean text.
     Raises _AIError with a clear, user-safe message on any transport/HTTP/parse failure —
     never a raw requests/JSON traceback — so every caller can surface it consistently."""
     import requests
+    opts = {"temperature": 0.2}
+    if num_predict:
+        opts["num_predict"] = int(num_predict)
     payload = {"model": model, "messages": messages, "stream": False,
-               "options": {"temperature": 0.2}}
+               "keep_alive": keep_alive, "options": opts}
     if fmt:
         payload["format"] = fmt
     try:
@@ -494,10 +505,10 @@ def _ollama_chat(model, messages, timeout=120, fmt=None):
     return re.sub(r"<think>.*?</think>", "", txt, flags=re.S).strip()
 
 
-def _ollama_json(model, messages, timeout=120):
+def _ollama_json(model, messages, timeout=120, num_predict=None):
     """Ollama chat in JSON mode, parsed to a Python object. Tolerates a model that wraps
     its JSON in prose/fences (via _extract_json). Raises _AIError if no JSON can be parsed."""
-    raw = _ollama_chat(model, messages, timeout=timeout, fmt="json")
+    raw = _ollama_chat(model, messages, timeout=timeout, fmt="json", num_predict=num_predict)
     obj = _extract_json(raw)
     if obj is None:
         raise _AIError("The model %r did not return valid JSON. Try another model." % model)
@@ -543,7 +554,7 @@ def guide_query(request):
         return JsonResponse({"ok": False, "error": "ask a question"}, status=400)
     models = _ai_models()
     try:
-        model = _resolve_model(data, models, prefer=("llama3.2",))
+        model = _resolve_model(data, models, prefer=_FAST_PREFER)
     except _AIError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     kb = "\n".join("- %s — %s (%s)" % (t["key"], t["label"], t["help"]) for t in _GUIDE_TARGETS)
@@ -1270,6 +1281,341 @@ def ai_chat_query(request):
     except _AIError as exc:
         return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
     return JsonResponse({"ok": True, "answer": answer or "(no answer)"})
+
+
+# ===========================================================================
+# THREE AI MODES — all on the same local Ollama backend (data + source stay on-box):
+#   (1) COPILOT  — reads the current form + your request, NAVIGATES and FILLS the
+#                  fields, but never commits. You review and click Save. [logged-in]
+#   (2) AGENT    — designs AND commits: creates records, doctypes, connectors.
+#                  [staff/superuser — it writes data and can wire models]
+#   (3) ORACLE   — answers ANY question about how this app is built, quoting the real
+#                  source. READ-ONLY by construction — no write path exists. [staff/superuser]
+# ===========================================================================
+
+def _ai_form_manifest(field_schema):
+    """The fields an AI COPILOT may fill on a record form: scalar inputs only. Skips computed
+    / model-output, layout markers, uploads (file/image/shapefile/geometry), inline & linked
+    tables, time-series, and live API fields — none are hand-typed. Each entry is
+    {name,label,kind,options,help} so the model maps a request to concrete values."""
+    props = (field_schema or {}).get("properties") or {}
+    order = [k for k in ((field_schema or {}).get("x-order") or list(props.keys())) if k in props]
+    out = []
+    for k in order:
+        p = props[k] or {}
+        if p.get("x-layout") or p.get("x-computed") or p.get("x-api-connector") or p.get("x-child-type"):
+            continue
+        if p.get("x-widget") in ("table", "image", "file", "geometry", "series"):
+            continue
+        if p.get("x-field") in ("file", "image", "shapefile", "formula", "script"):
+            continue
+        t = p.get("type")
+        if p.get("enum"):
+            kind, opts = "select", list(p.get("enum"))
+        elif t == "boolean":
+            kind, opts = "checkbox", []
+        elif t in ("number", "integer"):
+            kind, opts = "number", []
+        elif p.get("format") == "date":
+            kind, opts = "date", []
+        else:
+            kind, opts = "text", []
+        out.append({"name": k, "label": p.get("title") or k.replace("_", " ").title(),
+                    "kind": kind, "options": opts, "help": p.get("description") or ""})
+    return out
+
+
+@controller(name="ai_copilot", url="ai/copilot", title="AI Copilot")
+def ai_copilot(request):
+    """Mode (1) COPILOT. POST {request, slug?, model?} -> {ok, answer, fills:[{field,value}],
+    navigate, selector}. Reads the named form's fields + the user's request and returns values
+    to FILL (and/or a nav target). It NEVER creates/edits/saves — the user reviews and commits.
+    Fills are sanitised server-side against the real field list + enum options."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not getattr(request.user, "is_authenticated", False):
+        return JsonResponse({"ok": False, "error": "login required"}, status=403)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    req = (data.get("request") or data.get("question") or "").strip()
+    if not req:
+        return JsonResponse({"ok": False, "error": "tell me what to fill or where to go"}, status=400)
+    slug = (data.get("slug") or "").strip()
+    models = _ai_models()
+    try:
+        model = _resolve_model(data, models, prefer=_FAST_PREFER)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+    manifest, dn = [], ""
+    if slug:
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            meta = _load_hydrotype(session, slug)
+            if meta is not None:
+                dn, fs, _gk = meta
+                manifest = _ai_form_manifest(fs)
+    if manifest:
+        fields_txt = "\n".join(
+            "- %s [%s]%s%s" % (
+                f["name"], f["kind"],
+                (" options: " + ", ".join(map(str, f["options"]))) if f["options"] else "",
+                (" — " + f["help"]) if f["help"] else "")
+            for f in manifest)
+        system = (
+            "You are HydroDesk's form COPILOT. The user is filling a '%s' record form. Map their "
+            "request to concrete field values. RULES: only use field names from the list; for a "
+            "[select] use EXACTLY one of its options; [number] -> a bare number; [checkbox] -> "
+            "true/false; [date] -> YYYY-MM-DD. Omit any field you can't determine — never invent "
+            "data. You do NOT save; the user reviews and saves.\n\nFIELDS:\n%s\n\nReply with ONLY "
+            "JSON: {\"answer\":\"<1 short sentence>\",\"fills\":[{\"field\":\"<name>\",\"value\":<value>}]}."
+            % (dn or slug, fields_txt))
+    else:
+        kb = "\n".join("- %s — %s (%s)" % (t["key"], t["label"], t["help"]) for t in _GUIDE_TARGETS)
+        system = (
+            "You are HydroDesk's COPILOT for non-coding hydrologists. The sidebar nav (key — label — "
+            "purpose):\n" + kb + "\n" + _GUIDE_STEPS +
+            "\nAnswer the request in 1-3 short sentences and set \"navigate\" to the single nav KEY to "
+            "open next (or null). Reply with ONLY JSON: "
+            "{\"answer\":\"...\",\"navigate\":\"<key or null>\",\"fills\":[]}.")
+    try:
+        obj = _ollama_json(model, [{"role": "system", "content": system},
+                                   {"role": "user", "content": req[:2000]}], num_predict=256)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+    obj = obj if isinstance(obj, dict) else {}
+    # Sanitise fills against the REAL manifest so a hallucinated field/value can't reach the
+    # form: unknown names dropped; a [select] value must be one of its options.
+    valid = {f["name"]: f for f in manifest}
+    fills = []
+    for it in (obj.get("fills") or []):
+        if not isinstance(it, dict):
+            continue
+        nm = str(it.get("field") or "").strip()
+        f = valid.get(nm)
+        if not f:
+            continue
+        v = it.get("value")
+        if f["kind"] == "select" and f["options"] and str(v) not in [str(o) for o in f["options"]]:
+            continue
+        fills.append({"field": nm, "value": v})
+    nav = obj.get("navigate")
+    sel = next((t["sel"] for t in _GUIDE_TARGETS if t["key"] == nav), None)
+    return JsonResponse({"ok": True, "answer": (obj.get("answer") or "").strip() or "(done)",
+                         "fills": fills, "navigate": nav if sel else None, "selector": sel})
+
+
+# --- Mode (3) ORACLE: a read-only "how is this app built" assistant. It greps the app's own
+#     Python source for the question's terms and feeds the matching snippets to the model.
+#     There is NO write path here — it only reads files + calls the model, so code is protected.
+_ORACLE_FILES = ("controllers.py", "model.py", "registry.py", "app.py")
+_ORACLE_STOP = {"what", "where", "when", "which", "does", "this", "that", "with", "from", "into",
+                "code", "work", "works", "explain", "show", "tell", "about", "your", "have",
+                "they", "there", "would", "could", "should", "the", "and", "for", "how"}
+
+
+def _oracle_arch_overview():
+    """A short, static architecture map for the code Oracle to anchor on (so it can answer even
+    when the grep retrieval misses)."""
+    return (
+        "HydroDesk is a no-code DocType/metadata engine on the Tethys Platform (Django + "
+        "SQLAlchemy + PostGIS). Persistence (model.py): a few fixed tables whose JSONB columns "
+        "hold each DocType's JSON-Schema (field_schema, with x-* extensions), a record's "
+        "attributes, and connector/model config — so defining a new type is an INSERT, no "
+        "migration. controllers.py holds every @controller view (the list/detail/form pages are "
+        "auto-generated from the schema), the connector envelope + fetchers, the model runner "
+        "(each run is a Tethys BasicJob), and the AI endpoints. registry.py documents the "
+        "HydroType spec. The UI is server-rendered Django templates with a 'desk-' CSS theme and "
+        "vanilla JS; maps use Leaflet; the local AI backend is Ollama.")
+
+
+def _oracle_source_context(question, max_chars=7000):
+    """Retrieve source snippets relevant to ``question`` for the Oracle: rank each line of the
+    app's Python files by how many of the question's terms it contains (definitions boosted),
+    and return a window around the top hits, plus a file-size overview. READ-ONLY — opens files
+    for reading only."""
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    words = sorted({w for w in re.findall(r"[a-z_][a-z0-9_]{3,}", question.lower())
+                    if w not in _ORACLE_STOP})
+    overview, snippets, used = [], [], 0
+    for fn in _ORACLE_FILES:
+        try:
+            with open(os.path.join(here, fn), "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+        overview.append("%s (%d lines)" % (fn, len(lines)))
+        scored = []
+        for i, ln in enumerate(lines):
+            low = ln.lower()
+            s = sum(1 for w in words if w in low)
+            if s and re.match(r"\s*(def |class |@controller)", ln):
+                s += 2
+            if s:
+                scored.append((s, i))
+        scored.sort(reverse=True)
+        for _s, i in scored[:4]:
+            lo, hi = max(0, i - 4), min(len(lines), i + 24)
+            chunk = "# %s:%d\n%s" % (fn, lo + 1, "".join(lines[lo:hi]))
+            if used + len(chunk) > max_chars:
+                break
+            snippets.append(chunk)
+            used += len(chunk)
+        if used >= max_chars:
+            break
+    ctx = _oracle_arch_overview() + "\n\nApp files: " + "; ".join(overview)
+    if snippets:
+        ctx += "\n\nRelevant source excerpts:\n\n" + "\n\n".join(snippets)
+    return ctx
+
+
+@controller(name="ai_oracle", url="ai/oracle", title="AI Code Oracle")
+def ai_oracle(request):
+    """Mode (3) CODE ORACLE (staff/superuser). POST {question, history?, model?} -> {ok, answer}.
+    Answers any question about how HydroDesk is built, quoting the real source it retrieves.
+    READ-ONLY by construction: it only reads files + calls the model — no path edits code."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not (getattr(request.user, "is_authenticated", False)
+            and (request.user.is_staff or request.user.is_superuser)):
+        return JsonResponse({"ok": False, "error": "admin only"}, status=403)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    question = (data.get("question") or data.get("request") or "").strip()
+    if not question:
+        return JsonResponse({"ok": False, "error": "ask about the code"}, status=400)
+    models = _ai_models()
+    try:
+        model = _resolve_model(data, models, prefer=_FAST_PREFER)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+    system = (
+        "You are HydroDesk's CODE ORACLE — a senior engineer who knows this codebase. Answer the "
+        "developer's question about HOW THE APP IS BUILT using the architecture notes and SOURCE "
+        "excerpts below. Cite real function/class names and quote short snippets when useful. If "
+        "the excerpts don't cover it, say what you'd look at and reason from the architecture — "
+        "never invent APIs. You can explain anything, but you cannot change the code.\n\n"
+        + _oracle_source_context(question))
+    messages = [{"role": "system", "content": system}]
+    for h in (data.get("history") or [])[-4:]:
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": str(h["content"])[:3000]})
+    messages.append({"role": "user", "content": question[:3000]})
+    try:
+        answer = _ollama_chat(model, messages, timeout=180, num_predict=800)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+    return JsonResponse({"ok": True, "answer": answer or "(no answer)"})
+
+
+def _ai_create_record(request, slug, attrs):
+    """Create a HydroRecord of ``slug`` from an AI-designed {field: value} dict: keep only the
+    known fillable fields, coerce + validate them, apply the naming series + formulas, persist,
+    and fire run-on-save. Returns (record_id, [errors])."""
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return None, ["no doctype named '%s'" % slug]
+        dn, fs, _gk = meta
+        if not _user_can(request, fs, "write"):
+            return None, ["no write access to %s" % slug]
+        allowed = {f["name"] for f in _ai_form_manifest(fs)}
+        post = {}
+        for k, v in (attrs or {}).items():
+            if k not in allowed or v is None:
+                continue
+            post[k] = "true" if v is True else "false" if v is False else str(v)
+        validated, cerr = _coerce_attributes(fs, post)
+        if cerr:
+            return None, ["%s: %s" % (k, msg) for k, msg in cerr.items()]
+        _compute_formulas(fs, validated)
+        tf = fs.get("x-title-field")
+        if fs.get("x-naming") and tf and not str(validated.get(tf) or "").strip():
+            nm = _next_name(session, slug, fs)
+            if nm:
+                validated[tf] = nm
+        validated, vmsg = _validate_attributes(fs, validated)
+        if vmsg:
+            return None, [vmsg]
+        new_id = uuidlib.uuid4()
+        rec = m.HydroRecord(id=new_id, hydrotype_slug=slug, attributes=validated,
+                            created_by=getattr(request.user, "username", None))
+        session.add(rec)
+        session.flush()
+        _snapshot_revision(session, new_id, slug, validated, None, "create",
+                           getattr(request.user, "username", None))
+        session.commit()
+    _maybe_run_on_save(request, slug, new_id, fs, validated)
+    return str(new_id), []
+
+
+@controller(name="ai_agent", url="ai/agent", title="AI Agent")
+def ai_agent(request):
+    """Mode (2) AGENT (staff/superuser): designs AND commits. POST {request, slug?, model?} ->
+    classifies the intent and acts. create_record is executed here; create_doctype /
+    create_connector hand back a ``route`` so the client calls the dedicated, proven builders."""
+    if request.method != "POST":
+        return JsonResponse({"ok": False, "error": "POST only"}, status=405)
+    if not (getattr(request.user, "is_authenticated", False)
+            and (request.user.is_staff or request.user.is_superuser)):
+        return JsonResponse({"ok": False, "error": "admin only"}, status=403)
+    try:
+        data = json.loads(request.body or "{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "bad JSON"}, status=400)
+    req = (data.get("request") or "").strip()
+    if not req:
+        return JsonResponse({"ok": False, "error": "tell me what to build"}, status=400)
+    models = _ai_models()
+    try:
+        model = _resolve_model(data, models, prefer=_FAST_PREFER)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        slugs = _all_slugs(session)
+    slug_list = ", ".join("%s (%s)" % (s["slug"], s.get("name") or s["slug"]) for s in slugs) or "(none yet)"
+    system = (
+        "You are HydroDesk's build AGENT. Classify the request into ONE action and extract params. "
+        "Actions:\n"
+        "- create_doctype: a new data type / table.  params:{}\n"
+        "- create_connector: a live data source (USGS, GeoGLOWS, NetCDF/THREDDS, WMS/WCS, GEE).  params:{}\n"
+        "- create_record: add a record to an EXISTING doctype.  params:{slug, attributes:{field:value}}\n"
+        "- answer: nothing to build; just reply.  params:{}\n"
+        "Existing doctypes (slug (name)): " + slug_list + "\n"
+        "Reply with ONLY JSON: {\"action\":\"...\",\"params\":{...},\"answer\":\"<1 sentence>\"}.")
+    try:
+        plan = _ollama_json(model, [{"role": "system", "content": system},
+                                    {"role": "user", "content": req[:2000]}], num_predict=220)
+    except _AIError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=exc.status)
+    plan = plan if isinstance(plan, dict) else {}
+    action = (plan.get("action") or "").strip()
+    params = plan.get("params") if isinstance(plan.get("params"), dict) else {}
+    answer = (plan.get("answer") or "").strip()
+    if action == "create_doctype":
+        return JsonResponse({"ok": True, "action": action, "route": "doctype",
+                             "request": req, "answer": answer or "Designing the doctype…"})
+    if action == "create_connector":
+        return JsonResponse({"ok": True, "action": action, "route": "connector",
+                             "request": req, "answer": answer or "Configuring the connector…"})
+    if action == "create_record":
+        slug = (params.get("slug") or data.get("slug") or "").strip()
+        if not slug:
+            return JsonResponse({"ok": False, "error": "which doctype should the record go in?"}, status=400)
+        rid, errs = _ai_create_record(request, slug, params.get("attributes") or {})
+        if errs:
+            return JsonResponse({"ok": False, "error": "; ".join(errs)}, status=400)
+        return JsonResponse({"ok": True, "action": "create_record", "slug": slug, "record_id": rid,
+                             "url": reverse("hydrodesk:detail", kwargs={"slug": slug, "record_id": rid}),
+                             "answer": answer or ("Created a %s record." % slug)})
+    return JsonResponse({"ok": True, "action": "answer",
+                         "answer": answer or "I can create records, doctypes, and connectors — tell me which."})
 
 
 def _records_geojson(slug):

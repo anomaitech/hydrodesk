@@ -1020,178 +1020,183 @@
   {% if request.user.is_authenticated %}
   {% csrf_token %}
   <style>
-    #hd-guide-btn { position:fixed; right:22px; bottom:22px; width:54px; height:54px; border-radius:50%;
-      background:#2490ef; color:#fff; border:none; font-size:24px; cursor:pointer; z-index:1200;
-      box-shadow:0 4px 14px rgba(36,144,239,.45); transition:transform .15s; }
-    #hd-guide-btn:hover { transform:scale(1.08); }
-    #hd-guide-panel { position:fixed; right:22px; bottom:86px; width:340px; max-height:70vh; display:flex;
-      flex-direction:column; background:#fff; border:1px solid #e0e4ea; border-radius:12px; z-index:1200;
-      box-shadow:0 10px 30px rgba(0,0,0,.16); overflow:hidden; font-size:13px; }
-    #hd-guide-panel[hidden] { display:none; }
-    .hd-guide-head { background:#1a2533; color:#fff; padding:10px 14px; display:flex; align-items:center; gap:8px; }
-    .hd-guide-head .pill { background:#0a9d6e; font-size:10px; padding:1px 7px; border-radius:8px; }
-    .hd-guide-head button { margin-left:auto; background:none; border:none; color:#fff; font-size:18px; cursor:pointer; }
-    #hd-guide-answer { padding:14px; overflow-y:auto; flex:1; line-height:1.5; color:#1a2533; white-space:pre-wrap; }
-    .hd-guide-input { display:flex; gap:6px; padding:10px; border-top:1px solid #eef1f4; }
-    .hd-guide-input input { flex:1; border:1px solid #d7dce3; border-radius:8px; padding:7px 10px; font-size:13px; }
-    .hd-guide-input button { background:#2490ef; color:#fff; border:none; border-radius:8px; padding:7px 12px; cursor:pointer; }
-    .hd-guide-foot { padding:0 12px 10px; color:#8a93a2; font-size:11px; display:flex; gap:10px; align-items:center; }
-    .hd-guide-eg { color:#2490ef; cursor:pointer; }
-    .hd-guide-go { margin-top:8px; background:#0a9d6e; color:#fff; border:none; border-radius:8px;
-      padding:6px 12px; font-size:13px; cursor:pointer; }
-    .hd-guide-go:hover { background:#0c8a62; }
-    @keyframes hdGuidePulse { 0%,100%{ box-shadow:0 0 0 0 rgba(36,144,239,.65);} 50%{ box-shadow:0 0 0 7px rgba(36,144,239,0);} }
-    @keyframes hdGuideBob { 0%,100%{ transform:translateY(-50%) translateX(0);} 50%{ transform:translateY(-50%) translateX(5px);} }
-    .hd-guide-pointed { position:relative; outline:2px solid #2490ef !important; outline-offset:2px; border-radius:6px;
-      animation:hdGuidePulse 1.2s ease-out 4; }
-    .hd-guide-pointed::after { content:"👉"; position:absolute; left:-26px; top:50%; transform:translateY(-50%);
-      font-size:18px; animation:hdGuideBob .7s ease-in-out infinite; }
+    .hd-ai-fab-wrap { position:fixed; right:22px; bottom:22px; z-index:1200; display:flex; flex-direction:column; gap:10px; align-items:flex-end; }
+    .hd-ai-fab { position:relative; width:50px; height:50px; border-radius:50%; border:none; color:#fff; font-size:19px; cursor:pointer;
+      box-shadow:0 4px 14px rgba(0,0,0,.28); transition:transform .15s; display:flex; align-items:center; justify-content:center; }
+    .hd-ai-fab:hover { transform:scale(1.09); }
+    .hd-ai-fab.copilot { background:#2490ef; } .hd-ai-fab.agent { background:#0a9d6e; } .hd-ai-fab.oracle { background:#5b3fd1; }
+    .hd-ai-fab .lbl { position:absolute; right:60px; white-space:nowrap; background:#1a2533; color:#fff; font-size:11px;
+      padding:3px 8px; border-radius:6px; opacity:0; pointer-events:none; transition:opacity .15s; }
+    .hd-ai-fab:hover .lbl { opacity:1; }
+    .hd-ai-panel { position:fixed; right:22px; bottom:86px; width:362px; max-height:74vh; display:none;
+      flex-direction:column; background:#fff; border:1px solid #e0e4ea; border-radius:12px; z-index:1201;
+      box-shadow:0 12px 34px rgba(0,0,0,.18); overflow:hidden; font-size:13px; }
+    .hd-ai-panel.open { display:flex; }
+    .hd-ai-head { color:#fff; padding:10px 14px; display:flex; align-items:center; gap:8px; font-weight:600; }
+    .hd-ai-head.copilot { background:#1c6fbf; } .hd-ai-head.agent { background:#0a7d57; } .hd-ai-head.oracle { background:#46309e; }
+    .hd-ai-head .pill { background:rgba(255,255,255,.22); font-size:10px; padding:1px 7px; border-radius:8px; font-weight:500; }
+    .hd-ai-head button { margin-left:auto; background:none; border:none; color:#fff; font-size:18px; cursor:pointer; line-height:1; }
+    .hd-ai-body { padding:13px; overflow-y:auto; flex:1; line-height:1.5; color:#1a2533; white-space:pre-wrap; }
+    .hd-ai-body code, .hd-ai-body pre { font-family:ui-monospace,Menlo,monospace; font-size:12px; background:#f3f5f8; border-radius:4px; padding:1px 4px; }
+    .hd-ai-input { display:flex; gap:6px; padding:10px; border-top:1px solid #eef1f4; }
+    .hd-ai-input input { flex:1; border:1px solid #d7dce3; border-radius:8px; padding:7px 10px; font-size:13px; }
+    .hd-ai-input button { color:#fff; border:none; border-radius:8px; padding:7px 12px; cursor:pointer; }
+    .hd-ai-foot { padding:0 12px 10px; color:#8a93a2; font-size:11px; }
+    .hd-ai-go { margin-top:8px; background:#0a9d6e; color:#fff; border:none; border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
+    .hd-ai-eg { color:#2490ef; cursor:pointer; }
+    @keyframes hdAiPulse { 0%,100%{ box-shadow:0 0 0 0 rgba(36,144,239,.6);} 50%{ box-shadow:0 0 0 7px rgba(36,144,239,0);} }
+    .hd-ai-pointed { outline:2px solid #2490ef !important; outline-offset:2px; border-radius:6px; animation:hdAiPulse 1.2s ease-out 4; }
   </style>
-  <button id="hd-guide-btn" title="Ask the guide" aria-label="Ask the guide">?</button>
-  <div id="hd-guide-panel" hidden>
-    <div class="hd-guide-head">HydroDesk guide <span class="pill">local AI</span><button id="hd-guide-close" aria-label="Close">&times;</button></div>
-    <div id="hd-guide-answer">Hi! Ask me how to do anything — e.g.
-      <span class="hd-guide-eg">How do I create a doctype?</span>,
-      <span class="hd-guide-eg">How do I run a model?</span>,
-      <span class="hd-guide-eg">How do I publish to TethysDash?</span></div>
-    <div class="hd-guide-input">
-      <input id="hd-guide-q" placeholder="How do I…?" autocomplete="off">
-      <button id="hd-guide-ask" type="button">Ask</button>
-    </div>
-    <div class="hd-guide-foot"><label><input type="checkbox" id="hd-guide-tts"> 🔊 speak</label>
-      <span>points you to the right button</span></div>
+
+  <div class="hd-ai-fab-wrap">
+    <button class="hd-ai-fab copilot" id="hd-ai-copilot-btn" title="Copilot — fills the form for you"><span class="lbl">Copilot · fills the form</span>&#10024;</button>
+    <button class="hd-ai-fab agent" id="hd-ai-agent-btn" title="Agent — builds &amp; saves"><span class="lbl">Agent · builds &amp; saves</span>&#9889;</button>
+    {% if request.user.is_staff or request.user.is_superuser %}
+    <button class="hd-ai-fab oracle" id="hd-ai-oracle-btn" title="Code Oracle — how the app is built"><span class="lbl">Code Oracle · how it's built</span>&lt;/&gt;</button>
+    {% endif %}
   </div>
+
+  <div class="hd-ai-panel" id="hd-ai-copilot-panel">
+    <div class="hd-ai-head copilot">Copilot <span class="pill">fills &middot; no save</span><button type="button" data-close>&times;</button></div>
+    <div class="hd-ai-body" id="hd-ai-copilot-body">I read the page and fill the form for you &mdash; you review &amp; click Save. Try:
+      <span class="hd-ai-eg">name it Provo Gage Inspection</span></div>
+    <div class="hd-ai-input"><input id="hd-ai-copilot-q" placeholder="What should I fill / where to go?" autocomplete="off"><button type="button" style="background:#2490ef;" id="hd-ai-copilot-ask">Fill</button></div>
+    <div class="hd-ai-foot">Fills the current form or points you to the right page. It never saves.</div>
+  </div>
+
+  <div class="hd-ai-panel" id="hd-ai-agent-panel">
+    <div class="hd-ai-head agent">Agent <span class="pill">builds &amp; saves</span><button type="button" data-close>&times;</button></div>
+    <div class="hd-ai-body" id="hd-ai-agent-body">I design and CREATE things for you. Try:
+      <span class="hd-ai-eg">create a doctype for rain gauges with name and rainfall_mm</span>,
+      <span class="hd-ai-eg">connect a USGS streamflow feed</span></div>
+    <div class="hd-ai-input"><input id="hd-ai-agent-q" placeholder="What should I build or save?" autocomplete="off"><button type="button" style="background:#0a9d6e;" id="hd-ai-agent-ask">Do it</button></div>
+    <div class="hd-ai-foot">Creates records, doctypes, and connectors &mdash; and saves them.</div>
+  </div>
+
+  {% if request.user.is_staff or request.user.is_superuser %}
+  <div class="hd-ai-panel" id="hd-ai-oracle-panel">
+    <div class="hd-ai-head oracle">Code Oracle <span class="pill">read-only</span><button type="button" data-close>&times;</button></div>
+    <div class="hd-ai-body" id="hd-ai-oracle-body">Ask how HydroDesk is built &mdash; architecture, a function, a flow. Try:
+      <span class="hd-ai-eg">how are model outputs persisted?</span>,
+      <span class="hd-ai-eg">how does the connector envelope work?</span></div>
+    <div class="hd-ai-input"><input id="hd-ai-oracle-q" placeholder="How does &hellip; work?" autocomplete="off"><button type="button" style="background:#5b3fd1;" id="hd-ai-oracle-ask">Ask</button></div>
+    <div class="hd-ai-foot">Explains the real source &mdash; read-only, it never edits code.</div>
+  </div>
+  {% endif %}
+
   <script>
   (function () {
-    var btn=document.getElementById("hd-guide-btn"), panel=document.getElementById("hd-guide-panel"),
-        ans=document.getElementById("hd-guide-answer"), q=document.getElementById("hd-guide-q"),
-        ask=document.getElementById("hd-guide-ask"), tts=document.getElementById("hd-guide-tts");
-    // A Tethys ancestor uses CSS transform, which makes position:fixed resolve relative to
-    // that box (off-screen) instead of the viewport. Re-parent to <body> so fixed = screen.
-    [btn, panel].forEach(function (e) { if (e && e.parentNode !== document.body) document.body.appendChild(e); });
+    function $(id){ return document.getElementById(id); }
     function csrf(){ var m=document.cookie.match(/csrftoken=([^;]+)/); if(m) return m[1];
       var el=document.querySelector("[name=csrfmiddlewaretoken]"); return el?el.value:""; }
-    btn.addEventListener("click", function(){ panel.hidden=!panel.hidden; if(!panel.hidden) q.focus(); });
-    document.getElementById("hd-guide-close").addEventListener("click", function(){ panel.hidden=true; });
-    function pointAt(sel){
-      if(!sel) return;
-      var el=document.querySelector("a.nav-link[href$='"+sel+"']")||document.querySelector("a.nav-link[href*='"+sel+"']");
-      if(!el) return;
-      document.querySelectorAll(".hd-guide-pointed").forEach(function(e){e.classList.remove("hd-guide-pointed");});
-      el.scrollIntoView({block:"center", behavior:"smooth"});
-      el.classList.add("hd-guide-pointed");
-      setTimeout(function(){ el.classList.remove("hd-guide-pointed"); }, 7000);
+    var wrap=document.querySelector(".hd-ai-fab-wrap");
+    var panels=Array.prototype.slice.call(document.querySelectorAll(".hd-ai-panel"));
+    // A transformed Tethys ancestor breaks position:fixed -> re-parent the FABs + panels to <body>.
+    [wrap].concat(panels).forEach(function(e){ if(e && e.parentNode!==document.body) document.body.appendChild(e); });
+    function openOnly(p){ panels.forEach(function(x){ x.classList.toggle("open", x===p); }); var i=p.querySelector("input"); if(i) i.focus(); }
+    function toggle(p){ var was=p.classList.contains("open"); panels.forEach(function(x){x.classList.remove("open");}); if(!was) openOnly(p); }
+    document.querySelectorAll(".hd-ai-panel [data-close]").forEach(function(b){
+      b.addEventListener("click", function(){ b.closest(".hd-ai-panel").classList.remove("open"); }); });
+    function navEl(sel){ return document.querySelector("a.nav-link[href$='"+sel+"']")||document.querySelector("a.nav-link[href*='"+sel+"']"); }
+    function pointAt(sel){ if(!sel) return; var el=navEl(sel); if(!el) return;
+      document.querySelectorAll(".hd-ai-pointed").forEach(function(e){e.classList.remove("hd-ai-pointed");});
+      el.scrollIntoView({block:"center",behavior:"smooth"}); el.classList.add("hd-ai-pointed");
+      setTimeout(function(){ el.classList.remove("hd-ai-pointed"); }, 7000); }
+    function postJSON(url, body){ return fetch(url, {method:"POST", credentials:"same-origin",
+      headers:{"Content-Type":"application/json","X-CSRFToken":csrf()}, body:JSON.stringify(body)}).then(function(r){return r.json();}); }
+    function goBtn(body, url, label){ var g=document.createElement("button"); g.className="hd-ai-go"; g.type="button"; g.textContent=label;
+      g.addEventListener("click", function(){ location.href=url; }); body.appendChild(document.createElement("br")); body.appendChild(g); }
+
+    // -------- (1) COPILOT: fills the current form (or points you somewhere). Never saves. --------
+    var coBtn=$("hd-ai-copilot-btn"), coPanel=$("hd-ai-copilot-panel"), coBody=$("hd-ai-copilot-body"),
+        coQ=$("hd-ai-copilot-q"), coAsk=$("hd-ai-copilot-ask");
+    coBtn.addEventListener("click", function(){ toggle(coPanel); });
+    function applyFills(fills){
+      var done=0;
+      (fills||[]).forEach(function(f){
+        var el=document.querySelector("[name='"+f.field+"']"); if(!el) return;
+        if(el.type==="checkbox"){ el.checked=!!f.value; } else { el.value=f.value; }
+        el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true}));
+        el.classList.add("hd-ai-pointed"); setTimeout(function(){ el.classList.remove("hd-ai-pointed"); },4000);
+        done++;
+      });
+      return done;
     }
-    function navEl(sel){
-      return document.querySelector("a.nav-link[href$='"+sel+"']")||document.querySelector("a.nav-link[href*='"+sel+"']");
+    function copilotRun(text){
+      if(!text.trim()) return; coQ.value="";
+      coBody.textContent="…reading the form"; coAsk.disabled=true;
+      postJSON("{% url 'hydrodesk:ai_copilot' %}", {request:text, slug:(window.HD_FORM_SLUG||"")})
+        .then(function(j){
+          if(!j.ok){ coBody.textContent="⚠ "+(j.error||"error"); return; }
+          coBody.textContent=j.answer||"";
+          var n=applyFills(j.fills);
+          if(n){ coBody.textContent+="\n✓ filled "+n+" field"+(n===1?"":"s")+" — review and click Save."; }
+          if(j.selector){ pointAt(j.selector); if(navEl(j.selector)) goBtn(coBody, navEl(j.selector).href, "Take me there →"); }
+        }).catch(function(e){ coBody.textContent="⚠ "+e; }).finally(function(){ coAsk.disabled=false; coQ.focus(); });
     }
-    function goTo(sel){ var el=navEl(sel); if(el) el.click(); }   // the AI clicks it for you
-    // --- Offline text-to-speech (browser voices, no network). Robust against the common
-    //     pitfalls: voices load async, and audio must be primed inside a user gesture. ---
-    var HD_VOICE=null;
-    function loadVoices(){ try{ var vs=window.speechSynthesis.getVoices();
-      HD_VOICE = vs.filter(function(v){return /en[-_]?US/i.test(v.lang);})[0]
-              || vs.filter(function(v){return /^en/i.test(v.lang);})[0] || vs[0] || null; }catch(e){} }
-    if(window.speechSynthesis){ loadVoices(); window.speechSynthesis.onvoiceschanged=loadVoices; }
-    function speak(text){
-      if(!window.speechSynthesis || !text) return;
-      try{ window.speechSynthesis.cancel();
-        var u=new SpeechSynthesisUtterance(String(text).slice(0,600));
-        u.lang="en-US"; u.rate=1.02; if(HD_VOICE) u.voice=HD_VOICE;
-        window._hdUtter=u;                       // hold a ref so Chrome doesn't GC mid-speech
-        window.speechSynthesis.resume(); window.speechSynthesis.speak(u);
-      }catch(e){}
-    }
-    // Toggling "speak" is a user gesture -> prime the engine + speak a confirmation so you
-    // KNOW audio works (if you hear nothing here, the OS/browser has TTS muted/disabled).
-    tts.addEventListener("change", function(){
-      if(tts.checked && window.speechSynthesis){ loadVoices(); speak("Voice on."); } });
-    // "create/build a doctype/table…" -> have the AI design + CREATE it, not just point.
-    var CREATE_RE=/\b(create|make|build|add|set ?up|new)\b[\s\S]{0,40}\b(doc\s?type|data\s?type|datatype|table|record type)\b/i;
-    // "dataset" is a weaker doctype hint — it also appears in connector requests ("the
-    // NetCDF/OPeNDAP dataset"), so it only routes to a doctype AFTER the explicit-connector check.
-    var CREATE_DATASET_RE=/\b(create|make|build|add|set ?up|new)\b[\s\S]{0,40}\bdataset\b/i;
-    function goLink(go, url, label){ go.className="hd-guide-go"; go.type="button"; go.textContent=label;
-      go.addEventListener("click", function(){ location.href=url; }); }
+    coAsk.addEventListener("click", function(){ copilotRun(coQ.value); });
+    coQ.addEventListener("keydown", function(e){ if(e.key==="Enter") copilotRun(coQ.value); });
+    coPanel.querySelectorAll(".hd-ai-eg").forEach(function(s){ s.addEventListener("click", function(){ copilotRun(s.textContent); }); });
+
+    // -------- (2) AGENT: builds + saves (records / doctypes / connectors). --------
+    var agBtn=$("hd-ai-agent-btn"), agPanel=$("hd-ai-agent-panel"), agBody=$("hd-ai-agent-body"),
+        agQ=$("hd-ai-agent-q"), agAsk=$("hd-ai-agent-ask");
+    agBtn.addEventListener("click", function(){ toggle(agPanel); });
     function buildDoctype(text){
-      ans.textContent="…designing your doctype"; ask.disabled=true;
-      fetch("{% url 'hydrodesk:ai_build_doctype' %}", { method:"POST",
-        headers:{"Content-Type":"application/json","X-CSRFToken":csrf()},
-        body:JSON.stringify({description:text}) })
-        .then(function(r){return r.json();}).then(function(j){
-          if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
-          ans.textContent="✓ Created \""+j.name+"\""+(j.geometry!=="none"?" · "+j.geometry+" geometry":"")
-            +" with "+j.fields.length+" fields:\n"
-            +j.fields.map(function(f){return "  • "+f.label+"  ("+f.type+")";}).join("\n")
-            +(j.connector?"\n  ⚡ live \""+j.live_field+"\" via connector \""+j.connector+"\"":"")
-            +(j.seeded_reach?"\n  • seeded reach "+j.seeded_reach+" — forecast fetches on open":"");
-          var go=document.createElement("button"); goLink(go, j.list_url, "Open "+j.name+" →");
-          ans.appendChild(document.createElement("br")); ans.appendChild(go);
-          if(tts.checked) speak("Created "+j.name+" with "+j.fields.length+" fields"
-            +(j.connector?", plus a live GeoGLOWS forecast field":"")+".");
-        }).catch(function(e){ ans.textContent="⚠ "+e; })
-        .finally(function(){ ask.disabled=false; q.focus(); });
+      agBody.textContent="…designing the doctype";
+      postJSON("{% url 'hydrodesk:ai_build_doctype' %}", {description:text}).then(function(j){
+        if(!j.ok){ agBody.textContent="⚠ "+(j.error||"error"); return; }
+        agBody.textContent="✓ Created \""+j.name+"\" with "+(j.fields?j.fields.length:0)+" fields.";
+        if(j.list_url) goBtn(agBody, j.list_url, "Open "+j.name+" →");
+      }).catch(function(e){ agBody.textContent="⚠ "+e; }).finally(function(){ agAsk.disabled=false; });
     }
-    // "connect to USGS / build a connector / add a live feed…" -> AI configures + CREATES a connector.
-    var CONNECT_RE=/\b(create|make|build|add|set ?up|configure|connect(?: to)?|new)\b[\s\S]{0,40}\b(connector|data ?source|connection|live ?feed|feed|web ?service|usgs|nwis|nwps|geoglows?|water ?quality|stream ?gauge|streamflow ?api)\b/i;
     function buildConnector(text){
-      ans.textContent="…configuring your connector"; ask.disabled=true;
-      fetch("{% url 'hydrodesk:ai_build_connector' %}", { method:"POST",
-        headers:{"Content-Type":"application/json","X-CSRFToken":csrf()},
-        body:JSON.stringify({description:text}) })
-        .then(function(r){return r.json();}).then(function(j){
-          if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
-          var ins=Object.keys(j.inputs||{}).map(function(k){return "  • "+k+" = "+j.inputs[k];}).join("\n");
-          var msg="✓ Created connector \""+j.name+"\""
-            +(j.preset&&j.preset!=="none"?" · "+j.preset:" · "+(j.kind||j.result_kind))
-            +(ins?"\n"+ins:"")+(j.url?"\nFetches: "+j.url:"");
-          if(j.note){ msg+="\n⚠ "+j.note; }            // a required field still to set
-          else if(j.test){                              // auto test-fetch result
-            if(j.test.ok){ msg+="\n✓ Test fetch: "+j.test.summary; }
-            else{ msg+="\n⚠ Test fetch: "+(j.test.note||j.test.summary||"no data"); }
-          }
-          ans.textContent=msg;
-          var go=document.createElement("button"); goLink(go, j.list_url, "Open Connectors →");
-          ans.appendChild(document.createElement("br")); ans.appendChild(go);
-          if(tts.checked) speak("Created the "+j.name+" connector.");
-        }).catch(function(e){ ans.textContent="⚠ "+e; })
-        .finally(function(){ ask.disabled=false; q.focus(); });
+      agBody.textContent="…configuring the connector";
+      postJSON("{% url 'hydrodesk:ai_build_connector' %}", {description:text}).then(function(j){
+        if(!j.ok){ agBody.textContent="⚠ "+(j.error||"error"); return; }
+        agBody.textContent="✓ Created connector \""+j.name+"\".";
+        if(j.list_url) goBtn(agBody, j.list_url, "Open Connectors →");
+      }).catch(function(e){ agBody.textContent="⚠ "+e; }).finally(function(){ agAsk.disabled=false; });
     }
-    // Routing: an explicit "doctype/table" word means a doctype (even "doctype WITH a
-    // connector" — the builder wires the connector field itself); else an explicit
-    // "connector/data source" word means a connector; else loose connect-intent ("connect to USGS…").
-    var EXPLICIT_CONNECTOR=/\b(connector|data ?source|connection|live ?feed|web ?service)\b/i;
-    function run(text){
-      if(!text.trim()) return; q.value="";
-      if(CREATE_RE.test(text)){ buildDoctype(text); return; }            // explicit doctype/table word
-      if(EXPLICIT_CONNECTOR.test(text)){ buildConnector(text); return; } // explicit connector word (e.g. "a connector for the NetCDF dataset")
-      if(CREATE_DATASET_RE.test(text)){ buildDoctype(text); return; }    // "create a dataset" with no connector word
-      if(CONNECT_RE.test(text)){ buildConnector(text); return; }
-      ans.textContent="…thinking"; ask.disabled=true;
-      if(tts.checked && window.speechSynthesis){ try{ window.speechSynthesis.resume(); }catch(e){} }
-      fetch("{% url 'hydrodesk:guide_query' %}", { method:"POST",
-        headers:{"Content-Type":"application/json","X-CSRFToken":csrf()},
-        body:JSON.stringify({question:text, page:location.pathname}) })
-        .then(function(r){return r.json();}).then(function(j){
-          if(!j.ok){ ans.textContent="⚠ "+(j.error||"error"); return; }
-          ans.textContent=j.answer; pointAt(j.selector);
-          if(j.selector && navEl(j.selector)){
-            ans.appendChild(document.createElement("br"));
-            var go=document.createElement("button");
-            go.textContent="Take me there →"; go.className="hd-guide-go"; go.type="button";
-            go.addEventListener("click", function(){ goTo(j.selector); });
-            ans.appendChild(go);
-          }
-          if(tts.checked) speak(j.answer);
-        }).catch(function(e){ ans.textContent="⚠ "+e; })
-        .finally(function(){ ask.disabled=false; q.focus(); });
+    function agentRun(text){
+      if(!text.trim()) return; agQ.value="";
+      agBody.textContent="…thinking"; agAsk.disabled=true;
+      postJSON("{% url 'hydrodesk:ai_agent' %}", {request:text, slug:(window.HD_FORM_SLUG||"")}).then(function(j){
+        if(!j.ok){ agBody.textContent="⚠ "+(j.error||"error"); agAsk.disabled=false; return; }
+        if(j.route==="doctype"){ buildDoctype(text); return; }
+        if(j.route==="connector"){ buildConnector(text); return; }
+        agBody.textContent="✓ "+(j.answer||"done");
+        if(j.url){ goBtn(agBody, j.url, "Open the record →"); }
+        agAsk.disabled=false;
+      }).catch(function(e){ agBody.textContent="⚠ "+e; agAsk.disabled=false; });
     }
-    ask.addEventListener("click", function(){ run(q.value); });
-    q.addEventListener("keydown", function(e){ if(e.key==="Enter") run(q.value); });
-    document.querySelectorAll(".hd-guide-eg").forEach(function(s){
-      s.addEventListener("click", function(){ run(s.textContent); }); });
+    agAsk.addEventListener("click", function(){ agentRun(agQ.value); });
+    agQ.addEventListener("keydown", function(e){ if(e.key==="Enter") agentRun(agQ.value); });
+    agPanel.querySelectorAll(".hd-ai-eg").forEach(function(s){ s.addEventListener("click", function(){ agentRun(s.textContent); }); });
+
+    // -------- (3) ORACLE: read-only code Q&A (admins only). --------
+    var orBtn=$("hd-ai-oracle-btn");
+    if(orBtn){
+      var orPanel=$("hd-ai-oracle-panel"), orBody=$("hd-ai-oracle-body"), orQ=$("hd-ai-oracle-q"), orAsk=$("hd-ai-oracle-ask");
+      var orHist=[];
+      orBtn.addEventListener("click", function(){ toggle(orPanel); });
+      function oracleRun(text){
+        if(!text.trim()) return; orQ.value="";
+        orBody.textContent="…searching the source"; orAsk.disabled=true;
+        postJSON("{% url 'hydrodesk:ai_oracle' %}", {question:text, history:orHist}).then(function(j){
+          if(!j.ok){ orBody.textContent="⚠ "+(j.error||"error"); return; }
+          orBody.textContent=j.answer||"";
+          orHist.push({role:"user",content:text}); orHist.push({role:"assistant",content:(j.answer||"").slice(0,3000)});
+          if(orHist.length>8) orHist=orHist.slice(-8);
+        }).catch(function(e){ orBody.textContent="⚠ "+e; }).finally(function(){ orAsk.disabled=false; orQ.focus(); });
+      }
+      orAsk.addEventListener("click", function(){ oracleRun(orQ.value); });
+      orQ.addEventListener("keydown", function(e){ if(e.key==="Enter") oracleRun(orQ.value); });
+      orPanel.querySelectorAll(".hd-ai-eg").forEach(function(s){ s.addEventListener("click", function(){ oracleRun(s.textContent); }); });
+    }
   })();
   </script>
+
   {% endif %}
 {% endblock %}
 

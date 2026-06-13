@@ -12,6 +12,7 @@
 {% block title %}{{ page_title }} - {{ block.super }}{% endblock %}
 
 {% block desk_content %}
+<script>window.HD_FORM_SLUG = "{{ slug|escapejs }}";</script>
 <div class="desk-page desk-page--form">
 
   <div class="desk-breadcrumb">
