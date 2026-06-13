@@ -81,6 +81,11 @@
     </a>
   </li>
   <li class="nav-item">
+    <a class="nav-link{% block nav_active_model_jobs %}{% endblock %}" href="{% url 'hydrodesk:model_jobs' %}">
+      <span class="frappe-sidebar-ico">&#9203;</span> Model Jobs
+    </a>
+  </li>
+  <li class="nav-item">
     <a class="nav-link{% block nav_active_report %}{% endblock %}" href="{% url 'hydrodesk:report' %}">
       <span class="frappe-sidebar-ico">&#9778;</span> Reports
     </a>
@@ -514,6 +519,17 @@
     }
     .hd-chart-legend .hd-leg-item { display:inline-flex; align-items:center; gap:5px; }
     .hd-chart-legend .hd-leg-item i { width:11px; height:3px; border-radius:2px; display:inline-block; }
+    /* Record-page "Fan band" control (pick the uncertainty-band columns, live). */
+    .hd-band-controls {
+      display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+      margin:2px 0 6px 2px; font-size:var(--fr-text-xs,11px); color:var(--fr-text-muted,#6b7785);
+    }
+    .hd-band-controls .hd-band-lbl { font-weight:600; text-transform:uppercase; letter-spacing:.03em; }
+    .hd-band-controls .hd-band-pair { display:inline-flex; align-items:center; gap:4px; }
+    .hd-band-controls .hd-band-sel {
+      font-size:11px; padding:2px 4px; border:1px solid var(--fr-border-color,#d1d8dd);
+      border-radius:4px; background:var(--fr-fg-color,#fff); color:var(--fr-text-color,#333); max-width:170px;
+    }
     .hd-api-field .hd-series-foot {
       font-size:var(--fr-text-xs);
       color:var(--fr-text-muted);

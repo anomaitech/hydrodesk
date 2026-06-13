@@ -170,6 +170,18 @@
                 Upload a zipped shapefile (<code>.shp</code>+<code>.shx</code>+<code>.dbf</code>) or a bare <code>.shp</code> — stored as inline GeoJSON for this record.
                 {% if w.has_value %}<strong>{{ w.zone_count }}</strong> polygon{{ w.zone_count|pluralize }} stored; upload a new file to replace.{% endif %}
               </div>
+            {% elif w.widget == "file" %}
+              <input class="form-control" type="file"
+                     id="id_{{ w.name }}" name="{{ w.name }}"{% if w.required and not w.current_file %} required{% endif %}>
+              <div class="frappe-help">
+                Attach any file (stored for this record, downloadable on the detail view; available to a model via <code>data.upload('{{ w.name }}')</code>).
+                {% if w.current_file %}Stored: <a href="{{ w.current_file.url }}"><strong>{{ w.current_file.name }}</strong></a> — upload a new file to replace.{% endif %}
+              </div>
+            {% elif w.widget == "image-upload" %}
+              <input class="form-control" type="file" accept="image/*"
+                     id="id_{{ w.name }}" name="{{ w.name }}"{% if w.required and not w.current_image %} required{% endif %}>
+              {% if w.current_image %}<img src="{{ w.current_image }}" alt="{{ w.label }}" style="margin-top:6px;max-width:160px;height:auto;border:1px solid var(--fr-border-color,#d1d8dd);border-radius:6px;display:block;">{% endif %}
+              <div class="frappe-help">Upload an image (PNG/JPG/…) — shown inline on the detail view; upload a new file to replace.</div>
             {% elif w.widget == "formula" %}
               {# Computed: READ-ONLY. Filled on save from the other fields. #}
               <div class="frappe-muted frappe-text-sm"
@@ -183,6 +195,15 @@
                    style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
                 <i class="bi bi-code-slash"></i>
                 Python script &mdash; {{ w.script_outputs|length }} output{{ w.script_outputs|length|pluralize }} computed when you save.
+              </div>
+            {% elif w.widget == "computed" %}
+              {# Model OUTPUT: READ-ONLY. Not hand-entered — populated by RUNNING the bound model. #}
+              <div class="frappe-muted frappe-text-sm"
+                   style="padding:6px 8px;background:var(--fr-control-bg);border-radius:var(--fr-radius-sm);">
+                <i class="bi bi-cpu"></i>
+                {% if w.output_type %}<strong>{{ w.output_type }}</strong> {% endif %}output{% if w.computed_by %} of model <code>{{ w.computed_by }}</code>{% endif %} &mdash;
+                {% if w.has_value %}already computed (shown on the record){% else %}populated when the model runs{% endif %}.
+                This field isn't entered by hand.
               </div>
             {% elif w.widget == "api" %}
               {# API field: read-only; the live value is fetched from the connector when the record is viewed. #}

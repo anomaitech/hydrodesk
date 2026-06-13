@@ -31,7 +31,8 @@
       {% if record_found %}
       {% if model_name and can_run_model %}
       <button type="button" id="hd-run-model" class="btn btn-primary btn-sm"
-              data-run-url="{{ run_model_url }}" data-job-base="{{ model_job_base }}">
+              data-run-url="{{ run_model_url }}" data-job-base="{{ model_job_base }}"
+              data-auto-job="{{ auto_poll_job_id|default:'' }}">
         <i class="bi bi-play-fill"></i> Run {{ model_name }}
       </button>
       <span id="hd-model-status" class="frappe-text-sm" style="margin:0 6px;"></span>
@@ -382,14 +383,25 @@
   function addLegend(map, r) {
     if (!r) return;
     var grad = 'linear-gradient(to right,' + paletteStops(r.palette).join(',') + ')';
-    var mid = (Number(r.vmin) + Number(r.vmax)) / 2;
+    var lo = Number(r.vmin), hi = Number(r.vmax);
     var title = esc(r.label || 'value') + (r.unit ? ' <span style="color:#8d99a6;">(' + esc(r.unit) + ')</span>' : '');
+    var num = 'color:#8d99a6;font-variant-numeric:tabular-nums;';
+    var labels;
+    if (!isFinite(lo) && !isFinite(hi)) {
+      labels = '';
+    } else if (!isFinite(lo) || !isFinite(hi) || fmt(lo) === fmt(hi)) {
+      // Constant / degenerate range (e.g. a region inside one coarse cell): show the
+      // single value once, centered — not three identical numbers.
+      labels = '<div style="text-align:center;margin-top:1px;' + num + '">' + esc(fmt(isFinite(lo) ? lo : hi)) + '</div>';
+    } else {
+      labels = '<div style="display:flex;justify-content:space-between;margin-top:1px;' + num + '"><span>' +
+        esc(fmt(lo)) + '</span><span>' + esc(fmt((lo + hi) / 2)) + '</span><span>' + esc(fmt(hi)) + '</span></div>';
+    }
     var Ctl = L.Control.extend({ options: { position: 'bottomright' }, onAdd: function () {
       var d = L.DomUtil.create('div', 'hd-map-card');
       d.innerHTML = '<div style="margin-bottom:3px;font-weight:600;">' + title + '</div>' +
         '<div style="height:9px;width:132px;background:' + grad + ';border:1px solid #d6dbe1;border-radius:2px;"></div>' +
-        '<div style="display:flex;justify-content:space-between;margin-top:1px;color:#8d99a6;font-variant-numeric:tabular-nums;"><span>' +
-        esc(fmt(r.vmin)) + '</span><span>' + esc(fmt(mid)) + '</span><span>' + esc(fmt(r.vmax)) + '</span></div>';
+        labels;
       return d;
     } });
     map.addControl(new Ctl());
@@ -751,6 +763,149 @@
       })
       .catch(function () { set("request failed"); btn.disabled = false; });
   });
+  // Run-on-save: the doctype's model auto-ran when this record was saved. Pick up that
+  // still-running job and poll it so the outputs populate (page reloads on Complete) with
+  // no manual click.
+  var autoJob = btn.getAttribute("data-auto-job");
+  if (autoJob) {
+    btn.disabled = true;
+    set('<span class="frappe-muted">running on save&hellip;</span>');
+    poll(btn.getAttribute("data-job-base"), autoJob);
+  }
+})();
+</script>
+
+<script>
+// ---- Interactive series charts: pick which two columns form the uncertainty FAN band.
+// The server emits a multi-column series (chart + the column data + a 'Fan band' control);
+// here we re-render the chart client-side with a shaded ribbon between the chosen columns.
+// Live, per-view, NOT persisted to the doctype. ----
+(function () {
+  var COLORS = ['#2490ef', '#28a745', '#e8590c', '#9c36b5', '#1098ad', '#f08c00', '#e03131', '#37b24d'];
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmt(v) { if (v === null || v === undefined || v === '') return '—'; var n = Number(v); if (!isFinite(n)) return String(v); var s = (Math.abs(n) >= 100 ? n.toFixed(1) : n.toFixed(3)); return s.indexOf('.') >= 0 ? s.replace(/\.?0+$/, '') : s; }
+  function shortLabel(v) { var s = String(v == null ? '' : v); if (s.indexOf('T') >= 0) s = s.split('T')[0]; return s.slice(0, 12); }
+  function niceStep(span) { if (span <= 0) return 1; var raw = span / 4, mag = Math.pow(10, Math.floor(Math.log10(raw))), mu = [1, 2, 2.5, 5, 10]; for (var i = 0; i < mu.length; i++) if (raw <= mu[i] * mag) return mu[i] * mag; return 10 * mag; }
+  function fin(v) { if (v === null || v === undefined || v === -999999) return null; var f = Number(v); return isFinite(f) ? f : null; }
+
+  function build(cols, labels, loName, hiName) {
+    var W = 520, H = 190, padL = 46, padR = 14, padT = 10, padB = 22;
+    var lineCols = cols.filter(function (c) { return c.name !== loName && c.name !== hiName; });
+    var loCol = loName ? cols.filter(function (c) { return c.name === loName; })[0] : null;
+    var hiCol = hiName ? cols.filter(function (c) { return c.name === hiName; })[0] : null;
+    var allf = [], n = 0;
+    cols.forEach(function (c) { n = Math.max(n, (c.values || []).length); });
+    lineCols.forEach(function (c) { (c.values || []).forEach(function (v) { var f = fin(v); if (f !== null) allf.push(f); }); });
+    [loCol, hiCol].forEach(function (c) { if (c) (c.values || []).forEach(function (v) { var f = fin(v); if (f !== null) allf.push(f); }); });
+    if (allf.length < 2) return '<span class="frappe-muted frappe-text-sm">—</span>';
+    var lo = Math.min.apply(null, allf), hi = Math.max.apply(null, allf);
+    if (hi === lo) { lo -= 0.5; hi += 0.5; }
+    var plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;
+    function X(i) { return padL + (n > 1 ? plotW * i / (n - 1) : plotW / 2); }
+    function Y(v) { return padT + plotH * (1 - (v - lo) / (hi - lo)); }
+    var grid = '', step = niceStep(hi - lo), t = Math.floor(lo / step) * step, g = 0;
+    while (t <= hi + 1e-9 && g < 64) {
+      if (t >= lo - 1e-9) {
+        var gy = Y(t).toFixed(1);
+        grid += '<line x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '" stroke="#edf0f3" stroke-width="1"/>';
+        grid += '<text x="' + (padL - 6) + '" y="' + gy + '" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#8d99a6">' + esc(fmt(t)) + '</text>';
+      }
+      t += step; g++;
+    }
+    grid += '<line x1="' + padL + '" y1="' + baseY + '" x2="' + (W - padR) + '" y2="' + baseY + '" stroke="#dfe3e8" stroke-width="1"/>';
+    var xl = '';
+    if (labels && labels.length) {
+      [0, n >> 1, n - 1].filter(function (v, i, a) { return a.indexOf(v) === i; }).forEach(function (i) {
+        if (i < 0 || i >= labels.length) return;
+        var anc = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle');
+        xl += '<text x="' + X(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="' + anc + '" font-size="10" fill="#8d99a6">' + esc(shortLabel(labels[i])) + '</text>';
+      });
+    }
+    var ribbon = '', legend = '';
+    if (loCol && hiCol) {
+      var runs = [], cur = [];
+      for (var i = 0; i < n; i++) {
+        var bl = fin((loCol.values || [])[i]), bh = fin((hiCol.values || [])[i]);
+        if (bl === null || bh === null) { if (cur.length) { runs.push(cur); cur = []; } }
+        else cur.push([i, Math.min(bl, bh), Math.max(bl, bh)]);
+      }
+      if (cur.length) runs.push(cur);
+      runs.forEach(function (run) {
+        if (run.length < 2) return;
+        var fwd = run.map(function (q) { return 'L' + X(q[0]).toFixed(1) + ',' + Y(q[2]).toFixed(1); }).join(' ');
+        var back = run.slice().reverse().map(function (q) { return 'L' + X(q[0]).toFixed(1) + ',' + Y(q[1]).toFixed(1); }).join(' ');
+        ribbon += '<path d="M' + X(run[0][0]).toFixed(1) + ',' + Y(run[0][2]).toFixed(1) + ' ' + fwd + ' ' + back + ' Z" fill="#2490ef" fill-opacity="0.14" stroke="none"/>';
+      });
+      if (ribbon) legend += '<span class="hd-leg-item"><i style="background:#2490ef;opacity:.25;height:9px;"></i>' + esc(loName) + ' – ' + esc(hiName) + '</span>';
+    }
+    var lines = '';
+    lineCols.forEach(function (c, ci) {
+      var color = COLORS[ci % COLORS.length], runs = [], cur = [];
+      (c.values || []).forEach(function (v, i) { var f = fin(v); if (f === null) { if (cur.length) { runs.push(cur); cur = []; } } else cur.push([i, f]); });
+      if (cur.length) runs.push(cur);
+      runs.forEach(function (run) {
+        if (run.length < 2) return;
+        lines += '<polyline fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" points="' + run.map(function (q) { return X(q[0]).toFixed(1) + ',' + Y(q[1]).toFixed(1); }).join(' ') + '"/>';
+      });
+      legend += '<span class="hd-leg-item"><i style="background:' + color + '"></i>' + esc(c.name) + '</span>';
+    });
+    var svg = '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="display:block;max-width:' + W + 'px;">' + grid + ribbon + lines + xl + '</svg>';
+    return svg + '<div class="hd-chart-legend">' + legend + '</div>';
+  }
+
+  var blocks = document.querySelectorAll('.hd-series-interactive');
+  for (var b = 0; b < blocks.length; b++) {
+    (function (block) {
+      var blob = block.querySelector('script.hd-series-cols'); if (!blob) return;
+      var data; try { data = JSON.parse(blob.textContent || '{}'); } catch (e) { return; }
+      var cols = data.columns || []; if (cols.length < 2) return;
+      var chartEl = block.querySelector('.hd-series-chart'); if (!chartEl) return;
+      var loSel = block.querySelector('.hd-band-lower'), hiSel = block.querySelector('.hd-band-upper');
+      function redraw() {
+        var loN = loSel ? loSel.value : '', hiN = hiSel ? hiSel.value : '';
+        if (loN && hiN && loN === hiN) hiN = '';
+        chartEl.innerHTML = build(cols, data.labels, loN, hiN);
+      }
+      if (loSel) loSel.addEventListener('change', redraw);
+      if (hiSel) hiSel.addEventListener('change', redraw);
+      redraw();
+    })(blocks[b]);
+  }
+})();
+</script>
+
+<script>
+// ---- Model GEOMETRY outputs: render each stored GeoJSON into its mini Leaflet map. ----
+(function () {
+  var blobs = document.querySelectorAll('script.hd-geom-out-data');
+  if (!blobs.length) return;
+  function draw() {
+    blobs.forEach(function (s) {
+      var holder = document.getElementById(s.getAttribute('data-holder'));
+      if (!holder || holder.dataset.drawn) return;
+      var geom; try { geom = JSON.parse(s.textContent || 'null'); } catch (e) { return; }
+      if (!geom) return;
+      holder.dataset.drawn = '1';
+      var map = L.map(holder, { scrollWheelZoom: false, attributionControl: false });
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        { subdomains: 'abcd', maxZoom: 19 }).addTo(map);
+      var layer = L.geoJSON(geom, {
+        style: { color: '#2490ef', weight: 2, fillOpacity: 0.18 },
+        pointToLayer: function (f, ll) { return L.circleMarker(ll, { radius: 7, color: '#2490ef', fillOpacity: 0.7 }); }
+      }).addTo(map);
+      try { var b = layer.getBounds(); if (b.isValid()) map.fitBounds(b.pad(0.25)); else map.setView([0, 0], 2); }
+      catch (e) { map.setView([0, 0], 2); }
+    });
+  }
+  if (window.L) { draw(); return; }
+  var css = document.createElement('link'); css.rel = 'stylesheet';
+  css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+  css.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY='; css.crossOrigin = 'anonymous';
+  document.head.appendChild(css);
+  var js = document.createElement('script');
+  js.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+  js.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo='; js.crossOrigin = 'anonymous';
+  js.onload = draw; document.head.appendChild(js);
 })();
 </script>
 {% endblock %}

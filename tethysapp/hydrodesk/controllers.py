@@ -1509,25 +1509,32 @@ def _last_seg(path):
 
 
 def _series_variables(out):
-    """Normalize a series output into an ordered column list ``[{name, path}]``.
+    """Normalize a series output into an ordered column list ``[{name, path, role?}]``.
 
-    Prefers the modern ``variables[]`` (one entry per captured sub-key). Falls
-    back to the legacy ``x_path``/``y_path`` pair (-> two columns named after their
-    leaf segments) so old connectors keep rendering. Entries without a path are
-    dropped; a missing name is derived from the path's last segment."""
+    Prefers the modern ``variables[]`` (one entry per captured sub-key; an optional
+    ``role`` — x|value|median|lower|upper|member|flag — tags the column's meaning for
+    the envelope/charts). Falls back to the legacy ``x_path``/``y_path`` pair (-> two
+    columns named after their leaf segments, roles x/value). Entries without a path are
+    dropped; a missing name is derived from the path's last segment. The fan band is no
+    longer a connector concept — a connector just exposes its columns; the record page
+    chooses which two are the band."""
     out = out or {}
     norm = []
     for v in (out.get("variables") or []):
         if isinstance(v, dict) and (v.get("path") or "").strip():
-            norm.append({"name": (v.get("name") or _last_seg(v["path"]) or "var"),
-                         "path": v["path"].strip()})
+            ent = {"name": (v.get("name") or _last_seg(v["path"]) or "var"),
+                   "path": v["path"].strip()}
+            role = (v.get("role") or "").strip().lower()
+            if role:
+                ent["role"] = role
+            norm.append(ent)
     if norm:
         return norm
     xp, yp = (out.get("x_path") or "").strip(), (out.get("y_path") or "").strip()
     if xp:
-        norm.append({"name": _last_seg(xp) or "time", "path": xp})
+        norm.append({"name": _last_seg(xp) or "time", "path": xp, "role": "x"})
     if yp:
-        norm.append({"name": _last_seg(yp) or "value", "path": yp})
+        norm.append({"name": _last_seg(yp) or "value", "path": yp, "role": "value"})
     return norm
 
 
@@ -1549,6 +1556,10 @@ _OUTPUT_FIELD_TYPES = ("Number", "Text", "Date", "Time-Series", "Image")
 # A Python-script output can also be stored as raw JSON (an object/array kept as-is) —
 # the alternative to "Table" for a dict output.
 _SCRIPT_OUTPUT_FIELD_TYPES = ("Number", "Text", "Date", "Time-Series", "JSON")
+# A MODEL (trusted, off-record) can additionally emit binary/spatial artifacts: an Image
+# (a generated plot / data-URI / artifact PNG), a File (any output file -> download link),
+# or a Geometry (GeoJSON -> rendered on the map / written to a child record's geom).
+_MODEL_OUTPUT_FIELD_TYPES = _SCRIPT_OUTPUT_FIELD_TYPES + ("Image", "File", "Geometry")
 _OUTPUT_TYPE_TO_FIELD = {
     "number": "Number",
     "string": "Text",
@@ -1710,31 +1721,59 @@ def _find_output(outputs, name):
     return None
 
 
+def _y_col_index(columns):
+    """The index of the column the legacy single-line ``y`` should project from:
+    an explicit median/value/y ROLE wins, then the column NAMED 'value', then the
+    first non-band column after the x axis. The envelope's degradation rule — an
+    ensemble (median+lower+upper) collapses to its median, never to a band edge."""
+    for i, c in enumerate(columns):
+        if (c.get("role") or "").lower() in ("median", "value", "y"):
+            return i
+    for i, c in enumerate(columns):
+        if (c.get("name") or "").lower() == "value":
+            return i
+    skip = ("x", "lower", "upper", "member", "flag")
+    for i, c in enumerate(columns):
+        if i == 0:
+            continue
+        if (c.get("role") or "").lower() not in skip:
+            return i
+    return 1 if len(columns) > 1 else None
+
+
 def _extract_output(data, out):
     """Extract ONE named output from the SINGLE already-fetched parsed JSON ``data``.
 
     ``out`` is one outputs[] entry. A 'value' output walks ``out['path']`` to a
     scalar leaf via _json_path; a 'series' output maps EACH of its variables
     (``_series_variables``) over the array at their shared '*' segment via
-    _json_path_series, materializing one aligned COLUMN per variable. The result
-    carries ``columns:[{name, values}]`` (rendered as one table whose headers are
-    the variable names) plus back-compat ``x``/``y`` (first column = x, the
-    'value'-ish column = y) for the sparkline. This is the reusable post-fetch
-    extraction the detail renderer calls N times against the SAME cached ``data``
-    (one HTTP hit for all ticked outputs)."""
+    _json_path_series, materializing one aligned COLUMN per variable (each carrying
+    its variable's ``role``/``units`` tag when declared — the envelope's typed
+    columns). The result carries ``columns:[{name, values, role?, units?}]`` plus
+    back-compat ``x``/``y`` (the role-x/first column = x, the role-median/'value'
+    column = y) for the sparkline. This is the reusable post-fetch extraction the
+    detail renderer calls N times against the SAME cached ``data`` (one HTTP hit
+    for all ticked outputs)."""
     out = out or {}
     kind = (out.get("kind") or "value").lower()
     if kind == "series":
         variables = _series_variables(out)
-        columns = [{"name": v["name"], "values": _json_path_series(data, v["path"])}
-                   for v in variables]
+        columns = []
+        for v in variables:
+            col = {"name": v["name"], "values": _json_path_series(data, v["path"])}
+            if v.get("role"):
+                col["role"] = v["role"]
+            if v.get("unit") or v.get("units"):
+                col["units"] = v.get("unit") or v.get("units")
+            columns.append(col)
         n = max((len(c["values"]) for c in columns), default=0)
-        # Back-compat x/y for the sparkline: x = first column; y = the column named
-        # 'value' (or the 2nd) with USGS no-data sentinels dropped PAIRWISE so the
-        # chart never plots a -999999 spike.
-        xs = columns[0]["values"] if columns else []
-        yi = next((i for i, c in enumerate(columns)
-                   if (c["name"] or "").lower() == "value"), 1 if len(columns) > 1 else None)
+        # Back-compat x/y for the sparkline: x = the role-x (or first) column; y = the
+        # role-median/'value' column with USGS no-data sentinels dropped PAIRWISE so
+        # the chart never plots a -999999 spike.
+        xi = next((i for i, c in enumerate(columns)
+                   if (c.get("role") or "").lower() == "x"), 0)
+        xs = columns[xi]["values"] if columns else []
+        yi = _y_col_index(columns)
         ys = columns[yi]["values"] if (yi is not None and yi < len(columns)) else []
         pairs = [(x, y) for x, y in zip(xs, ys) if y not in _NO_DATA]
         return {
@@ -1787,19 +1826,23 @@ def _merge_extracted(pages):
     if not pages:
         return {"kind": "value", "value": None}
     if any(p.get("kind") == "series" for p in pages):
-        names, cols = [], {}
+        names, cols, tags = [], {}, {}
         for p in pages:
             for c in (p.get("columns") or []):
                 nm = c.get("name")
                 if nm not in cols:
                     cols[nm] = []
                     names.append(nm)
+                    # Keep the column's envelope tags (role/units) across pages.
+                    tags[nm] = {k: c[k] for k in ("role", "units") if c.get(k)}
                 cols[nm].extend(c.get("values") or [])
-        columns = [{"name": nm, "values": cols[nm]} for nm in names]
+        columns = [dict({"name": nm, "values": cols[nm]}, **tags.get(nm, {}))
+                   for nm in names]
         n = max((len(c["values"]) for c in columns), default=0)
-        xs = columns[0]["values"] if columns else []
-        yi = next((i for i, c in enumerate(columns)
-                   if (c["name"] or "").lower() == "value"), 1 if len(columns) > 1 else None)
+        xi = next((i for i, c in enumerate(columns)
+                   if (c.get("role") or "").lower() == "x"), 0)
+        xs = columns[xi]["values"] if columns else []
+        yi = _y_col_index(columns)
         ys = columns[yi]["values"] if (yi is not None and yi < len(columns)) else []
         pairs = [(x, y) for x, y in zip(xs, ys) if y not in _NO_DATA]
         return {"kind": "series", "columns": columns, "n": n,
@@ -4573,16 +4616,28 @@ def _fetch_gee(cfg, record_attrs, output=None, field_map=None,
                             vmax = vals[-1]
                 except Exception:
                     pass
-            palette = (cfg.get("gee_palette") or cfg.get("raster_palette") or "").strip()
+            # Default to viridis (not GEE's grayscale) so the rendered raster matches the
+            # detail-map legend, which samples the palette — a blank palette previously
+            # drew a grayscale raster under a viridis legend.
+            palette = (cfg.get("gee_palette") or cfg.get("raster_palette") or "viridis").strip()
             pal_list = _palette_hex_list(palette)
             try:
                 dim = int(cfg.get("gee_dimensions") or 512)
             except (TypeError, ValueError):
                 dim = 512
             vis = {"region": geom, "dimensions": dim, "format": "png"}
-            if vmin is not None:
+            if vmin is not None and vmax is not None:
+                if vmax > vmin:
+                    vis["min"], vis["max"] = vmin, vmax
+                else:
+                    # Constant region (e.g. a polygon inside ONE coarse GLDAS cell): pad
+                    # the RENDER stretch so the value maps to mid-palette, but leave the
+                    # reported vmin/vmax equal so the legend shows the single value once.
+                    pad = max(abs(vmin) * 0.05, 1.0)
+                    vis["min"], vis["max"] = vmin - pad, vmax + pad
+            elif vmin is not None:
                 vis["min"] = vmin
-            if vmax is not None:
+            elif vmax is not None:
                 vis["max"] = vmax
             if pal_list:
                 vis["palette"] = pal_list
@@ -4738,6 +4793,53 @@ def _gee_describe(cfg, attrs):
     return out
 
 
+def _degrade(env):
+    """The envelope's MANDATORY back-compat projection: whatever a fetcher emits,
+    guarantee the legacy keys every existing consumer reads. A series fills x/y from
+    its role-tagged columns (an ensemble's y = its MEDIAN, never a band edge); other
+    kinds already carry their legacy keys (value / image url). Additive only — never
+    overwrites keys a fetcher set. Universality by enrichment, compatibility by
+    projection."""
+    if not isinstance(env, dict):
+        return env
+    if (env.get("kind") or "").lower() == "series":
+        cols = env.get("columns") or []
+        if cols and (env.get("x") is None or env.get("y") is None):
+            xi = next((i for i, c in enumerate(cols)
+                       if (c.get("role") or "").lower() == "x"), 0)
+            yi = _y_col_index(cols)
+            if env.get("x") is None:
+                env["x"] = cols[xi].get("values") or []
+            if env.get("y") is None:
+                env["y"] = (cols[yi].get("values") or []) if yi is not None else []
+    return env
+
+
+# ---------------------------------------------------------------------------
+# CONNECTOR-KIND REGISTRY — the envelope's extension seam. Every kind registers
+# ONE fetcher with the shared signature (cfg, record_attrs, output=, field_map=,
+# connector_name=) returning the result envelope; a NEW data source (sql, stac,
+# sensorthings, ...) plugs in via register_connector_kind() without touching
+# fetch_api. 'rest' is the default kind (the registry fallback).
+# ---------------------------------------------------------------------------
+_CONNECTOR_KINDS = {}
+
+
+def register_connector_kind(kind, fetcher):
+    """Register (or override) the fetcher for a connector ``kind``. The fetcher must
+    accept (cfg, record_attrs, output=None, field_map=None, connector_name=...) and
+    return a result envelope ({'kind': 'value'|'series'|'image'|..., ...})."""
+    _CONNECTOR_KINDS[(kind or "").strip().lower()] = fetcher
+
+
+register_connector_kind("netcdf", _fetch_netcdf)
+register_connector_kind("thredds", _fetch_netcdf)
+register_connector_kind("csv", _fetch_csv)
+register_connector_kind("wms", _fetch_wms)
+register_connector_kind("wcs", _fetch_wcs)
+register_connector_kind("gee", _fetch_gee)
+
+
 def fetch_api(connector_config, record_attrs, connector_name="connector",
               field_map=None, output=None):
     """The generic API fetch — the centerpiece extractor.
@@ -4762,32 +4864,38 @@ def fetch_api(connector_config, record_attrs, connector_name="connector",
     renderer calls fetch_api once per ticked output with the SAME (name,url) cache
     key, so N outputs share ONE HTTP hit.
 
+    DISPATCH is via the _CONNECTOR_KINDS registry (the envelope seam); the chosen
+    fetcher's result is finished with the back-compat projection (_degrade) and a
+    ``meta`` stamp {connector, kind, fetched_at} — the envelope v1 contract.
+
     Returns a dict the caller renders:
       {'kind': 'value',  'value': <scalar or None>}
-      {'kind': 'series', 'x': [...], 'y': [...]}
+      {'kind': 'series', 'x': [...], 'y': [...], 'columns': [{name, values, role?}]}
       {'kind': 'json',   'json': <parsed>}
     plus 'url' (SECRET-REDACTED) and 'cached' (bool) in every case. On any failure
     a soft empty result of the requested kind is returned (never raises)."""
     cfg = _connector_config(connector_config)
     name = connector_name or cfg.get("name") or "connector"
-
-    # NON-REST kinds dispatch to their own fetcher (same value/series/image shape).
     knd = (cfg.get("kind") or "rest").lower()
-    if knd in ("netcdf", "thredds"):
-        return _fetch_netcdf(cfg, record_attrs, output=output,
-                             field_map=field_map, connector_name=name)
-    if knd == "csv":
-        return _fetch_csv(cfg, record_attrs, output=output,
-                          field_map=field_map, connector_name=name)
-    if knd == "wms":
-        return _fetch_wms(cfg, record_attrs, output=output,
-                          field_map=field_map, connector_name=name)
-    if knd == "wcs":
-        return _fetch_wcs(cfg, record_attrs, output=output,
-                          field_map=field_map, connector_name=name)
-    if knd == "gee":
-        return _fetch_gee(cfg, record_attrs, output=output,
-                          field_map=field_map, connector_name=name)
+    fetcher = _CONNECTOR_KINDS.get(knd, _fetch_rest)
+    res = fetcher(cfg, record_attrs, output=output,
+                  field_map=field_map, connector_name=name)
+    if isinstance(res, dict):
+        res = _degrade(res)
+        if "meta" not in res:
+            res["meta"] = {"connector": name, "kind": knd,
+                           "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                       time.gmtime())}
+    return res
+
+
+def _fetch_rest(cfg, record_attrs, output=None, field_map=None,
+                connector_name="connector"):
+    """The REST (default-kind) fetcher: templated HTTP request -> parsed JSON ->
+    per-output extraction. The original fetch_api body; see fetch_api for the
+    contract. ``cfg`` is already a plain config dict here."""
+    cfg = cfg or {}
+    name = connector_name or cfg.get("name") or "connector"
 
     # OUTPUT SELECTION (the multi-output model). Resolve the requested output to a
     # concrete outputs[] entry up front: an explicit dict is used verbatim; a name
@@ -4997,8 +5105,18 @@ CONNECTOR_PRESETS = {
                  "required": True, "in": "url"},
             ],
             "result_kind": "series",
-            "x_path": "datetime.*",
-            "y_path": "flow_median.*",
+            # All forecast columns as variables — the record page picks which two are
+            # the uncertainty band (fan) and which is the line.
+            "outputs": [{
+                "name": "series", "kind": "series", "type": "series", "primary": True,
+                "array_path": "datetime.*",
+                "variables": [
+                    {"name": "datetime", "path": "datetime.*", "role": "x"},
+                    {"name": "flow_median", "path": "flow_median.*", "role": "median"},
+                    {"name": "flow_uncertainty_lower", "path": "flow_uncertainty_lower.*"},
+                    {"name": "flow_uncertainty_upper", "path": "flow_uncertainty_upper.*"},
+                ],
+            }],
             "ttl_seconds": 1800,
             "timeout": 25,
         },
@@ -5568,7 +5686,13 @@ def _materialize_connector_series(session, prop, attrs, cache):
         except Exception:
             continue
         if (result or {}).get("kind") == "series":
-            cols = result.get("columns") or []
+            # COMPAT INVARIANT: ensemble BAND columns (role lower/upper/member) are
+            # excluded from script/API rows — adding them would silently change any
+            # existing script that aggregates over a row's numeric values (e.g. a
+            # peak-flow max would jump to the upper bound). The envelope enriches
+            # the chart; downstream consumers keep the legacy row shape.
+            cols = [c for c in (result.get("columns") or [])
+                    if (c.get("role") or "").lower() not in ("lower", "upper", "member")]
             n = result.get("n") or max((len(c.get("values") or []) for c in cols), default=0)
             rows = []
             for i in range(n):
@@ -6565,6 +6689,18 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
             api_connector = prop.get("x-api-connector")
             x_widget = prop.get("x-widget")
             fmt = prop.get("format")
+            # MODEL-OUTPUT fields are computed by RUNNING the bound model, never typed in.
+            # Render them read-only so the create/edit form isn't cluttered with editable
+            # Number/File/Image inputs the user shouldn't fill (formula/script keep their
+            # own richer read-only widgets handled below).
+            if prop.get("x-computed") and prop.get("x-field") not in ("formula", "script"):
+                f["widget"] = "computed"
+                f["computed_by"] = prop.get("x-computed-by") or ""
+                f["output_type"] = _friendly_output_type(prop.get("x-output-type"))
+                cur = values.get(name)
+                f["has_value"] = cur not in (None, "", [], {})
+                fields.append(f)
+                continue
             if t == "string" and prop.get("enum"):
                 f["widget"] = "select"
                 f["options"] = list(prop["enum"])
@@ -6604,6 +6740,19 @@ def _build_widgets(field_schema, geometry_kind=None, values=None, session=None):
                 f["widget"] = "shapefile"
                 f["zone_count"] = _geojson_feature_count(values.get(name) or "")
                 f["has_value"] = f["zone_count"] > 0
+            elif prop.get("x-field") == "image":
+                # Per-record IMAGE UPLOAD: a file input (accept images). The value is the
+                # served URL string; show the current image as a thumbnail.
+                f["widget"] = "image-upload"
+                cur = values.get(name)
+                f["current_image"] = (cur.get("url") if isinstance(cur, dict)
+                                      else (cur if isinstance(cur, str) and cur.strip() else None))
+            elif prop.get("x-field") == "file" or x_widget == "file":
+                # Per-record FILE UPLOAD: a file input. Show the currently-stored file
+                # (a re-upload replaces it); the value is a {name,url,size} descriptor.
+                f["widget"] = "file"
+                cur = values.get(name)
+                f["current_file"] = cur if isinstance(cur, dict) else None
             elif prop.get("x-field") == "formula":
                 # Computed field: READ-ONLY on the form (filled on save from the other
                 # fields); just shows its expression so it's visible but inert.
@@ -6833,6 +6982,71 @@ def _apply_shapefile_uploads(field_schema, files, attributes, existing=None):
                               "of .shp/.shx/.dbf, or a .shp)." % key)
         elif existing.get(key):
             attributes[key] = existing[key]            # keep the stored geometry on edit
+    return errors
+
+
+def _record_file_dir(record_id, create=False):
+    """The persistent per-record file-upload directory under app media (served by the
+    auth-gated ``record_file`` controller)."""
+    import os
+    import tempfile
+    try:
+        base = App.get_app_media().path
+    except Exception:
+        from django.conf import settings as _s
+        base = os.path.join(getattr(_s, "MEDIA_ROOT", tempfile.gettempdir()), "hydrodesk", "app")
+    d = os.path.join(base, "record_files", str(record_id))
+    if create:
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _record_file_url(record_id, stored):
+    q = "?file=" + urllib.parse.quote(stored)
+    try:
+        return reverse("hydrodesk:record_file", kwargs={"record_id": str(record_id)}) + q
+    except Exception:
+        return "/apps/hydrodesk/record/%s/file%s" % (urllib.parse.quote(str(record_id)), q)
+
+
+def _file_upload_fields(field_schema):
+    """(key, prop) for every uploadable FILE/IMAGE field (x-field in file|image) that is NOT
+    a computed model output — those are read-only and never carry an upload."""
+    props = (field_schema or {}).get("properties") or {}
+    return [(k, p) for k, p in props.items()
+            if isinstance(p, dict) and p.get("x-field") in ("file", "image")
+            and not p.get("x-computed")]
+
+
+def _apply_file_uploads(field_schema, files, attributes, record_id, existing=None):
+    """Fold per-record FILE / IMAGE uploads into ``attributes``. A File field stores a
+    {name,url,size,stored} descriptor (download link); an Image field stores the served
+    URL string (renders as <img>). No new upload on edit -> the prior value is kept.
+    Returns a list of error strings."""
+    import os
+    files = files or {}
+    existing = existing or {}
+    errors = []
+    fdir = None
+    for key, prop in _file_upload_fields(field_schema):
+        up = files.get(key)
+        if up is not None:
+            try:
+                if fdir is None:
+                    fdir = _record_file_dir(record_id, create=True)
+                fname = os.path.basename(getattr(up, "name", "") or key) or key
+                stored = (re.sub(r"[^A-Za-z0-9_.-]", "_", key) + "__"
+                          + re.sub(r"[^A-Za-z0-9_.-]", "_", fname))
+                dst = os.path.join(fdir, stored)
+                with open(dst, "wb") as fh:
+                    for chunk in up.chunks():
+                        fh.write(chunk)
+                attributes[key] = {"name": fname, "url": _record_file_url(record_id, stored),
+                                   "size": os.path.getsize(dst), "stored": stored}
+            except Exception as exc:
+                errors.append("%s: upload failed (%s)" % (key, type(exc).__name__))
+        elif existing.get(key) is not None:
+            attributes[key] = existing[key]
     return errors
 
 
@@ -7511,13 +7725,113 @@ class _ModelData:
     output (NetCDF/REST/WCS series or value) for THIS record, or a raster/coverage/DEM
     file fetched into the run workspace."""
 
-    def __init__(self, slug, record_id):
+    def __init__(self, slug, record_id, workspace=None):
         self.slug = slug
         self.record_id = record_id
+        self.workspace = workspace
 
     @staticmethod
     def _eng():
         return App.get_persistent_store_database("hydro_db")
+
+    def records_iter(self, slug, chunk_size=2000, **equals):
+        """Yield records (attr dicts) in id-keyset PAGES so a population LARGER than the
+        records() cap streams instead of raising — for incremental aggregates over 10k+
+        gages/subbasins. Each page is a fresh session so memory stays bounded."""
+        chunk_size = max(1, int(chunk_size))
+        last = None
+        while True:
+            with Session(self._eng()) as s:
+                stmt = select(m.HydroRecord.id, m.HydroRecord.attributes).where(
+                    m.HydroRecord.hydrotype_slug == slug)
+                for k, v in (equals or {}).items():
+                    stmt = stmt.where(m.HydroRecord.attributes[k].astext == str(v))
+                if last is not None:
+                    stmt = stmt.where(m.HydroRecord.id > last)
+                rows = s.execute(stmt.order_by(m.HydroRecord.id).limit(chunk_size)).all()
+            if not rows:
+                return
+            for rid, a in rows:
+                d = {k: v for k, v in (a or {}).items() if not k.startswith("_")}
+                d["id"] = str(rid)
+                yield d
+            last = rows[-1][0]
+            if len(rows) < chunk_size:
+                return
+
+    def aggregate(self, slug, field, op="sum", **equals):
+        """A DB-SIDE aggregate over a doctype's numeric field — sum|avg|min|max|count — so a
+        huge population is reduced in PostgreSQL and never loaded into the worker. The JSONB
+        field is cast to float; non-numeric rows are ignored by the cast filter."""
+        from sqlalchemy import func as _f
+        op = (op or "sum").lower()
+        with Session(self._eng()) as s:
+            if op == "count":
+                expr = _f.count()
+            else:
+                col = cast(m.HydroRecord.attributes[field].astext, Float)
+                expr = {"sum": _f.sum, "avg": _f.avg, "mean": _f.avg,
+                        "min": _f.min, "max": _f.max}.get(op, _f.sum)(col)
+            stmt = select(expr).where(m.HydroRecord.hydrotype_slug == slug)
+            for k, v in (equals or {}).items():
+                stmt = stmt.where(m.HydroRecord.attributes[k].astext == str(v))
+            if op != "count":
+                stmt = stmt.where(
+                    m.HydroRecord.attributes[field].astext.op("~")(r"^-?\d+(\.\d+)?$"))
+            val = s.execute(stmt).scalar()
+        if val is None:
+            return 0 if op == "count" else None
+        return int(val) if op == "count" else float(val)
+
+    def upload(self, field, filename=None):
+        """Stage THIS record's file-ish field into the run workspace and return the path.
+        Handles a GeoJSON value (-> <field>.geojson), a data: URI (decoded), or an http(s)
+        URL (downloaded). None if the field is empty / not stageable / no workspace."""
+        import os
+        import base64
+        import uuid as _uuid
+        if not self.workspace:
+            return None
+        try:
+            rid = _uuid.UUID(str(self.record_id))
+        except (ValueError, TypeError):
+            return None
+        with Session(self._eng()) as s:
+            r = s.execute(select(m.HydroRecord.attributes).where(
+                m.HydroRecord.id == rid)).first()
+        v = (dict(r[0]) if r else {}).get(field)
+        if v is None:
+            return None
+        base = filename or re.sub(r"[^A-Za-z0-9_.-]", "_", str(field))
+        if isinstance(v, dict):
+            # An uploaded File/Image descriptor ({stored,name,...}) -> copy the stored file.
+            stored = v.get("stored")
+            if stored:
+                import shutil
+                src = os.path.join(_record_file_dir(self.record_id), stored)
+                if os.path.isfile(src):
+                    dst = os.path.join(self.workspace, filename or v.get("name") or base)
+                    shutil.copy2(src, dst)
+                    return dst
+            # else a GeoJSON value -> write it out
+            p = os.path.join(self.workspace, base + ".geojson")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(v, f)
+            return p
+        s2 = str(v).strip()
+        if s2.startswith("data:"):
+            try:
+                head, b64 = s2.split(",", 1)
+                ext = ".png" if "image/png" in head else (".bin")
+                p = os.path.join(self.workspace, base + ext)
+                with open(p, "wb") as f:
+                    f.write(base64.b64decode(b64))
+                return p
+            except Exception:
+                return None
+        if s2.startswith("http://") or s2.startswith("https://"):
+            return self.fetch(s2, os.path.join(self.workspace, base))
+        return None
 
     def records(self, slug, limit=5000, **equals):
         """All records of a doctype as attr dicts (id included), ORDERED by id so an
@@ -7673,47 +7987,60 @@ def _model_namespace(attrs, workspace, slug=None, record_id=None):
     rasters) and parse outputs."""
     import os, io, csv, math, subprocess, pathlib, datetime, shutil, tempfile
     ns = {"record": dict(attrs or {}), "workspace": workspace,
-          "data": _ModelData(slug, record_id), "ncstats": _nc_stats,
+          "data": _ModelData(slug, record_id, workspace), "ncstats": _nc_stats,
           "geotiff": _geotiff_read, "os": os, "io": io,
           "json": json, "csv": csv, "math": math, "re": re, "subprocess": subprocess,
           "pathlib": pathlib, "datetime": datetime, "shutil": shutil, "tempfile": tempfile,
           "open": open, "print": print, "len": len, "range": range, "float": float,
           "int": int, "str": str, "list": list, "dict": dict, "sorted": sorted,
           "sum": sum, "min": min, "max": max, "abs": abs, "round": round, "enumerate": enumerate}
-    try:
-        import numpy as _np
-        ns["np"] = _np; ns["numpy"] = _np
-    except Exception:
-        pass
-    try:
-        import pandas as _pd
-        ns["pd"] = _pd; ns["pandas"] = _pd
-    except Exception:
-        pass
+    # Scientific stack — each optional (None if not installed) so a script can branch on it.
+    for _alias, _mod in (("np", "numpy"), ("numpy", "numpy"), ("pd", "pandas"), ("pandas", "pandas"),
+                         ("scipy", "scipy"), ("xr", "xarray"), ("xarray", "xarray"),
+                         ("rasterio", "rasterio"), ("gpd", "geopandas"), ("geopandas", "geopandas")):
+        try:
+            ns[_alias] = __import__(_mod)
+        except Exception:
+            ns.setdefault(_alias, None)
     return ns
 
 
 def _render_model_command(template, attrs, workspace):
-    """Substitute {field} (from attrs) and {workspace} in a command template. Field
-    values are shlex.quote'd so record data can never break out of the (trusted,
-    superuser-authored) command; {workspace} is a path we control."""
+    """Substitute {field} (from attrs) and {workspace} in a command template. A SCALAR field
+    is shlex.quote'd inline (record data can never break out of the trusted, superuser-authored
+    command). A LIST/DICT field (a series / table / JSON input) is written to
+    ``workspace/<field>.json`` and the QUOTED PATH is substituted — so a shell tool receives a
+    real file instead of a giant str()'d blob. {workspace} is a path we control."""
     import shlex
+    import os
 
     def sub(mo):
         k = mo.group(1)
         if k == "workspace":
             return shlex.quote(workspace)
         v = attrs.get(k)
+        if isinstance(v, (list, dict)):
+            try:
+                fn = re.sub(r"[^A-Za-z0-9_.-]", "_", k) + ".json"
+                p = os.path.join(workspace, fn)
+                with open(p, "w", encoding="utf-8") as fh:
+                    json.dump(v, fh, default=str)
+                return shlex.quote(p)
+            except Exception:
+                return shlex.quote(str(v))
         return shlex.quote("" if v is None else str(v))
 
     return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", sub, template or "")
 
 
-def _write_model_outputs(slug, record_id, updates):
+def _write_model_outputs(slug, record_id, updates, new_records=None):
     """Merge a model run's outputs into the record's attributes, then CASCADE: recompute the
     doctype's formula + Python-script fields so they can use a model OUTPUT as an input (e.g.
-    a script that classifies the model's peak_flow). A FRESH session (worker thread)."""
-    if not updates:
+    a script that classifies the model's peak_flow). ``new_records`` (a model's ``_new_records``
+    list of ``{slug?, attrs, geom?}``) creates CHILD records in the SAME transaction — for
+    spatially-distributed / ensemble-member / per-row outputs one record can't hold. A FRESH
+    session (worker thread)."""
+    if not updates and not new_records:
         return
     import uuid as _uuid
     engine = App.get_persistent_store_database("hydro_db")
@@ -7724,7 +8051,22 @@ def _write_model_outputs(slug, record_id, updates):
         if rec is None:
             return
         a = dict(rec.attributes or {})
-        a.update(updates)
+        a.update(updates or {})
+        # Multi-record output: create child records (same txn, so a failure rolls back the
+        # parent write too -> no orphans). Each entry: {slug?, attrs, geom?(GeoJSON)}.
+        if new_records:
+            for nr in (new_records if isinstance(new_records, list) else [new_records]):
+                if not isinstance(nr, dict):
+                    continue
+                child = m.HydroRecord(
+                    hydrotype_slug=((nr.get("slug") or "").strip() or slug),
+                    attributes=dict(nr.get("attrs") or nr.get("attributes") or {}))
+                gj = _to_geojson(nr.get("geom") or nr.get("geometry"))
+                if gj:
+                    wkt = _geojson_to_wkt(gj)
+                    if wkt:
+                        child.geom = WKTElement(wkt, srid=4326)
+                session.add(child)
         # Cascade derived fields off the fresh model outputs. Guarded so a script hiccup
         # can't lose the model's outputs (already merged into `a` above).
         meta = _load_hydrotype(session, slug)
@@ -7739,12 +8081,12 @@ def _write_model_outputs(slug, record_id, updates):
         session.commit()
 
 
-def _materialize_model_inputs(slug, record_id, attrs, field_schema):
+def _materialize_model_inputs(slug, record_id, attrs, field_schema, input_timeout=45):
     """Fetch each x-api-connector field for THIS record and merge the live value into a copy
     of ``attrs``, so a model's ``{field}`` command tokens and ``record[field]`` in pre/post
     see LIVE connector data of ANY of the 7 kinds (REST/CSV/NetCDF/THREDDS/WMS/WCS/GEE), not
     only what an explicit data.series() call fetches. One bad/slow connector can't block the
-    run — each fetch is guarded. Returns (attrs, warnings)."""
+    run — each fetch is guarded by ``input_timeout`` (per-model). Returns (attrs, warnings)."""
     props = (field_schema or {}).get("properties") or {}
     conn_fields = [(k, p) for k, p in props.items()
                    if isinstance(p, dict) and p.get("x-api-connector")]
@@ -7757,7 +8099,7 @@ def _materialize_model_inputs(slug, record_id, attrs, field_schema):
     import socket
     _old_to = socket.getdefaulttimeout()
     try:
-        socket.setdefaulttimeout(45)
+        socket.setdefaulttimeout(max(5, min(600, int(input_timeout or 45))))
         with Session(App.get_persistent_store_database("hydro_db")) as session:
             # Expose the record's GEOMETRY to the connectors (so a model can reduce a
             # GLDAS/NDVI ImageCollection over the record's drawn basin), like the detail view.
@@ -7780,10 +8122,144 @@ def _materialize_model_inputs(slug, record_id, attrs, field_schema):
     return out, warnings
 
 
+def _model_artifact_dir(job_id, create=False):
+    """The PERSISTENT per-job artifact directory under the app media folder (web-served via
+    the ``model_artifact`` controller). Survives the run-workspace cleanup so a model's
+    output FILES (CSV/GeoTIFF/NetCDF/plots) and the full run LOG are retrievable + downloadable
+    after the run, instead of being rmtree'd."""
+    import tempfile
+    try:
+        base = App.get_app_media().path
+    except Exception:
+        from django.conf import settings as _s
+        base = os.path.join(getattr(_s, "MEDIA_ROOT", tempfile.gettempdir()), "hydrodesk", "app")
+    d = os.path.join(base, "model_jobs", str(job_id))
+    if create:
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _persist_model_artifacts(job_id, workspace, proc, post_error):
+    """Before the workspace is deleted, copy every file the run wrote to ``workspace/outputs/``
+    plus a full ``model.log`` (returncode + complete stdout/stderr + any post error) into the
+    job's persistent artifact dir. Returns the list of relative artifact names. Never raises."""
+    import shutil
+    adir = _model_artifact_dir(job_id, create=True)
+    arts = []
+    try:
+        parts = []
+        if proc is not None:
+            parts.append("returncode: %s\n\n===== STDOUT =====\n%s\n\n===== STDERR =====\n%s"
+                         % (proc.returncode, proc.stdout or "", proc.stderr or ""))
+        else:
+            parts.append("(Python-only model — no shell command was run)")
+        if post_error:
+            parts.append("\n===== POST-SCRIPT ERROR =====\n%s" % post_error)
+        with open(os.path.join(adir, "model.log"), "w", encoding="utf-8", errors="replace") as fh:
+            fh.write("\n".join(parts))
+        arts.append("model.log")
+    except Exception:
+        pass
+    out_src = os.path.join(workspace, "outputs")
+    if os.path.isdir(out_src):
+        for root, _dirs, files in os.walk(out_src):
+            for fn in files:
+                src = os.path.join(root, fn)
+                rel = os.path.relpath(src, out_src).replace(os.sep, "/")
+                try:
+                    dst = os.path.join(adir, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    arts.append(rel)
+                except Exception:
+                    pass
+    return arts
+
+
+def _artifact_url(job_id, rel):
+    """The download URL for one persisted artifact (served by the auth-gated controller).
+    Falls back to the constructed path if reverse() can't resolve (e.g. off-request)."""
+    q = "?file=" + urllib.parse.quote(rel)
+    try:
+        return reverse("hydrodesk:model_artifact", kwargs={"job_id": str(job_id)}) + q
+    except Exception:
+        return "/apps/hydrodesk/model-job/%s/artifact%s" % (urllib.parse.quote(str(job_id)), q)
+
+
+def _to_geojson(value):
+    """A model Geometry output -> a GeoJSON geometry dict, or None. Accepts a GeoJSON dict,
+    a GeoJSON/Feature JSON string, or a Feature/FeatureCollection (first geometry). WKT needs
+    shapely (absent here) so it's not converted."""
+    g = value
+    if isinstance(g, str):
+        try:
+            g = json.loads(g)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(g, dict):
+        return None
+    t = g.get("type")
+    if t == "FeatureCollection":
+        feats = g.get("features") or []
+        return _to_geojson(feats[0]) if feats else None
+    if t == "Feature":
+        return g.get("geometry")
+    if t in ("Point", "LineString", "Polygon", "MultiPoint", "MultiLineString",
+             "MultiPolygon", "GeometryCollection"):
+        return g
+    return None
+
+
+def _coerce_model_artifact(value, ftype, job_id, adir):
+    """Coerce a File / Image / Geometry model output. File -> a {name,url,size} descriptor
+    (download link) for a file the run wrote to workspace/outputs/ (now in the persisted
+    artifact dir); Image -> a URL/data-URI string (renders as <img>); Geometry -> a GeoJSON
+    dict. An unresolvable filename is kept as its raw string."""
+    import os
+    ft = (ftype or "").lower()
+    if ft == "geometry":
+        return _to_geojson(value)
+    s = (value if isinstance(value, str) else str(value if value is not None else "")).strip()
+    if not s:
+        return None
+    if ft == "image" and (s.startswith("data:") or s.startswith("http://") or s.startswith("https://")):
+        return s                                   # data-URI / external image URL
+    rel = os.path.basename(s)
+    fp = os.path.join(adir, rel)
+    if not os.path.isfile(fp) and os.path.isfile(os.path.join(adir, s)):
+        rel, fp = s, os.path.join(adir, s)
+    if not os.path.isfile(fp):
+        return s                                   # can't resolve -> keep the raw value
+    url = _artifact_url(job_id, rel)
+    if ft == "image":
+        return url                                 # Image -> URL string (renders as <img>)
+    return {"name": os.path.basename(rel), "url": url, "size": os.path.getsize(fp)}
+
+
+def _job_record_run(job, artifacts=None, model_config=None):
+    """Stamp artifacts + a model_config snapshot (provenance/config hash) onto the job's
+    extended_properties so the Jobs page can list, download, and RETRY a past run with the
+    exact config it used. Mutates job (caller saves)."""
+    import hashlib
+    ep = dict(getattr(job, "extended_properties", None) or {})
+    hd = dict(ep.get("hydrodesk") or {})
+    if artifacts is not None:
+        hd["artifacts"] = list(artifacts)
+    if model_config is not None:
+        hd["model_config"] = model_config
+        try:
+            blob = json.dumps(model_config, sort_keys=True, default=str).encode("utf-8", "replace")
+            hd["config_hash"] = hashlib.md5(blob).hexdigest()[:12]
+        except Exception:
+            pass
+    ep["hydrodesk"] = hd
+    job.extended_properties = ep
+
+
 def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=None):
-    """Worker thread: materialize live connector inputs -> pre -> command -> post -> write
-    outputs -> job status. Never raises out — records ERR on the job and a status_message.
-    Outputs already computed are preserved even if the post-script later fails."""
+    """Worker thread: materialize live connector inputs -> pre -> command -> post -> persist
+    artifacts -> write outputs -> job status. Never raises out — records ERR on the job and a
+    status_message. Outputs already computed are preserved even if the post-script later fails."""
     import subprocess, tempfile, shutil
     from django.utils import timezone
     from django.db import connections as _dj_conns
@@ -7798,7 +8274,9 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=
     job.save()
     try:
         # 0) make LIVE connector data available as record fields (all 7 kinds)
-        attrs, conn_warn = _materialize_model_inputs(slug, record_id, attrs, field_schema)
+        attrs, conn_warn = _materialize_model_inputs(
+            slug, record_id, attrs, field_schema,
+            input_timeout=model_config.get("input_timeout") or 45)
         pre = (model_config.get("pre_script") or "").strip()
         if pre:                                  # 1) stage inputs
             exec(compile(pre, "<hydrodesk-model-pre>", "exec"),
@@ -7806,7 +8284,9 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=
         proc = None                              # 2) run the command
         cmd = _render_model_command(model_config.get("command") or "", attrs, workspace)
         if cmd.strip():
-            timeout = max(1, min(3600, int(model_config.get("timeout") or 300)))
+            # Up to 24h (was capped at 1h). A long timeout pins a worker thread — the model
+            # builder soft-warns >1h and recommends the Job Manager backend for heavy runs.
+            timeout = max(1, min(86400, int(model_config.get("timeout") or 300)))
             proc = subprocess.run(cmd, shell=True, cwd=workspace, capture_output=True,
                                   text=True, timeout=timeout)
         post_ns = _model_namespace(attrs, workspace, slug, record_id)   # 3) parse outputs
@@ -7821,9 +8301,15 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=
             except Exception as pexc:
                 logger.exception("HydroDesk model post-script failed (job %s)", job_id)
                 post_error = "%s: %s" % (type(pexc).__name__, str(pexc)[:300])
-        # Extract declared outputs. A bad coercion keeps the raw value instead of dropping
-        # the whole run; a declared output the post-script never assigned is reported.
-        updates, unassigned = {}, []
+        # 4) Persist artifacts (output files + full log) BEFORE the workspace is wiped, so
+        # File/Image outputs can resolve to a downloadable URL and the run is debuggable.
+        artifacts = _persist_model_artifacts(job_id, workspace, proc, post_error)
+        adir = _model_artifact_dir(job_id)
+        # 5) Extract declared outputs. File/Image/Geometry coerce against the artifact dir; a
+        # bad coercion keeps the raw value instead of dropping the whole run; an unassigned
+        # declared output is reported. _new_records (a list of child records) is handled in
+        # the write step, not coerced as a field.
+        updates, unassigned, new_records = {}, [], post_ns.get("_new_records")
         for o in (model_config.get("outputs") or []):
             if not isinstance(o, dict):
                 continue
@@ -7831,13 +8317,17 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=
             if not name:
                 continue
             if name in post_ns:
+                ft = (o.get("field_type") or "")
                 try:
-                    updates[name] = _coerce_script_output(post_ns[name], o.get("field_type"))
+                    if ft.lower() in ("file", "image", "geometry"):
+                        updates[name] = _coerce_model_artifact(post_ns[name], ft, job_id, adir)
+                    else:
+                        updates[name] = _coerce_script_output(post_ns[name], ft)
                 except Exception:
                     updates[name] = _script_jsonify(post_ns[name])
             else:
                 unassigned.append(name)
-        _write_model_outputs(slug, record_id, updates)   # persist whatever we computed
+        _write_model_outputs(slug, record_id, updates, new_records=new_records)   # persist
         # Hard failure only when nothing usable came out of a failed command / post-script.
         cmd_failed = proc is not None and proc.returncode != 0
         if not updates and (cmd_failed or post_error):
@@ -7845,6 +8335,10 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=
                                % (proc.returncode, (proc.stderr or "")[:300])))
         rc = proc.returncode if proc else "n/a"
         bits = ["exit %s" % rc, "%d output(s) written" % len(updates)]
+        if new_records:
+            bits.append("%d child record(s)" % (len(new_records) if isinstance(new_records, list) else 1))
+        if artifacts:
+            bits.append("%d artifact(s)" % len(artifacts))
         if unassigned:
             bits.append("not assigned: " + ", ".join(unassigned))
         if conn_warn:
@@ -7854,6 +8348,7 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=
         job._status = "ERR" if post_error else "COM"
         job.completion_time = timezone.now()
         job.status_message = ("; ".join(bits))[:2000]
+        _job_record_run(job, artifacts=artifacts, model_config=model_config)
         job.save()
     except Exception as exc:
         logger.exception("HydroDesk model run failed (job %s)", job_id)
@@ -7876,23 +8371,114 @@ def _run_model_async(job_id, model_config, attrs, slug, record_id, field_schema=
             pass
 
 
+def _submit_cluster_job(backend, job, slug, record_id, model_config, attrs, field_schema):
+    """ADVANCED JOB MANAGEMENT (optional): submit the model run to a Tethys Condor/Dask
+    scheduler when one is configured. Returns True if a real cluster job was dispatched,
+    False to fall back to the local thread. ANY missing scheduler / SDK mismatch -> False,
+    with a note on the job — so a portal without a cluster is never blocked. Off-cluster
+    execution is the SAME trusted pre/command/post, just dispatched to a remote worker."""
+    sched_name = (model_config.get("scheduler") or "").strip()
+    if not sched_name:
+        _job_note(job, "backend '%s' needs a named scheduler — ran on the local thread" % backend)
+        return False
+    try:
+        scheduler = App.get_scheduler(sched_name)
+    except Exception:
+        scheduler = None
+    if scheduler is None:
+        _job_note(job, "scheduler '%s' not configured on this portal — ran on the local thread"
+                  % sched_name)
+        return False
+    # A scheduler IS configured. Cluster execution wiring (CondorWorkflowJob/DaskJob staging)
+    # is portal-specific; until it is enabled here, run locally but record that a scheduler
+    # was available, so an operator knows the option resolved.
+    _job_note(job, "scheduler '%s' found; cluster dispatch not enabled in this build — ran locally"
+              % sched_name)
+    return False
+
+
+def _job_note(job, msg):
+    """Append a one-line note to a job's hydrodesk extended_properties (for the Jobs page)."""
+    ep = dict(getattr(job, "extended_properties", None) or {})
+    hd = dict(ep.get("hydrodesk") or {})
+    notes = list(hd.get("notes") or [])
+    notes.append(msg)
+    hd["notes"] = notes[-5:]
+    ep["hydrodesk"] = hd
+    job.extended_properties = ep
+
+
 def _start_model_run(slug, record_id, model_name, model_config, attrs, user, field_schema=None):
-    """Create a Tethys BasicJob + spawn the run worker thread; return the saved job."""
+    """Create a Tethys BasicJob + dispatch the run. Default backend = a local worker thread
+    (always works). A condor/dask backend submits to a configured scheduler, FALLING BACK to
+    the thread when no scheduler is linked. Returns the saved job."""
     import threading
     from tethys_compute.models import BasicJob
     jm = App.get_job_manager()
+    backend = (model_config.get("job_backend") or "thread").lower()
     job = jm.create_job(name=("%s @ %s" % (model_name, str(record_id)[:8]))[:1024],
                         user=user, job_type=BasicJob,
                         description="HydroDesk model '%s' on %s" % (model_name, slug))
     job._status = "PEN"
     job.extended_properties = {"hydrodesk": {"slug": slug, "record_id": str(record_id),
-                                             "model": model_name}}
+                                             "model": model_name, "backend": backend}}
     job.save()
+    if backend in ("condor", "dask"):
+        try:
+            if _submit_cluster_job(backend, job, slug, record_id, model_config, attrs, field_schema):
+                job.save()
+                return job
+        except Exception:
+            logger.exception("HydroDesk cluster submit errored; falling back to thread (job %s)", job.id)
+        job.save()                           # persist the fallback note
     threading.Thread(target=_run_model_async,
                      args=(job.id, dict(model_config or {}), dict(attrs or {}),
                            slug, str(record_id), dict(field_schema or {})),
                      daemon=True).start()
     return job
+
+
+def _maybe_run_on_save(request, slug, record_id, field_schema, attrs):
+    """If the doctype binds a model whose config has ``run_on_save``, kick off the run
+    automatically right after a record is saved, so the model's outputs populate without a
+    manual Run click. Best-effort: any failure is logged and swallowed so it can never
+    break the save itself. Returns the started job, or None."""
+    try:
+        model_name = (field_schema or {}).get("x-model")
+        if not model_name:
+            return None
+        engine = App.get_persistent_store_database("hydro_db")
+        with Session(engine) as session:
+            model = _load_model(session, model_name)
+            if model is None:
+                return None
+            cfg = dict(model.config or {})
+        if not cfg.get("run_on_save"):
+            return None
+        if not _user_can(request, field_schema, "write"):
+            return None                      # running mutates the record -> needs write
+        return _start_model_run(slug, str(record_id), model_name, cfg,
+                                dict(attrs or {}), request.user, field_schema)
+    except Exception:
+        logger.exception("HydroDesk run-on-save failed for %s/%s", slug, record_id)
+        return None
+
+
+def _active_record_job_id(record_id):
+    """The id of the most recent STILL-RUNNING model job for ``record_id`` (so the detail
+    page can auto-poll it after a run-on-save and reload when outputs land). Returns None
+    when the record's latest job is already finished or there is none."""
+    try:
+        from tethys_compute.models import BasicJob
+        rid = str(record_id)
+        for job in BasicJob.objects.order_by("-creation_time")[:40]:
+            hp = (getattr(job, "extended_properties", None) or {}).get("hydrodesk")
+            if not hp or str(hp.get("record_id")) != rid:
+                continue
+            return None if job.status in ("Complete", "Error", "Aborted") else job.id
+    except Exception:
+        return None
+    return None
 
 
 @controller(name="run_model", url="run-model/{slug}/{record_id}", title="Run Model")
@@ -7946,6 +8532,141 @@ def model_job_status(request, job_id=None):
     return JsonResponse({"ok": True, "job_id": job.id, "status": status,
                          "message": job.status_message or "",
                          "done": status in ("Complete", "Error", "Aborted")})
+
+
+@controller(name="record_file", url="record/{record_id}/file", title="Record File")
+def record_file(request, record_id=None):
+    """Stream a record's uploaded File/Image attachment by ``?file=<stored>``. Login-gated;
+    path-traversal guarded."""
+    import os
+    from django.http import FileResponse, Http404, HttpResponseForbidden
+    if not request.user.is_authenticated:
+        return HttpResponseForbidden("login required")
+    rel = (request.GET.get("file") or "").strip()
+    if not rel:
+        raise Http404("no file")
+    rdir = os.path.realpath(_record_file_dir(record_id))
+    target = os.path.realpath(os.path.join(rdir, rel))
+    if not (target == rdir or target.startswith(rdir + os.sep)) or not os.path.isfile(target):
+        raise Http404("file not found")
+    inline = target.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"))
+    return FileResponse(open(target, "rb"), as_attachment=not inline,
+                        filename=os.path.basename(target))
+
+
+@controller(name="model_artifact", url="model-job/{job_id}/artifact", title="Model Artifact")
+def model_artifact(request, job_id=None):
+    """Stream one persisted model-run artifact (an output file or model.log) by ``?file=``.
+    Staff/superuser only (models are superuser-authored); path-traversal guarded."""
+    import os
+    from django.http import FileResponse, Http404, HttpResponseForbidden
+    if not (request.user.is_authenticated and (request.user.is_staff or request.user.is_superuser)):
+        return HttpResponseForbidden("not authorized")
+    rel = (request.GET.get("file") or "").strip()
+    if not rel:
+        raise Http404("no file")
+    adir = os.path.realpath(_model_artifact_dir(job_id))
+    target = os.path.realpath(os.path.join(adir, rel))
+    if not (target == adir or target.startswith(adir + os.sep)) or not os.path.isfile(target):
+        raise Http404("artifact not found")
+    return FileResponse(open(target, "rb"),
+                        as_attachment=not target.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".log", ".txt")),
+                        filename=os.path.basename(target))
+
+
+def _hydrodesk_jobs(limit=150):
+    """Recent HydroDesk model-run jobs (BasicJobs stamped with a hydrodesk
+    extended_properties block), newest first. Returns a list of plain dicts."""
+    from tethys_compute.models import BasicJob
+    out = []
+    try:
+        qs = BasicJob.objects.all().order_by("-creation_time")[:600]
+    except Exception:
+        return out
+    for j in qs:
+        ep = getattr(j, "extended_properties", None) or {}
+        hd = ep.get("hydrodesk") if isinstance(ep, dict) else None
+        if not hd:
+            continue
+        arts = hd.get("artifacts") or []
+        out.append({
+            "id": j.id, "name": j.name, "status": j.status,
+            "message": (j.status_message or "")[:400],
+            "slug": hd.get("slug"), "record_id": hd.get("record_id"),
+            "model": hd.get("model"), "backend": hd.get("backend") or "thread",
+            "notes": hd.get("notes") or [],
+            "artifacts": [{"name": a, "url": _artifact_url(j.id, a)} for a in arts],
+            "created": j.creation_time, "completed": getattr(j, "completion_time", None),
+            "done": j.status in ("Complete", "Error", "Aborted"),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+@controller(name="model_jobs", url="model-jobs", title="Model Jobs")
+def model_jobs(request):
+    """Advanced job management: monitor every model run (any backend) — status, timing,
+    the record/model, the run log + output artifacts, with Retry + Delete. Staff/superuser."""
+    if not (request.user.is_authenticated and (request.user.is_staff or request.user.is_superuser)):
+        return _denied(request, "view", "Model Jobs")
+    jobs = _hydrodesk_jobs()
+    running = sum(1 for j in jobs if not j["done"])
+    return render(request, "hydrodesk/model_jobs.html",
+                  {"jobs": jobs, "running": running, "total": len(jobs)})
+
+
+@controller(name="model_job_retry", url="model-job/{job_id}/retry", title="Retry Model Job")
+def model_job_retry(request, job_id=None):
+    """Re-run a past model job on its original record, reusing the SNAPSHOTTED model_config
+    (provenance) when present, else the model's current config. POST only, staff/superuser."""
+    from tethys_compute.models import BasicJob
+    jobs_url = reverse("hydrodesk:model_jobs")
+    if request.method != "POST" or not (request.user.is_staff or request.user.is_superuser):
+        return redirect(jobs_url)
+    try:
+        job = BasicJob.objects.get(id=int(job_id))
+    except (BasicJob.DoesNotExist, ValueError, TypeError):
+        return redirect(jobs_url)
+    hd = (getattr(job, "extended_properties", None) or {}).get("hydrodesk") or {}
+    slug, rid, mname = hd.get("slug"), hd.get("record_id"), hd.get("model")
+    if not (slug and rid):
+        return redirect(jobs_url)
+    engine = App.get_persistent_store_database("hydro_db")
+    with Session(engine) as session:
+        meta = _load_hydrotype(session, slug)
+        if meta is None:
+            return redirect(jobs_url)
+        field_schema = meta[1]
+        cfg = hd.get("model_config")
+        if not cfg:
+            model = _load_model(session, mname or (field_schema or {}).get("x-model") or "")
+            cfg = dict(model.config) if model else None
+        if not cfg:
+            return redirect(jobs_url)
+        rec = session.execute(select(m.HydroRecord).where(m.HydroRecord.id == rid)).scalar_one_or_none()
+        attrs = dict(rec.attributes or {}) if rec is not None else {}
+    _start_model_run(slug, rid, mname or "model", cfg, attrs, request.user, field_schema)
+    return redirect(jobs_url)
+
+
+@controller(name="model_job_delete", url="model-job/{job_id}/delete", title="Delete Model Job")
+def model_job_delete(request, job_id=None):
+    """Remove a model job row + its persisted artifacts. POST only, staff/superuser."""
+    from tethys_compute.models import BasicJob
+    jobs_url = reverse("hydrodesk:model_jobs")
+    if request.method != "POST" or not (request.user.is_staff or request.user.is_superuser):
+        return redirect(jobs_url)
+    import shutil
+    try:
+        shutil.rmtree(_model_artifact_dir(job_id), ignore_errors=True)
+    except Exception:
+        pass
+    try:
+        BasicJob.objects.get(id=int(job_id)).delete()
+    except (BasicJob.DoesNotExist, ValueError, TypeError):
+        pass
+    return redirect(jobs_url)
 
 
 def _parse_point(post):
@@ -8402,17 +9123,30 @@ def hydrotype_new(request, slug="monitoring_station"):
                     attrs_to_store["_parent"] = {
                         "slug": parent["slug"], "id": parent["id"],
                         "field": parent["field"]}
+                # File/Image uploads need the record id for their store path. Generate the
+                # id up front (it's a Python-side uuid default) and fold the descriptors in
+                # BEFORE the insert, so they're part of the INSERT itself — mutating the
+                # attributes after a flush would silently not be re-persisted (the flushed
+                # dict IS the committed snapshot, so the later reassignment looks unchanged).
+                new_id = uuidlib.uuid4()
+                _fe = _apply_file_uploads(field_schema, request.FILES, attrs_to_store, new_id)
+                if _fe:
+                    logger.warning("HydroDesk file upload(s) on create: %s", "; ".join(_fe))
                 record = m.HydroRecord(
+                    id=new_id,
                     hydrotype_slug=slug,
                     attributes=attrs_to_store,
                     geom=geom,
                     created_by=getattr(request.user, "username", None),
                 )
                 session.add(record)
-                session.flush()                     # populate record.id for the snapshot
+                session.flush()                     # ensure the row exists for the snapshot
                 _snapshot_revision(session, record.id, slug, attrs_to_store, geom,
                                    "create", getattr(request.user, "username", None))
                 session.commit()
+            # If the doctype's model opted into run-on-save, fire the run now so its
+            # computed outputs populate without a manual Run click.
+            ros_job = _maybe_run_on_save(request, slug, new_id, field_schema, attrs_to_store)
             # Reverse-link create (the child's own Link field carries the relation):
             # return to the parent detail, where the child now appears in the
             # reverse linked-table.
@@ -8421,6 +9155,12 @@ def hydrotype_new(request, slug="monitoring_station"):
             if linked or reverse_link:  # back to the parent detail
                 return redirect(reverse("hydrodesk:detail",
                                         kwargs={"slug": parent["slug"], "record_id": parent["id"]}))
+            # Run-on-save: land on the NEW RECORD (not the list) so the user watches its
+            # outputs populate live — the detail page auto-polls the run and reloads when
+            # it finishes. Without this they'd hit the list and think nothing happened.
+            if ros_job is not None:
+                return redirect(reverse("hydrodesk:detail",
+                                        kwargs={"slug": slug, "record_id": str(new_id)}))
             return redirect(reverse("hydrodesk:list", kwargs={"slug": slug}))
 
         # Re-render with the user's submitted values (including lon/lat) so the
@@ -8756,6 +9496,8 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
             errors.append(f"{key} {msg}.")
         errors.extend(_apply_shapefile_uploads(field_schema, request.FILES, attributes,
                                                existing=existing_attrs))
+        errors.extend(_apply_file_uploads(field_schema, request.FILES, attributes,
+                                          record_id, existing=existing_attrs))
         validated = attributes
         if not coerce_errors:
             _compute_formulas(field_schema, attributes)   # fill computed fields
@@ -8789,7 +9531,10 @@ def hydrotype_edit(request, slug="monitoring_station", record_id=None):
                 _snapshot_revision(session, rec.id, slug, rec.attributes,
                                    geom if is_spatial else None, "update",
                                    getattr(request.user, "username", None))
+                saved_attrs = dict(rec.attributes)
                 session.commit()
+            # Run-on-save: recompute the model's outputs after an edit, too.
+            _maybe_run_on_save(request, slug, record_id, field_schema, saved_attrs)
             return redirect(detail_url)
         widgets = _build_widgets(field_schema, geometry_kind, values=post)
         return render(request, "hydrodesk/form.html",
@@ -9311,6 +10056,27 @@ def _render_series_block(xs, ys):
     return spark + "<div>" + str(table) + "</div>"
 
 
+def _render_timeseries_output(value):
+    """Render a model's TIME-SERIES output the same way connector series render: a polished
+    line chart + a scrollable table. Accepts a list of row dicts ([{t:..,v:..}, ...]) or a
+    dict of equal-length parallel lists ({t:[...], v:[...]}); any other shape falls back to
+    a plain string."""
+    cols = None
+    if isinstance(value, list) and value and all(isinstance(r, dict) for r in value):
+        names = []
+        for r in value:
+            for k in r:
+                if k not in names:
+                    names.append(k)
+        cols = [{"name": n, "values": [r.get(n) for r in value]} for n in names]
+    elif (isinstance(value, dict) and value
+          and all(isinstance(v, list) for v in value.values())):
+        cols = [{"name": k, "values": v} for k, v in value.items()]
+    if not cols:
+        return _format_cell(value)
+    return _render_columns_table({"columns": cols})
+
+
 def _render_columns_table(result, cap=None):
     """Render a multi-variable series as ONE table whose column headers ARE the
     variable names (the user's "click a node -> all its variables as columns").
@@ -9329,12 +10095,18 @@ def _render_columns_table(result, cap=None):
     if not columns or n == 0:
         return mark_safe("<span class='frappe-muted frappe-text-sm'>no series data</span>")
 
-    # X-labels = the time/date/step column; chart every OTHER numeric column. One numeric
-    # column -> the single-line area chart; several -> a multi-line chart + legend (each
-    # column its own color, shared y-axis). Non-numeric columns stay in the table only.
+    # X-labels = the role-x column (else the time/date/step-named one); chart every
+    # OTHER numeric column. One numeric column -> the single-line area chart; several
+    # -> a multi-line chart + legend. The uncertainty FAN is no longer decided here:
+    # the column data is emitted as JSON + a "Fan band" control so the RECORD PAGE
+    # (client, interactive, non-persisted) lets the viewer pick which two columns are
+    # the band. Non-numeric columns stay in the table only.
     lab_idx = next((i for i, c in enumerate(columns)
-                    if any(k in (c.get("name") or "").lower()
-                           for k in ("time", "date", "step", "x"))), None)
+                    if (c.get("role") or "").lower() == "x"), None)
+    if lab_idx is None:
+        lab_idx = next((i for i, c in enumerate(columns)
+                        if any(k in (c.get("name") or "").lower()
+                               for k in ("time", "date", "step", "x"))), None)
     labels = columns[lab_idx].get("values") if lab_idx is not None else None
     data_cols = [(c.get("name") or "", c.get("values") or [])
                  for i, c in enumerate(columns) if i != lab_idx]
@@ -9347,7 +10119,8 @@ def _render_columns_table(result, cap=None):
         one = numeric_cols[0] if numeric_cols else (data_cols[0] if data_cols else ("", []))
         chart_inner = _line_chart_svg(one[1], labels=labels,
                                       unit=(result or {}).get("unit") or "")
-    chart = "<div class='hd-series-spark'>" + chart_inner + "</div>"
+    chart = ("<div class='hd-series-spark hd-series-chart'>" + chart_inner + "</div>"
+             + _fan_band_controls(numeric_cols, labels, lab_idx, columns))
 
     th = "".join(str(format_html("<th>{}</th>", c.get("name") or ""))
                  for c in columns)
@@ -9373,8 +10146,50 @@ def _render_columns_table(result, cap=None):
     table = ("<table class='hd-series-table'><thead><tr>" + th
              + "</tr></thead><tbody>" + body + "</tbody></table>")
     return mark_safe(
-        chart + "<div class='hd-series-wrap'><div class='hd-series-scroll'>"
-        + table + "</div>" + foot + "</div>")
+        "<div class='hd-series-interactive'>" + chart
+        + "<div class='hd-series-wrap'><div class='hd-series-scroll'>"
+        + table + "</div>" + foot + "</div></div>")
+
+
+def _fan_band_controls(numeric_cols, labels, lab_idx, columns):
+    """The record-page 'Fan band' control for a multi-column series: two <select>s
+    (lower / upper) populated with the numeric column names, plus the column data as
+    a JSON blob. The detail-page client (detail.html) reads the blob and re-renders
+    the chart with a shaded fan ribbon between the chosen columns — interactive, NOT
+    persisted. Returns '' for <2 numeric columns (nothing to band)."""
+    if len(numeric_cols or []) < 2:
+        return ""
+    opts = "".join("<option value=\"%s\">%s</option>" % (escape(nm), escape(nm))
+                   for nm, _vals in numeric_cols)
+    sel = ("<select class=\"hd-band-sel hd-band-lower\"><option value=\"\">— none —</option>"
+           + opts + "</select>")
+    selu = ("<select class=\"hd-band-sel hd-band-upper\"><option value=\"\">— none —</option>"
+            + opts + "</select>")
+    controls = ("<div class='hd-band-controls'><span class='hd-band-lbl'>Fan band</span>"
+                "<span class='hd-band-pair'>↓ " + sel + " ↑ " + selu + "</span></div>")
+    # Column data for the client chart (numeric values JSON-safe; labels short-able).
+    blob = {"columns": [{"name": nm, "values": [(_fan_num(v)) for v in vals]}
+                        for nm, vals in numeric_cols],
+            "labels": [str(x) for x in (labels or [])]}
+    try:
+        payload = json.dumps(blob).replace("</", "<\\/")
+    except (TypeError, ValueError):
+        payload = "{}"
+    return (controls
+            + "<script type='application/json' class='hd-series-cols'>" + payload + "</script>")
+
+
+def _fan_num(v):
+    """A JSON-safe numeric (or None) for the client chart blob."""
+    if isinstance(v, bool) or v in _NO_DATA or v == -999999:
+        return None
+    if isinstance(v, (int, float)):
+        return v if v == v else None   # drop NaN
+    try:
+        f = float(v)
+        return f if f == f else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_value_block(val, field_type="Text"):
@@ -9395,10 +10210,11 @@ def _render_value_block(val, field_type="Text"):
 
 
 def _render_stored_image(val, label="map"):
-    """Render a STORED Image field (a ``data:`` URI or image URL a model produced) as a
-    safe <img>. Empty/non-image -> a muted placeholder. Used for a model OUTPUT of
-    field_type Image (e.g. a flood inundation map the post-script renders to a PNG)."""
-    s = val if isinstance(val, str) else ""
+    """Render a STORED Image (a ``data:`` URI / URL string a model produced, OR an uploaded
+    Image field's ``{url,...}`` descriptor) as a safe <img>. Empty/non-image -> a muted
+    placeholder."""
+    s = (val.get("url") if isinstance(val, dict) else val) or ""
+    s = s if isinstance(s, str) else ""
     if not s.strip():
         return mark_safe("<span class='frappe-muted frappe-text-sm'>"
                          "no map yet &mdash; run the model</span>")
@@ -9410,6 +10226,49 @@ def _render_stored_image(val, label="map"):
         "<img src='{}' alt='{}' loading='lazy' style='max-width:100%;height:auto;"
         "display:block;border:1px solid var(--fr-border-color,#d1d8dd);"
         "border-radius:6px;'></a></div>", s, s, label or "map")
+
+
+def _human_size(n):
+    """Bytes -> a short human size (e.g. 8 B, 12.3 KB, 4.1 MB)."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return ""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return ("%d %s" % (int(n), unit)) if unit == "B" else ("%.1f %s" % (n, unit))
+        n /= 1024.0
+
+
+def _render_file_field(val):
+    """Render a model FILE output ({name,url,size}) as a download link with its size."""
+    if not isinstance(val, dict) or not (val.get("url")):
+        if isinstance(val, str) and val.strip():
+            return format_html("<span class='frappe-text-sm'>{}</span>", val)
+        return mark_safe("<span class='frappe-muted frappe-text-sm'>no file yet &mdash; run the model</span>")
+    name = val.get("name") or "download"
+    size = _human_size(val.get("size"))
+    return format_html(
+        "<a class='hd-file-dl' href='{}' download style='display:inline-flex;align-items:center;"
+        "gap:6px;'><i class='bi bi-download'></i> {}{}</a>", val["url"], name,
+        format_html(" <span class='frappe-muted frappe-text-sm'>({})</span>", size) if size else "")
+
+
+def _render_geometry_field(val, name="geom"):
+    """Render a model GEOMETRY output (GeoJSON) as a small Leaflet map (reuses the detail
+    geom-map machinery via a class the page script can pick up)."""
+    if not isinstance(val, dict) or not val.get("type"):
+        return mark_safe("<span class='frappe-muted frappe-text-sm'>no geometry yet</span>")
+    try:
+        payload = json.dumps(val).replace("</", "<\\/")
+    except (TypeError, ValueError):
+        return mark_safe("<span class='frappe-muted frappe-text-sm'>invalid geometry</span>")
+    holder = "hd-geomout-" + re.sub(r"[^A-Za-z0-9_-]", "", str(name))[:32]
+    return mark_safe(
+        "<div class='hd-geom-out' id='" + holder + "' "
+        "style='height:220px;border-radius:8px;border:1px solid var(--fr-border-color,#e2e6ea);'></div>"
+        "<script type='application/json' class='hd-geom-out-data' data-holder='" + holder + "'>"
+        + payload + "</script>")
 
 
 def _render_image_block(result, label="map", sample_ctx=None):
@@ -9975,11 +10834,32 @@ _CHART_COLORS = ["#2490ef", "#28a745", "#e8590c", "#9c36b5",
                  "#1098ad", "#f08c00", "#e03131", "#37b24d"]
 
 
-def _multiline_chart_svg(series, labels=None, width=520, height=190):
+def _multiline_chart_svg(series, labels=None, width=520, height=190, band=None,
+                         band_label="uncertainty band"):
     """A multi-line chart (one colored line per numeric column) on a SHARED y-axis, with
-    an HTML legend. ``series`` = [(name, values), ...]. Gap-aware, nice y-ticks, a few x
+    an HTML legend. ``series`` = [(name, values), ...]. ``band`` (optional) is an
+    ensemble's uncertainty envelope ``(lower_values, upper_values)`` rendered as a
+    filled FAN ribbon behind the lines (gap-aware: drawn only where both edges are
+    finite) and included in the y-extent. Gap-aware lines, nice y-ticks, a few x
     labels; no area fill (clarity over decoration with many lines). Numbers are
     %-formatted; every name/label is escape()d -> XSS-safe. <2 finite points -> a dash."""
+    def _fin(v):
+        ok = not (v in _NO_DATA or v == -999999)
+        if not ok:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if (f != f or f in (float("inf"), float("-inf"))) else f
+
+    band_lo, band_hi = None, None
+    if band and len(band) >= 2:
+        band_lo = [_fin(v) for v in (band[0] or [])]
+        band_hi = [_fin(v) for v in (band[1] or [])]
+        if not any(v is not None for v in band_lo) or not any(v is not None for v in band_hi):
+            band_lo, band_hi = None, None
+
     cols, allf = [], []
     for sname, vals in series:
         pts = []
@@ -9998,6 +10878,10 @@ def _multiline_chart_svg(series, labels=None, width=520, height=190):
         if fin:
             cols.append((sname, pts))
             allf.extend(fin)
+    if band_lo is not None:
+        # The fan ribbon participates in the y-extent so the band never clips.
+        allf.extend(v for v in band_lo if v is not None)
+        allf.extend(v for v in band_hi if v is not None)
     drawable = [c for c in cols if sum(1 for p in c[1] if p is not None) >= 2]
     if not allf or not drawable:
         return "<span class='frappe-muted frappe-text-sm'>&mdash;</span>"
@@ -10006,6 +10890,8 @@ def _multiline_chart_svg(series, labels=None, width=520, height=190):
         lo -= 0.5
         hi += 0.5
     n = max(len(pts) for _, pts in cols)
+    if band_lo is not None:
+        n = max(n, len(band_lo), len(band_hi))
     padL, padR, padT, padB = 46, 14, 10, 22
     plotW = float(width - padL - padR)
     plotH = float(height - padT - padB)
@@ -10039,7 +10925,32 @@ def _multiline_chart_svg(series, labels=None, width=520, height=190):
                 anc = "start" if i == 0 else ("end" if i == n - 1 else "middle")
                 xlabels.append("<text x='%.1f' y='%.1f' text-anchor='%s' font-size='10' fill='#8d99a6'>%s</text>"
                                % (X(i), height - 6, anc, escape(_short_label(labels[i]))))
+    # ENSEMBLE FAN: the filled lower/upper ribbon, drawn UNDER the lines. Gap-aware —
+    # one sub-polygon per run where BOTH edges are finite (>=2 points).
+    ribbon = []
+    if band_lo is not None:
+        runs, cur = [], []
+        for i in range(n):
+            blo = band_lo[i] if i < len(band_lo) else None
+            bhi = band_hi[i] if i < len(band_hi) else None
+            if blo is None or bhi is None:
+                if cur:
+                    runs.append(cur)
+                    cur = []
+            else:
+                cur.append((i, min(blo, bhi), max(blo, bhi)))
+        if cur:
+            runs.append(cur)
+        for run in runs:
+            if len(run) >= 2:
+                fwd = " ".join("L%.1f,%.1f" % (X(i), Y(bh)) for i, _bl, bh in run)
+                back = " ".join("L%.1f,%.1f" % (X(i), Y(bl)) for i, bl, _bh in reversed(run))
+                d = ("M%.1f,%.1f " % (X(run[0][0]), Y(run[0][2]))) + fwd + " " + back + " Z"
+                ribbon.append("<path d='%s' fill='#2490ef' fill-opacity='0.14' stroke='none'/>" % d)
     lines, legend = [], []
+    if ribbon:
+        legend.append("<span class='hd-leg-item'><i style='background:#2490ef;opacity:.25;"
+                      "height:9px;'></i>%s</span>" % escape(band_label or "uncertainty band"))
     for ci, (sname, pts) in enumerate(cols):
         color = _CHART_COLORS[ci % len(_CHART_COLORS)]
         runs, cur = [], []
@@ -10063,7 +10974,7 @@ def _multiline_chart_svg(series, labels=None, width=520, height=190):
                 + " " + str(height) + "' preserveAspectRatio='xMidYMid meet' "
                 "xmlns='http://www.w3.org/2000/svg' style='display:block;max-width:"
                 + str(width) + "px;'>")
-    svg = (svg_open + "".join(grid) + baseline + "".join(lines)
+    svg = (svg_open + "".join(grid) + baseline + "".join(ribbon) + "".join(lines)
            + "".join(ylabels) + "".join(xlabels) + "</svg>")
     return svg + "<div class='hd-chart-legend'>" + "".join(legend) + "</div>"
 
@@ -10139,6 +11050,19 @@ def _detail_fields(field_schema, attributes, session=None, refresh_urls=None,
                 "label": label,
                 "value": _render_stored_image(attrs.get(name), label),
             })
+            seen.add(name)
+            continue
+        if prop.get("x-widget") == "file":           # a model FILE output -> download link
+            fields.append({"label": label, "value": _render_file_field(attrs.get(name))})
+            seen.add(name)
+            continue
+        if prop.get("x-widget") == "geometry":       # a model GEOMETRY output -> mini map
+            fields.append({"label": label, "value": _render_geometry_field(attrs.get(name), name)})
+            seen.add(name)
+            continue
+        if prop.get("x-widget") == "series" or prop.get("x-output-type") == "Time-Series":
+            fields.append({"label": label,           # a model TIME-SERIES output -> chart + table
+                           "value": _render_timeseries_output(attrs.get(name))})
             seen.add(name)
             continue
         fields.append({
@@ -10921,6 +11845,10 @@ def hydrotype_detail(request, slug="monitoring_station", record_id=None):
         "run_model_url": reverse("hydrodesk:run_model",
                                  kwargs={"slug": slug, "record_id": record_id}),
         "model_job_base": reverse("hydrodesk:model_job_status", kwargs={"job_id": 0}),
+        # A run-on-save (or otherwise still-running) job for this record -> the detail page
+        # auto-polls it and reloads when outputs land, so they appear without a Run click.
+        "auto_poll_job_id": (_active_record_job_id(record_id)
+                             if (record_found and (field_schema or {}).get("x-model")) else None),
         # History + collaboration
         "revisions": revisions,
         "revision_count": len(revisions),
@@ -10997,8 +11925,20 @@ def _schema_for(field_type, options):
         return {"x-layout": "tab"}
     if ft == "number":
         return {"type": "number"}
-    if ft == "image":  # a model/API IMAGE output (data: URI or URL) -> rendered as <img>
-        return {"type": "string", "x-widget": "image"}
+    if ft == "image":  # an IMAGE: an uploaded record image OR a model/API output (data:URI /
+        # URL) -> rendered as <img>. x-field='image' marks an UPLOAD field for the form +
+        # save handler; it's inert on a computed model output (those are excluded there).
+        return {"type": "string", "x-widget": "image", "x-field": "image"}
+    if ft == "file":   # a FILE: an uploaded record attachment OR a model output ->
+        # stored as {name,url,size}, rendered as a download link. x-field='file' marks it
+        # for the record form's upload input + the save handler (like 'shapefile').
+        return {"type": "object", "x-widget": "file", "x-field": "file"}
+    if ft == "geometry":  # a model GEOMETRY output (GeoJSON) -> rendered on a mini map
+        return {"type": "object", "x-widget": "geometry"}
+    if ft in ("time-series", "timeseries", "series"):  # a model TIME-SERIES output: a list of
+        # row dicts (or a dict of parallel lists) -> rendered as the polished line chart +
+        # scrollable table (same as a connector series), not raw text.
+        return {"type": "array", "x-widget": "series"}
     if ft == "checkbox":
         return {"type": "boolean"}
     if ft == "date":
@@ -11147,6 +12087,14 @@ def _coerce_default(prop, raw):
     return raw
 
 
+def _friendly_output_type(ot):
+    """User-facing label for a model OUTPUT type. The series output is stored internally as
+    'Time-Series' (it drives the chart + table rendering), but every UI surfaces it as
+    'Table' — matching the model form's output-type picker — since the app exposes no
+    separate 'Time-Series' field type."""
+    return "Table" if (ot or "") == "Time-Series" else (ot or "")
+
+
 def _builder_type_for(prop):
     """Inverse of _schema_for's TYPE choice: a stored property fragment -> the
     builder 'Type' select value (text/number/select/checkbox/date/textarea/email/
@@ -11165,12 +12113,23 @@ def _builder_type_for(prop):
     if prop.get("x-field") in ("currency", "percent", "duration", "phone",
                                "color", "rating", "formula", "shapefile", "script"):
         return prop.get("x-field")  # formatted/computed types round-trip by x-field
+    # Upload + model-output types: keyed by x-field/x-widget (their bare JSON 'type' is
+    # object/string, which would otherwise mislabel as Text). Covers user-created File/Image
+    # UPLOAD fields AND computed model OUTPUTS (File/Image/Geometry).
+    if prop.get("x-field") == "file" or prop.get("x-widget") == "file":
+        return "file"
+    if prop.get("x-field") == "image" or prop.get("x-widget") == "image":
+        return "image"
+    if prop.get("x-widget") == "geometry":
+        return "geometry"
     t = prop.get("type")
     if t == "array":
         if prop.get("x-widget") == "table":
             return "table"
         if prop.get("x-widget") == "list":
             return "list"
+        if prop.get("x-widget") == "series":
+            return "time-series"
         return "tags"
     if prop.get("x-link-type"):
         return "link"
@@ -11284,10 +12243,16 @@ def _schema_to_builder_rows(field_schema):
             "computed_by": prop.get("x-computed-by") or "",
             "model_input": bool(prop.get("x-model-input")),     # label locked to model var
             "model_input_by": prop.get("x-model-input") or "",
-            "type_label": {"number": "Number", "textarea": "Long Text", "date": "Date",
-                           "tags": "Tags", "list": "List (numbers)", "table": "Table",
-                           "checkbox": "Checkbox", "text": "Text", "script": "Python Script",
-                           "formula": "Formula"}.get(bt, bt.title()),
+            # Prefer the authoritative output type (what was picked for a model output);
+            # else map the builder token to a human label (unknowns title-case cleanly,
+            # e.g. file->File, image->Image, geometry->Geometry). The series type surfaces
+            # as 'Table' everywhere via _friendly_output_type.
+            "type_label": (_friendly_output_type(prop.get("x-output-type"))
+                           or {"number": "Number", "textarea": "Long Text", "date": "Date",
+                               "tags": "Tags", "list": "List (numbers)", "table": "Table",
+                               "checkbox": "Checkbox", "text": "Text", "script": "Python Script",
+                               "formula": "Formula", "file": "File", "image": "Image",
+                               "geometry": "Geometry", "time-series": "Table"}.get(bt, bt.title())),
             "label": prop.get("title") or key.replace("_", " ").title(),
             "type": bt,
             "options": _builder_options_for(prop, bt),
@@ -11913,6 +12878,7 @@ def _apply_model_output_fields(session, field_schema):
         # outputs lost their rendering and showed raw text on every builder re-save.)
         out_prop = dict(_schema_for(o.get("field_type") or "Number", ""))
         out_prop.update({"x-computed": True, "x-computed-by": model_name,
+                         "x-output-type": o.get("field_type") or "Number",
                          "title": o.get("label") or name.replace("_", " ").title()})
         props[name] = out_prop
         if name not in order:
@@ -12571,9 +13537,14 @@ def _parse_outputs_rows(post):
                     parsed = None
                 for v in (parsed or []):
                     if isinstance(v, dict) and (v.get("path") or "").strip():
-                        variables.append({
+                        ent = {
                             "name": (v.get("name") or _last_seg(v["path"]) or "var"),
-                            "path": v["path"].strip()})
+                            "path": v["path"].strip()}
+                        # Envelope role tag (x|value|median|lower|upper|member|flag).
+                        role = (v.get("role") or "").strip().lower()
+                        if role:
+                            ent["role"] = role
+                        variables.append(ent)
             # Legacy carriers (older saved forms) -> fold into variables.
             if not variables:
                 xp = (post.get(f"output_xpath_{i}") or "").strip()
@@ -13300,7 +14271,7 @@ def _model_config_from_post(post):
     if not name:
         errors.append("Model name is required.")
     try:
-        timeout = max(1, min(3600, int(post.get("timeout") or 300)))
+        timeout = max(1, min(86400, int(post.get("timeout") or 300)))
     except (TypeError, ValueError):
         timeout = 300
     based_on = (post.get("based_on") or "doctypes").strip().lower()
@@ -13314,11 +14285,24 @@ def _model_config_from_post(post):
         if s and s not in seen_dt:
             seen_dt.add(s)
             input_doctypes.append(s)
+    # Execution backend (advanced job management): thread (default, always works) | condor |
+    # dask. Non-thread backends submit to a Tethys scheduler named `scheduler`; if that
+    # scheduler isn't configured the run gracefully falls back to the local thread.
+    backend = (post.get("job_backend") or "thread").strip().lower()
+    if backend not in ("thread", "condor", "dask"):
+        backend = "thread"
+    try:
+        input_timeout = max(5, min(600, int(post.get("input_timeout") or 45)))
+    except (TypeError, ValueError):
+        input_timeout = 45
     config = {"pre_script": (post.get("pre_script") or "").strip(),
               "command": (post.get("command") or "").strip(),
               "post_script": (post.get("post_script") or "").strip(),
               "based_on": based_on, "input_doctypes": input_doctypes,
-              "timeout": timeout, "outputs": []}
+              "timeout": timeout, "input_timeout": input_timeout,
+              "job_backend": backend, "scheduler": (post.get("scheduler") or "").strip(),
+              "run_on_save": bool(post.get("run_on_save")),
+              "outputs": []}
     seen = set()
     # If the form sends out_keep_* checkboxes, store ONLY the ticked outputs; an old-style
     # POST with no out_keep_* keys keeps all (backward compatible).
@@ -13334,7 +14318,7 @@ def _model_config_from_post(post):
             continue
         seen.add(nm)
         ft = (post.get("out_type_%d" % i) or "Text").strip()
-        if ft not in _SCRIPT_OUTPUT_FIELD_TYPES:
+        if ft not in _MODEL_OUTPUT_FIELD_TYPES:
             ft = "Text"
         config["outputs"].append({
             "name": nm, "field_type": ft,
@@ -13426,7 +14410,11 @@ def _model_form_context(mode, name, config, errors, model_id=None):
             "errors": errors, "pre_script": config.get("pre_script", ""),
             "command": config.get("command", ""), "post_script": config.get("post_script", ""),
             "timeout": config.get("timeout", 300), "output_rows": rows,
-            "output_types": list(_SCRIPT_OUTPUT_FIELD_TYPES),
+            "input_timeout": config.get("input_timeout", 45),
+            "job_backend": config.get("job_backend", "thread"),
+            "scheduler": config.get("scheduler", ""),
+            "run_on_save": bool(config.get("run_on_save")),
+            "output_types": list(_MODEL_OUTPUT_FIELD_TYPES),
             "field_index": _doctype_field_index(),
             "based_on": (config.get("based_on") or "doctypes"),
             "selected_doctypes": list(config.get("input_doctypes") or []),

@@ -164,9 +164,47 @@
       </div>
 
       <div class="hd-sec" style="border-top:1px solid var(--fr-border-color,#e6e9ee);padding-top:14px;margin-top:14px;">
-        <div class="frappe-form-group" style="max-width:200px;">
-          <label class="frappe-label">Timeout (seconds)</label>
-          <input class="form-control form-control-sm" name="timeout" value="{{ timeout }}" type="number" min="1" max="3600">
+        <div class="frappe-section-head">Execution</div>
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:14px;align-items:end;">
+          <div class="frappe-form-group">
+            <label class="frappe-label">Run timeout (s)</label>
+            <input class="form-control form-control-sm" name="timeout" value="{{ timeout }}" type="number" min="1" max="86400">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label">Input fetch (s)</label>
+            <input class="form-control form-control-sm" name="input_timeout" value="{{ input_timeout|default:45 }}" type="number" min="5" max="600">
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label">Backend</label>
+            <select class="form-select form-select-sm" name="job_backend">
+              <option value="thread" {% if job_backend == 'thread' or not job_backend %}selected{% endif %}>Local thread (default)</option>
+              <option value="condor" {% if job_backend == 'condor' %}selected{% endif %}>HTCondor (cluster)</option>
+              <option value="dask"   {% if job_backend == 'dask' %}selected{% endif %}>Dask (parallel)</option>
+            </select>
+          </div>
+          <div class="frappe-form-group">
+            <label class="frappe-label">Scheduler name</label>
+            <input class="form-control form-control-sm" name="scheduler" value="{{ scheduler }}" placeholder="(for condor/dask)">
+          </div>
+        </div>
+        <div class="frappe-form-group" style="margin-top:12px;">
+          <label class="frappe-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+            <input type="checkbox" name="run_on_save" value="1" {% if run_on_save %}checked{% endif %}
+                   style="width:16px;height:16px;">
+            Run automatically when a record is saved
+          </label>
+          <div class="frappe-help" style="margin-top:4px;">
+            When on, creating or editing a record of a doctype bound to this model fires the run
+            <strong>immediately on save</strong> — the outputs populate on the record page on their own
+            (it polls and refreshes when the run finishes), with no manual <em>Run</em> click. Leave off
+            for heavy/expensive models you'd rather trigger by hand.
+          </div>
+        </div>
+        <div class="frappe-help" style="margin-top:6px;">
+          Default runs on a local worker thread. <strong>HTCondor/Dask</strong> submit to a Tethys scheduler of the
+          given name — if that scheduler isn't configured on this portal, the run <strong>falls back to the thread</strong>
+          (the job log records it). Long runs (&gt;1&nbsp;h) pin a thread — prefer a cluster backend for those. Track every
+          run on <a href="{% url 'hydrodesk:model_jobs' %}">Model Jobs</a>.
         </div>
       </div>
 
